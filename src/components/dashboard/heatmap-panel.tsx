@@ -1,14 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Assessment, Course, WeekLoad } from "@/lib/types";
+import type { Assessment, Course, SemesterPlan, WeekLoad } from "@/lib/types";
 import { Panel } from "@/components/ui/panel";
-import { GridIcon, AlertIcon } from "@/components/icons";
+import { GridIcon, AlertIcon, InfoIcon } from "@/components/icons";
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import { LoadingRegion, SkeletonStrip } from "@/components/ui/skeleton";
 import { AssessmentRow } from "@/components/dashboard/assessment-row";
 import { accentFor } from "@/components/course-accents";
 import {
+  formatDateShort,
   formatHours,
   formatWeekRange,
   mondayOf,
@@ -26,6 +27,7 @@ export function HeatmapPanel({
   loading,
   error,
   weeks,
+  term,
   courses,
   assessments,
   accents,
@@ -34,6 +36,12 @@ export function HeatmapPanel({
   loading: boolean;
   error?: { error: string; detail?: string };
   weeks: WeekLoad[];
+  /**
+   * The window the weeks are numbered from. Undefined from a server that has
+   * not shipped it yet, null when nothing could be resolved -- both fall back
+   * to the plain week count.
+   */
+  term?: SemesterPlan["term"];
   courses: Course[];
   assessments: Assessment[];
   accents: Record<string, string>;
@@ -60,15 +68,34 @@ export function HeatmapPanel({
 
   const warnedCount = weeks.filter((week) => week.warning).length;
 
+  // "October 5th isn't week 1" -- a real student, looking at a heatmap numbered
+  // from their first deadline. The numbering is only meaningful next to where
+  // it came from, so the subtitle now says so, and says when it is a guess.
+  const termLabel = courses
+    .map((course) => course.term)
+    .find((label): label is string => Boolean(label && label.trim()));
+  const subtitle = describeTerm(term, weeks, termLabel);
+
   return (
     <Panel
       id="heatmap"
       title="Workload heatmap"
       icon={<GridIcon width={17} height={17} />}
       description={
-        weeks.length > 0
-          ? `${pluralize(weeks.length, "week")} of the semester, scored by estimated hours.`
-          : "Week-by-week workload across every course."
+        subtitle ? (
+          subtitle.uncertain ? (
+            <span className="flex items-start gap-1.5">
+              <InfoIcon className="mt-0.5 shrink-0" width={13} height={13} />
+              <span>{subtitle.text}</span>
+            </span>
+          ) : (
+            subtitle.text
+          )
+        ) : weeks.length > 0 ? (
+          `${pluralize(weeks.length, "week")} of the semester, scored by estimated hours.`
+        ) : (
+          "Week-by-week workload across every course."
+        )
       }
       action={
         warnedCount > 0 ? (
@@ -230,6 +257,8 @@ function WeekDetail({
   courseById: Map<string, Course>;
   accents: Record<string, string>;
 }) {
+  const split = splitHours(week);
+
   return (
     <div
       aria-live="polite"
@@ -259,6 +288,7 @@ function WeekDetail({
             {intensityLabel(week.intensity)}
           </span>
           · about {formatHours(week.estimatedHours)}
+          {split ? <span className="text-muted"> · {split}</span> : null}
         </p>
       </div>
 
@@ -290,4 +320,73 @@ function WeekDetail({
       )}
     </div>
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * "8h study, 2h due" -- the two halves of the total, so a heavy week with no
+ * deadline in it stops looking like a mistake.
+ *
+ * The halves arrived in the plan after the totals did, so a server one deploy
+ * behind sends neither. The total on its own is still true, so that case simply
+ * renders as it always did rather than printing "0h study, 0h due".
+ */
+function splitHours(week: WeekLoad): string | null {
+  const study = week.studyHours;
+  const due = week.dueHours;
+  if (typeof study !== "number" || typeof due !== "number") return null;
+  if (study <= 0 && due <= 0) return null;
+  return `${round(study)}h study, ${round(due)}h due`;
+}
+
+/**
+ * `formatHours`' rounding rule, without its unit. Whole hours would print
+ * "5 hrs · 5h study, 1h due" for a 5.3-hour week -- a breakdown that visibly
+ * does not add up reads as a bug, so the halves keep the total's precision.
+ */
+function round(hours: number): number {
+  return hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
+}
+
+/**
+ * Says where week 1 came from, and how much to trust it.
+ *
+ * Returns null when there is no term to describe -- an old server that does not
+ * send one, or a plan that could not resolve one -- and the panel falls back to
+ * the plain week count it always showed.
+ */
+function describeTerm(
+  term: SemesterPlan["term"] | undefined,
+  weeks: WeekLoad[],
+  courseTerm: string | undefined,
+): { text: string; uncertain: boolean } | null {
+  if (!term || weeks.length === 0) return null;
+
+  const last = weeks[weeks.length - 1]?.weekNumber ?? weeks.length;
+  const span = last > 1 ? `Weeks 1–${last}` : "Week 1";
+  const dates = `${formatDateShort(term.start)} – ${formatDateShort(term.end)}`;
+
+  if (term.source === "syllabus") {
+    return { text: `${span} · ${dates}, from your syllabus`, uncertain: false };
+  }
+
+  if (term.source === "inferred") {
+    // The label is the course's own term string ("Fall 2026"); naming it is the
+    // difference between an estimate the student can check and a bare claim.
+    const from = courseTerm
+      ? `estimated from “${courseTerm}”`
+      : "estimated from your course dates";
+    return {
+      text: `${span} · ${dates}, ${from} — your syllabus didn’t state term dates`,
+      uncertain: true,
+    };
+  }
+
+  return {
+    text: `${span} · anchored to your first deadline — no term dates or label found`,
+    uncertain: false,
+  };
 }

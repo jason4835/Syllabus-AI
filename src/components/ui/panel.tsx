@@ -5,7 +5,8 @@ export interface PanelProps {
   id: string;
   title: string;
   icon?: ReactNode;
-  description?: string;
+  /** A node, not just a string, so a subtitle can carry an inline glyph. */
+  description?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   className?: string;

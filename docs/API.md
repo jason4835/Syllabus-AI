@@ -11,6 +11,7 @@ Non-2xx responses still use this shape.
 | `/api/auth/logout` | POST | — | `{ ok: true }` |
 | `/api/me` | GET | — | `User \| null` |
 | `/api/me/timezone` | POST | `{ timezone: string }` (IANA zone) | `User` |
+| `/api/me` | DELETE | `{ confirm: "DELETE"; removeGoogleCalendar?: boolean }` | `{ deleted: true; googleCalendarRemoved: boolean }` — erases the account and every course, assessment, link and connection; clears the session. Notion pages are never touched. **400** unless `confirm` is exactly `"DELETE"`; **403** for the shared demo account. |
 | `/api/health` | GET | — | `{ status; version; commit; uptimeSeconds; time; capabilities; storage; warnings }` |
 | `/api/upload` | POST | `multipart/form-data`, field `file` (PDF) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[] }` |
 | `/api/courses` | GET | — | `{ courses: Course[]; assessments: Assessment[] }` |

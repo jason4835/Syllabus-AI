@@ -632,9 +632,9 @@ limits** in `README.md`.
 - **Sessions are a signed cookie, not an auth provider.** No revocation, no
   device list, no session store — a stolen cookie is valid for its full 30 days.
   Rotating `SESSION_SECRET` is the only mass logout available.
-- **No account deletion and no data export.** A tester who asks you to delete
-  their data needs you to run SQL by hand. There is no self-serve path, and no
-  way for them to get their own data out.
+- Account deletion and data export live in the dashboard's Account panel.
+  Deletion is total on our side; it never touches Notion pages and removes
+  the Google "Syllabus AI" calendar only when the user asks.
 - **Google refresh tokens are stored in plaintext** in
   `users.google_refresh_token`. The column is never selected into anything
   client-facing and access tokens are never persisted, so a leaked row expires

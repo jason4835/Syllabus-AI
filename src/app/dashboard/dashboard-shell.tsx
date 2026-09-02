@@ -1,6 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  ReactNode,
+  SVGProps,
+} from "react";
 import type {
   Assessment,
   Course,
@@ -11,8 +16,9 @@ import { apiGet, apiPost } from "@/components/api-client";
 import type { AppConfig } from "@/components/api-client";
 import { accentVar, buildAccentMap } from "@/components/course-accents";
 import { Logo, RefreshIcon } from "@/components/icons";
-import { Button } from "@/components/ui/button";
+import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
+import { AccountPanel } from "@/components/dashboard/account-panel";
 import { UploadPanel } from "@/components/dashboard/upload-panel";
 import type { UploadResult } from "@/components/dashboard/upload-panel";
 import { UpcomingPanel } from "@/components/dashboard/upcoming-panel";
@@ -56,6 +62,23 @@ export function DashboardShell() {
   const notionRef = useRef<HTMLDivElement>(null);
   const notionInFlight = useRef<Promise<void> | null>(null);
   const [pendingNotionScroll, setPendingNotionScroll] = useState(false);
+
+  const accountRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * "Account" in the header menu is a jump, not a route -- the panel is already
+   * on this page. Focus moves with the scroll so a keyboard user carries on from
+   * the panel rather than from the top of the document.
+   */
+  const showAccount = useCallback(() => {
+    const target = accountRef.current;
+    if (!target) return;
+    // Focus first, then scroll: focusing mid-flight cancels a smooth scroll in
+    // Chrome, and the panel is far enough down the page for that to be the
+    // difference between arriving and not moving at all.
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   const loadCourses = useCallback(async () => {
     setCoursesLoading(true);
@@ -247,18 +270,13 @@ export function DashboardShell() {
             </Button>
             {configLoading ? (
               <span className="skeleton h-7 w-24 rounded-full" aria-hidden="true" />
-            ) : user ? (
-              <span className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pr-3 pl-1">
-                <span
-                  aria-hidden="true"
-                  className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-[0.6875rem] font-semibold text-accent-on"
-                >
-                  {(user.name ?? user.email ?? "?").slice(0, 1).toUpperCase()}
-                </span>
-                <span className="max-w-32 truncate text-[0.8125rem] text-ink-soft">
-                  {user.name ?? user.email}
-                </span>
-              </span>
+            ) : user || demoMode ? (
+              <UserMenu
+                name={demoMode ? "Demo Student" : (user?.name ?? user?.email ?? "You")}
+                email={user?.email ?? null}
+                demoMode={demoMode}
+                onAccount={showAccount}
+              />
             ) : (
               <a
                 href="/api/auth/google"
@@ -295,6 +313,7 @@ export function DashboardShell() {
             loading={planLoading}
             error={planError}
             weeks={weeks}
+            term={plan?.term ?? null}
             courses={courses}
             assessments={assessments}
             accents={accents}
@@ -346,6 +365,23 @@ export function DashboardShell() {
               <ChatPanel openaiReady={config?.openaiReady ?? false} />
             </div>
           </div>
+
+          {/* Last on the page on purpose: it is the thing you go looking for,
+              not the thing you work in. `scroll-mt` clears the sticky header
+              when the menu jumps here. */}
+          <div ref={accountRef} tabIndex={-1} className="scroll-mt-20 outline-none">
+            <AccountPanel
+              user={user}
+              loading={configLoading}
+              demoMode={demoMode}
+              notionConnected={
+                (notionStatus?.connected ?? false) &&
+                notionStatus?.status !== "revoked"
+              }
+              notionWorkspace={notionStatus?.workspaceName ?? null}
+              onUser={setUser}
+            />
+          </div>
         </div>
       </main>
 
@@ -358,5 +394,234 @@ export function DashboardShell() {
         </div>
       </footer>
     </div>
+  );
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Header user menu                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The chip used to be decoration. A first user asked, reasonably, how to log
+ * out and how to see what we hold on them -- so it became the one place both
+ * live. A real menu, not a popover of links: `aria-haspopup`, roving focus,
+ * Escape and click-outside, because it sits in the header of every screen.
+ */
+function UserMenu({
+  name,
+  email,
+  demoMode,
+  onAccount,
+}: {
+  name: string;
+  email: string | null;
+  demoMode: boolean;
+  onAccount: () => void;
+}) {
+  const menuId = useId();
+  const labelId = useId();
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Escape and Tab-away hand focus back to the trigger; a click elsewhere does
+   * not, because the pointer has already chosen where focus should be.
+   */
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    }
+    function onFocusIn(event: FocusEvent) {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
+    };
+  }, [open]);
+
+  // Opening a menu puts you in it -- otherwise a keyboard user opens a panel
+  // they then have to Tab into blind.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current
+      ?.querySelector<HTMLElement>('[role="menuitem"]')
+      ?.focus();
+  }, [open]);
+
+  function moveFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? (current + 1) % items.length
+            : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
+  }
+
+  async function logOut() {
+    setPending(true);
+    await apiPost("/api/auth/logout");
+    // Navigate whatever came back: if the cookie was cleared we must leave, and
+    // if it was not, the landing page re-reads the session as the one source of
+    // truth rather than this component guessing.
+    window.location.assign("/");
+  }
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && !open) {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pr-2 pl-1 transition-colors hover:bg-raised"
+      >
+        <span
+          aria-hidden="true"
+          className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-[0.6875rem] font-semibold text-accent-on"
+        >
+          {name.slice(0, 1).toUpperCase()}
+        </span>
+        <span className="max-w-24 truncate text-[0.8125rem] text-ink-soft sm:max-w-32">
+          {name}
+        </span>
+        <ChevronIcon
+          className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}
+          width={13}
+          height={13}
+        />
+      </button>
+
+      {open ? (
+        <div
+          id={menuId}
+          className="rise absolute right-0 z-50 mt-2 w-60 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
+        >
+          {/* Identity, not a control: it answers "who am I signed in as?" which
+              is half of why the menu gets opened at all. */}
+          <div className="border-b border-line px-3 py-2.5">
+            <p id={labelId} className="truncate text-[0.8125rem] font-medium text-ink">
+              {name}
+            </p>
+            {email ? (
+              <p className="truncate text-[0.75rem] text-muted">{email}</p>
+            ) : null}
+          </div>
+
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-labelledby={labelId}
+            onKeyDown={moveFocus}
+            className="py-1"
+          >
+            <MenuItem
+              onClick={() => {
+                setOpen(false);
+                onAccount();
+              }}
+            >
+              Account
+            </MenuItem>
+            {demoMode ? (
+              <MenuItem onClick={() => window.location.assign("/")}>
+                Exit demo
+              </MenuItem>
+            ) : (
+              <MenuItem disabled={pending} onClick={() => void logOut()}>
+                {pending ? (
+                  <>
+                    <Spinner label="Logging out" />
+                    Logging out…
+                  </>
+                ) : (
+                  "Log out"
+                )}
+              </MenuItem>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MenuItem({
+  onClick,
+  disabled,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[0.8125rem] text-ink-soft transition-colors hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Local: one glyph, used once, not worth growing the shared icon set. */
+function ChevronIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={14}
+      height={14}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      {...props}
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   );
 }

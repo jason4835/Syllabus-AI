@@ -16,10 +16,12 @@ import type { Assessment, Course, SemesterPlan } from "@/lib/types";
 import {
   DEFAULT_WEEKLY_BUDGET_HOURS,
   buildWeeks,
+  buildWeeksFromBlocks,
   daysBetween,
   estimatedHoursFor,
   formatShortDate,
   heaviestWeek,
+  resolveTerm,
   type WorkloadOptions,
 } from "@/lib/plan/workload";
 import { buildStudyBlocks, type StudyOptions } from "@/lib/plan/study";
@@ -27,21 +29,36 @@ import { buildStudyBlocks, type StudyOptions } from "@/lib/plan/study";
 export type PlanOptions = WorkloadOptions & StudyOptions;
 
 /**
- * Build the whole plan: weekly load first, then study blocks scheduled against
- * it. Order matters -- the scheduler reads week intensity so it can drain prep
- * out of weeks that are already over budget.
+ * Build the whole plan, in three passes, because the two halves of it depend on
+ * each other:
+ *
+ *  1. Provisional weeks. They fix the term window and the week numbering, and
+ *     they score each week by the prep its deadlines imply. The scheduler needs
+ *     that: it reads week intensity so it can drain work out of weeks that are
+ *     already over budget.
+ *  2. Study blocks, scheduled against those provisional weeks.
+ *  3. Re-score every week from the blocks that actually landed in it, plus what
+ *     is due that week. Only this pass is shown to the student -- scoring by
+ *     deadline week alone was reporting 0h for the weeks the plan itself told
+ *     them to study, which made the chart look broken.
+ *
+ * The term window is resolved once and the same way in every pass, so the week
+ * numbers cannot shift between them.
  */
 export function buildSemesterPlan(
   courses: Course[],
   assessments: Assessment[],
   opts: PlanOptions = {},
 ): SemesterPlan {
-  const weeks = buildWeeks(courses, assessments, opts);
-  const studyBlocks = buildStudyBlocks(courses, assessments, weeks, opts);
+  const term = resolveTerm(courses, assessments, opts);
+  const provisionalWeeks = buildWeeks(courses, assessments, opts);
+  const studyBlocks = buildStudyBlocks(courses, assessments, provisionalWeeks, opts);
+  const weeks = buildWeeksFromBlocks(courses, assessments, studyBlocks, opts);
   return {
     weeks,
     studyBlocks,
     generatedAt: (opts.now ?? new Date()).toISOString(),
+    term,
   };
 }
 
@@ -167,6 +184,11 @@ function describeChanges(
   // Week-level consequences. Only report weeks that crossed an intensity band:
   // a week going from 11.5h to 12h is noise, a week going from busy to crunch
   // is the thing the student needs to see.
+  //
+  // These hours are now the work that *lands* in the week -- study blocks plus
+  // what is due -- so moving a deadline can change the load of a week that has
+  // no deadline in it at all. The copy says "work lands" rather than "due" so a
+  // student who reads it against the calendar does not think it is a bug.
   const prevWeeks = new Map(input.previousPlan.weeks.map((w) => [w.weekStart, w]));
   const bandNames = ["calm", "normal", "busy", "crunch"] as const;
   const weekChanges: string[] = [];
@@ -183,7 +205,7 @@ function describeChanges(
   const peakAfter = heaviestWeek(plan.weeks);
   if (peakAfter && peakAfter.weekStart !== peakBefore?.weekStart) {
     weekChanges.push(
-      `Week ${peakAfter.weekNumber} (${formatShortDate(peakAfter.weekStart)}) is now your heaviest week at ~${peakAfter.estimatedHours}h.`,
+      `Week ${peakAfter.weekNumber} (${formatShortDate(peakAfter.weekStart)}) is now your heaviest week -- ~${peakAfter.estimatedHours}h of work lands there (${peakAfter.studyHours}h study, ${peakAfter.dueHours}h due).`,
     );
   }
 
@@ -206,6 +228,7 @@ function describeChanges(
 /* -------------------------------------------------------------------------- */
 
 export {
+  ASSESSMENT_DUE_HOUR_COSTS,
   ASSESSMENT_HOUR_COSTS,
   DEFAULT_WEEKLY_BUDGET_HOURS,
   INTENSITY_THRESHOLDS,
@@ -213,15 +236,26 @@ export {
   WEIGHT_SCALE_MAX,
   WEIGHT_SCALE_MIN,
   buildWeeks,
+  buildWeeksFromBlocks,
   datedAssessments,
+  dueHoursFor,
   estimateAssessmentHours,
   estimatedHoursFor,
   heaviestWeek,
   intensityForHours,
+  resolveTerm,
   resolveTermBounds,
+  studyHoursByWeek,
+  termWindowFromTermLabel,
   weekForDate,
 } from "@/lib/plan/workload";
-export type { HourCost, HourEstimate, WorkloadOptions } from "@/lib/plan/workload";
+export type {
+  HourCost,
+  HourEstimate,
+  ResolvedTerm,
+  TermSource,
+  WorkloadOptions,
+} from "@/lib/plan/workload";
 
 export {
   DEFAULT_STUDY_OPTIONS,

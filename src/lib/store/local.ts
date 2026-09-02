@@ -193,6 +193,38 @@ function isLinkOrphanedByCourse(
   );
 }
 
+/**
+ * How many rows still belong to `userId` -- the post-condition `deleteUser`
+ * checks itself against.
+ *
+ * `deleteUser` promises to be total, and a promise kept only by reading the
+ * code stops being true the first time somebody adds a collection to
+ * `Database`. Counting afterwards turns that into a failure someone sees:
+ * throwing inside `mutate` aborts before the file is written, so a botched
+ * delete leaves the database exactly as it was instead of half-erased.
+ *
+ * Course and assessment ids are passed in because their rows are the join
+ * path: once the courses are gone there is nothing left to prove an assessment
+ * (or a calendar link) was ever the user's.
+ */
+function userRowsRemaining(
+  db: Database,
+  userId: string,
+  courseIds: Set<string>,
+  assessmentIds: Set<string>,
+): number {
+  return (
+    db.users.filter((u) => u.id === userId).length +
+    db.courses.filter((c) => c.userId === userId || courseIds.has(c.id)).length +
+    db.assessments.filter(
+      (a) => courseIds.has(a.courseId) || assessmentIds.has(a.id),
+    ).length +
+    db.calendarLinks.filter((l) => assessmentIds.has(l.assessmentId)).length +
+    db.notionConnections.filter((c) => c.userId === userId).length +
+    db.notionLinks.filter((l) => l.userId === userId).length
+  );
+}
+
 export function createLocalStore(): Store {
   /** Ownership gate shared by every assessment path that takes a userId. */
   function ownedCourseIds(db: Database, userId: string): Set<string> {
@@ -248,6 +280,59 @@ export function createLocalStore(): Store {
         const next: User = { ...db.users[index], timezone };
         db.users[index] = next;
         return clone(next);
+      });
+    },
+
+    async deleteUser(userId) {
+      // One mutate, so the whole account disappears in a single atomic write:
+      // a crash between two smaller writes would leave an account that is
+      // half-deleted and unreachable through any route.
+      return mutate((db) => {
+        const index = db.users.findIndex((u) => u.id === userId);
+        const existed = index !== -1;
+
+        // Collected before anything is removed: assessments hang off courses
+        // and calendar links off assessments, so once the courses are gone
+        // their descendants have nothing left to be matched by.
+        const courseIds = new Set(
+          db.courses.filter((c) => c.userId === userId).map((c) => c.id),
+        );
+        const assessmentIds = new Set(
+          db.assessments
+            .filter((a) => courseIds.has(a.courseId))
+            .map((a) => a.id),
+        );
+
+        db.courses = db.courses.filter((c) => c.userId !== userId);
+        db.assessments = db.assessments.filter(
+          (a) => !courseIds.has(a.courseId),
+        );
+        db.calendarLinks = db.calendarLinks.filter(
+          (l) => !assessmentIds.has(l.assessmentId),
+        );
+        // Every Notion link carries its owner, session links included, so this
+        // needs none of deleteCourse's prefix matching: the whole user goes,
+        // not one course's worth of links. The Notion pages themselves stay
+        // (docs/NOTION.md) -- what goes is our pointer to them.
+        db.notionLinks = db.notionLinks.filter((l) => l.userId !== userId);
+        db.notionConnections = db.notionConnections.filter(
+          (c) => c.userId !== userId,
+        );
+        if (existed) db.users.splice(index, 1);
+
+        const leftover = userRowsRemaining(db, userId, courseIds, assessmentIds);
+        if (leftover > 0) {
+          // Aborts the write, so the caller gets an error and the database is
+          // untouched -- far better than reporting success over a half-erased
+          // account.
+          throw new Error(
+            `[store/local] deleteUser is not total: ${leftover} row(s) still belong to this user`,
+          );
+        }
+
+        // Reported rather than assumed, so the route can answer "no such
+        // account" instead of confirming a deletion that never happened.
+        return existed;
       });
     },
 

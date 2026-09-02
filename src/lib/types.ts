@@ -101,8 +101,16 @@ export interface WeekLoad {
   weekStart: string;
   weekNumber: number;
   assessmentIds: string[];
-  /** Estimated hours of work, used to color the heatmap. */
+  /**
+   * Hours of work that actually land in this week: planned study sessions
+   * plus the sitting/submitting cost of anything due. Scoring by deadline
+   * week alone showed 0h for the weeks a student is supposed to be studying,
+   * which made the heatmap read as broken.
+   */
   estimatedHours: number;
+  /** The two halves of estimatedHours, so the UI can say "8h study - 2h due". */
+  studyHours: number;
+  dueHours: number;
   /** 0..3 -- calm, normal, busy, crunch. */
   intensity: 0 | 1 | 2 | 3;
   /** Human-readable heads-up, e.g. "3 exams in 5 days". */
@@ -113,6 +121,17 @@ export interface SemesterPlan {
   weeks: WeekLoad[];
   studyBlocks: StudyBlock[];
   generatedAt: string;
+  /**
+   * The window the weeks are numbered from. Week 1 is the week containing
+   * `start`, never the week of the first deadline. `source` says how sure to
+   * be: stated in a syllabus, inferred from a term label like "Fall 2026", or
+   * -- last resort -- the span of the deadlines themselves.
+   */
+  term: {
+    start: string;
+    end: string;
+    source: "syllabus" | "inferred" | "deadlines";
+  } | null;
 }
 
 /** Result of pushing items to Google Calendar. */

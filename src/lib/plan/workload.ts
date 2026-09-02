@@ -11,7 +11,15 @@
  * Everything in this file is pure: data in, data out. No clock, no network.
  */
 
-import type { Assessment, AssessmentKind, Course, WeekLoad } from "@/lib/types";
+import { termWindowFromLabel } from "@/lib/parse/dates";
+import type {
+  Assessment,
+  AssessmentKind,
+  Course,
+  SemesterPlan,
+  StudyBlock,
+  WeekLoad,
+} from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Date helpers                                                                */
@@ -148,6 +156,36 @@ export const ASSESSMENT_HOUR_COSTS: Record<AssessmentKind, HourCost> = {
     note: "Unclassified item -- estimated as a small assignment.",
   },
 };
+
+/**
+ * What it costs to *deliver* an item, in the week it is actually due.
+ *
+ * This is deliberately not the same table as `ASSESSMENT_HOUR_COSTS`: that one
+ * is the preparation, which the scheduler spreads over the weeks leading up to
+ * the deadline. This one is the irreducible hour the deadline itself eats --
+ * sitting the exam, uploading the paper, the last read-through. Without it a
+ * week whose only content is "the final is Thursday" would score zero, and the
+ * heatmap would go pale on the single week the student most needs it dark.
+ *
+ * Deliberately small numbers. If delivery cost were large it would drag the
+ * heaviest week back onto the deadline, which is exactly the distortion this
+ * whole change exists to remove.
+ */
+export const ASSESSMENT_DUE_HOUR_COSTS: Record<AssessmentKind, number> = {
+  exam: 2, // a sitting is usually a full period plus getting there
+  project: 1, // submission, demo setup, the final read-through
+  presentation: 1, // your slot plus the run-up
+  assignment: 0.5, // hand-in and the last pass over it
+  lab: 0.5, // write-up hand-in; bench time is scheduled class time
+  quiz: 0.5,
+  reading: 0, // nothing is "delivered" -- the cost is all in the reading itself
+  other: 0.5,
+};
+
+/** Delivery cost of one assessment in the week it is due. */
+export function dueHoursFor(a: Assessment): number {
+  return ASSESSMENT_DUE_HOUR_COSTS[a.kind] ?? ASSESSMENT_DUE_HOUR_COSTS.other;
+}
 
 /**
  * How hard weight pulls the estimate around.
@@ -293,39 +331,197 @@ export function datedAssessments(assessments: Assessment[]): Assessment[] {
     .sort((x, y) => dueTimestamp(x) - dueTimestamp(y));
 }
 
+/* -------------------------------------------------------------------------- */
+/* The term window                                                             */
+/* -------------------------------------------------------------------------- */
+
+export type TermSource = NonNullable<SemesterPlan["term"]>["source"];
+
+export interface ResolvedTerm {
+  start: string;
+  end: string;
+  source: TermSource;
+}
+
+/** Where one bound came from, weakest last. Drives `TermSource`. */
+type BoundSource = "syllabus" | "label" | "deadlines";
+
 /**
- * Resolve the term window.
+ * How far back the deadline-only fallback reaches behind the first due date.
  *
- * Preference order: explicit options, then the union of the courses' own term
- * dates, then the span of the assessments themselves. Whatever we land on is
- * then *widened* to cover every dated assessment -- a syllabus that lists a
- * make-up exam after the stated end date must still get a week, or it would
- * vanish from the heatmap entirely.
+ * A term that starts on the day the first thing is due has nowhere to put the
+ * preparation for it, so week 1 is instantly a crunch week and every study
+ * block falls off the front of the chart.
+ */
+const DEADLINE_FALLBACK_LEAD_DAYS = 14;
+
+/**
+ * Realistic US academic windows, keyed by the month a season starts in.
+ *
+ * `termWindowFromLabel` is built for a different job -- it exists so the parser
+ * can decide whether a bare "Jan 20" in a Fall syllabus means January of the
+ * following year -- so it returns a deliberately *generous* envelope: "Fall
+ * 2026" comes back as Aug 1 - Dec 31. That is right for year inference and
+ * wrong for numbering weeks: it would make week 1 the week of Jul 27 and hand
+ * the student a 23-week semester. So we take the season and year from it and
+ * narrow the envelope here, in the caller, to the window a registrar would
+ * recognise. Keyed by start month so this keeps working if that function is
+ * later tightened.
+ */
+const ACADEMIC_WINDOWS: Record<number, { start: [number, number]; end: [number, number] }> = {
+  8: { start: [8, 26], end: [12, 18] }, // fall: late Aug -> finals week in mid-Dec
+  1: { start: [1, 20], end: [5, 15] }, // spring: mid/late Jan -> mid-May
+  5: { start: [5, 20], end: [8, 15] }, // summer session
+  11: { start: [1, 3], end: [3, 20] }, // winter: dated into the envelope's *end* year
+};
+
+function isoOf(year: number, month: number, day: number): string {
+  const p = (n: number) => (n < 10 ? `0${n}` : String(n));
+  return `${year}-${p(month)}-${p(day)}`;
+}
+
+/**
+ * The academic window a term label like "Fall 2026" implies, or null when the
+ * label says nothing we can date.
+ */
+export function termWindowFromTermLabel(label: string | null): { start: string; end: string } | null {
+  const envelope = termWindowFromLabel(label);
+  if (!envelope.termStart || !envelope.termEnd) return null;
+
+  const startYear = Number(envelope.termStart.slice(0, 4));
+  const startMonth = Number(envelope.termStart.slice(5, 7));
+  const endYear = Number(envelope.termEnd.slice(0, 4));
+  const window = ACADEMIC_WINDOWS[startMonth];
+  // An envelope we do not recognise is still better than nothing; using it raw
+  // beats pretending the label was unreadable.
+  if (!window) return { start: envelope.termStart, end: envelope.termEnd };
+
+  // A window that straddles New Year (winter) is anchored to the year the
+  // envelope *ends* in, which is the year its classes actually meet.
+  const anchor = startMonth === 11 ? endYear : startYear;
+  const start = isoOf(anchor, window.start[0], window.start[1]);
+  const end = isoOf(
+    window.end[0] < window.start[0] ? anchor + 1 : anchor,
+    window.end[0],
+    window.end[1],
+  );
+  return { start, end };
+}
+
+/**
+ * Resolve the window the weeks are numbered from, and say how sure to be.
+ *
+ * Order, best evidence first:
+ *
+ *  1. `"syllabus"` -- a course states its own dates. Earliest start, latest end.
+ *  2. `"inferred"` -- no dates, but a term label ("Fall 2026") we can turn into
+ *     a real academic window. Also covers "start stated, end from the label".
+ *  3. `"deadlines"` -- nothing to go on, so the deadlines have to stand in for
+ *     the calendar. Padded back two weeks, because a term that begins on the
+ *     first due date has nowhere to put the prep for it.
+ *  4. `null` -- no dated assessments at all, so there is no semester to draw.
+ *
+ * This ordering is the fix for the bug where a syllabus with no stated dates
+ * produced a heatmap whose week 1 was the week of the first deadline -- Oct 5,
+ * for a fall term. Deadlines describe the work, not the calendar.
+ */
+export function resolveTerm(
+  courses: Course[],
+  assessments: Assessment[],
+  opts: WorkloadOptions = {},
+): ResolvedTerm | null {
+  const dated = datedAssessments(assessments);
+  const firstDue = dated.length ? (dated[0].dueDate as string) : null;
+  const lastDue = dated.length ? (dated[dated.length - 1].dueDate as string) : null;
+
+  const courseStarts = courses.map((c) => c.startDate).filter((d): d is string => Boolean(d));
+  const courseEnds = courses.map((c) => c.endDate).filter((d): d is string => Boolean(d));
+  const statedStart = opts.termStart ?? (courseStarts.length ? courseStarts.slice().sort()[0] : null);
+  const statedEnd =
+    opts.termEnd ?? (courseEnds.length ? courseEnds.slice().sort().slice(-1)[0] : null);
+
+  // Widest window any course's label implies -- students on one term rarely
+  // disagree, but a cross-listed course occasionally carries a longer session.
+  const labelWindows = courses
+    .map((c) => termWindowFromTermLabel(c.term))
+    .filter((w): w is { start: string; end: string } => w !== null);
+  const labelStart = labelWindows.length
+    ? labelWindows.map((w) => w.start).sort()[0]
+    : null;
+  const labelEnd = labelWindows.length
+    ? labelWindows.map((w) => w.end).sort().slice(-1)[0]
+    : null;
+
+  // With no dated work there is nothing to plan, and a window drawn around zero
+  // assessments would be a confident-looking chart of nothing. The one
+  // exception is a caller that explicitly asked for a window.
+  if (dated.length === 0) {
+    if (opts.termStart && opts.termEnd) {
+      return { start: opts.termStart, end: opts.termEnd, source: "syllabus" };
+    }
+    return null;
+  }
+
+  let start: string;
+  let startFrom: BoundSource;
+  if (statedStart) {
+    start = statedStart;
+    startFrom = "syllabus";
+  } else if (labelStart) {
+    start = labelStart;
+    startFrom = "label";
+  } else {
+    start = firstDue as string;
+    startFrom = "deadlines";
+  }
+
+  let end: string;
+  let endFrom: BoundSource;
+  if (statedEnd) {
+    end = statedEnd;
+    endFrom = "syllabus";
+  } else if (labelEnd) {
+    end = labelEnd;
+    endFrom = "label";
+  } else {
+    end = lastDue as string;
+    endFrom = "deadlines";
+  }
+
+  // Only pad when the *start* itself was guessed from a deadline. A stated
+  // start is the registrar's answer and does not need our help.
+  if (startFrom === "deadlines" && firstDue) {
+    const padded = mondayOf(addDays(firstDue, -DEADLINE_FALLBACK_LEAD_DAYS));
+    if (padded < start) start = padded;
+  }
+  if (end < start) end = start;
+
+  const source: TermSource =
+    startFrom === "syllabus" && endFrom === "syllabus"
+      ? "syllabus"
+      : startFrom === "deadlines" || endFrom === "deadlines"
+        ? "deadlines"
+        : "inferred";
+
+  return { start, end, source };
+}
+
+/**
+ * Back-compatible view of `resolveTerm` for callers that only want the bounds.
+ *
+ * Note the behaviour change: the window is no longer stretched to swallow every
+ * dated assessment. A stated term is the truth about the calendar, and one
+ * item dated outside it is a typo or a make-up, not a reason to add six empty
+ * weeks. Such items are clamped into the nearest real week by `buildWeeks`,
+ * which also says so in that week's warning.
  */
 export function resolveTermBounds(
   courses: Course[],
   assessments: Assessment[],
   opts: WorkloadOptions = {},
 ): { termStart: string; termEnd: string } | null {
-  const dated = datedAssessments(assessments);
-  const courseStarts = courses.map((c) => c.startDate).filter((d): d is string => Boolean(d));
-  const courseEnds = courses.map((c) => c.endDate).filter((d): d is string => Boolean(d));
-
-  const candidates: string[] = dated.map((a) => a.dueDate as string);
-
-  let start = opts.termStart ?? (courseStarts.length ? courseStarts.slice().sort()[0] : undefined);
-  let end = opts.termEnd ?? (courseEnds.length ? courseEnds.slice().sort().slice(-1)[0] : undefined);
-
-  if (!start) start = candidates.length ? candidates[0] : undefined;
-  if (!end) end = candidates.length ? candidates[candidates.length - 1] : undefined;
-  if (!start || !end) return null;
-
-  for (const d of candidates) {
-    if (d < start) start = d;
-    if (d > end) end = d;
-  }
-  if (end < start) end = start;
-  return { termStart: start, termEnd: end };
+  const term = resolveTerm(courses, assessments, opts);
+  return term ? { termStart: term.start, termEnd: term.end } : null;
 }
 
 /** Every Monday from the term's first week through the week containing its end. */
@@ -410,33 +606,96 @@ function describeMix(items: Assessment[]): string | null {
   return null;
 }
 
+/** Length of one study block in hours; 0 for anything unparseable. */
+function blockHours(b: StudyBlock): number {
+  const s = minutesOfDay(b.start.slice(11, 16));
+  const e = minutesOfDay(b.end.slice(11, 16));
+  if (s === null || e === null || e <= s) return 0;
+  return (e - s) / 60;
+}
+
+/**
+ * Study hours per week, keyed by the Monday of the week each block *starts* in.
+ *
+ * Blocks that fall outside the term -- prep for an early deadline that reaches
+ * back before day one, most often -- are clamped onto the nearest real week
+ * rather than dropped, so the totals on the chart always add up to the plan.
+ */
+export function studyHoursByWeek(blocks: StudyBlock[], weekStarts: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (weekStarts.length === 0) return out;
+  for (const s of weekStarts) out.set(s, 0);
+
+  const first = weekStarts[0];
+  const last = weekStarts[weekStarts.length - 1];
+  for (const b of blocks) {
+    const raw = mondayOf(b.start.slice(0, 10));
+    const key = raw < first ? first : raw > last ? last : raw;
+    out.set(key, (out.get(key) ?? 0) + blockHours(b));
+  }
+  return out;
+}
+
 /**
  * Bucket assessments into ISO weeks and score each week.
  *
  * `weekNumber` is 1-based from the Monday of the term's first week, so "week 7"
- * means the same thing here as it does on the registrar's calendar.
+ * means the same thing here as it does on the registrar's calendar. Weeks are
+ * contiguous across the whole window, empty ones included -- the gaps are the
+ * information: they are where a student can get ahead.
+ *
+ * Without `blocks` -- the mode for callers that only have assessments, and the
+ * provisional pass the scheduler itself reads -- `studyHours` is reported as 0
+ * because nobody has scheduled anything yet, `dueHours` is the real delivery
+ * cost, and `estimatedHours` falls back to charging every item's whole prep
+ * estimate to its deadline week. That approximation is what makes the
+ * scheduler's crunch weeks visible before there are blocks to measure.
+ *
+ * With `blocks`, a week scores exactly the work that lands in it:
+ * `estimatedHours = studyHours + dueHours`.
  */
 export function buildWeeks(
   courses: Course[],
   assessments: Assessment[],
   opts: WorkloadOptions = {},
 ): WeekLoad[] {
-  const bounds = resolveTermBounds(courses, assessments, opts);
-  if (!bounds) return [];
+  return buildWeeksFromBlocks(courses, assessments, null, opts);
+}
+
+/** `buildWeeks`, scored against real study blocks. See the note there. */
+export function buildWeeksFromBlocks(
+  courses: Course[],
+  assessments: Assessment[],
+  blocks: StudyBlock[] | null,
+  opts: WorkloadOptions = {},
+): WeekLoad[] {
+  const term = resolveTerm(courses, assessments, opts);
+  if (!term) return [];
 
   const budget = opts.weeklyBudgetHours ?? DEFAULT_WEEKLY_BUDGET_HOURS;
   const dated = datedAssessments(assessments);
-  const starts = weekStartsBetween(bounds.termStart, bounds.termEnd);
+  const starts = weekStartsBetween(term.start, term.end);
+  const firstWeek = starts[0];
+  const lastWeek = starts[starts.length - 1];
 
   const byWeek = new Map<string, Assessment[]>();
   for (const s of starts) byWeek.set(s, []);
+  // Items dated outside the window are clamped onto the nearest week instead of
+  // being dropped or allowed to stretch the term. A single mis-parsed "Jan 5"
+  // must not silently disappear, and must not add three empty weeks either.
+  const strayByWeek = new Map<string, Assessment[]>();
   for (const a of dated) {
-    const key = mondayOf(a.dueDate as string);
-    const bucket = byWeek.get(key);
-    if (bucket) bucket.push(a);
-    // Bounds were widened to cover every dated assessment, so a miss here is
-    // impossible; ignoring it rather than throwing keeps the planner total.
+    const raw = mondayOf(a.dueDate as string);
+    const key = raw < firstWeek ? firstWeek : raw > lastWeek ? lastWeek : raw;
+    (byWeek.get(key) as Assessment[]).push(a);
+    if (key !== raw) {
+      const strays = strayByWeek.get(key) ?? [];
+      strays.push(a);
+      strayByWeek.set(key, strays);
+    }
   }
+
+  const studyByWeek = blocks ? studyHoursByWeek(blocks, starts) : null;
 
   // Clusters are attributed to the week their first deadline falls in.
   const clusterByWeek = new Map<string, DeadlineCluster>();
@@ -448,14 +707,20 @@ export function buildWeeks(
 
   const draft = starts.map((weekStart, i) => {
     const items = byWeek.get(weekStart) ?? [];
-    const estimatedHours = roundQuarter(
-      items.reduce((sum, a) => sum + estimatedHoursFor(a), 0),
-    );
+    const dueHours = roundQuarter(items.reduce((sum, a) => sum + dueHoursFor(a), 0));
+    const studyHours = studyByWeek
+      ? roundQuarter(studyByWeek.get(weekStart) ?? 0)
+      : 0;
+    const estimatedHours = studyByWeek
+      ? roundQuarter(studyHours + dueHours)
+      : roundQuarter(items.reduce((sum, a) => sum + estimatedHoursFor(a), 0));
     return {
       weekStart,
       weekNumber: i + 1,
       assessmentIds: items.map((a) => a.id),
       estimatedHours,
+      studyHours,
+      dueHours,
       intensity: intensityForHours(estimatedHours, budget),
       items,
     };
@@ -463,6 +728,7 @@ export function buildWeeks(
 
   const peak = draft.reduce((m, w) => Math.max(m, w.estimatedHours), 0);
   const peakCount = draft.filter((w) => w.estimatedHours === peak).length;
+  const scoredByBlocks = studyByWeek !== null;
 
   return draft.map((w): WeekLoad => {
     const cluster = clusterByWeek.get(w.weekStart);
@@ -484,27 +750,53 @@ export function buildWeeks(
     const isHeaviest =
       peakCount === 1 && w.estimatedHours === peak && draft.length > 1 && peak > 0;
     if (isHeaviest && (w.intensity >= 2 || cluster)) {
-      parts.push(`heaviest week of your semester (~${w.estimatedHours}h)`);
+      parts.push(heaviestWeekPhrase(w.estimatedHours, w.studyHours, w.dueHours, scoredByBlocks));
     } else if (w.intensity === 3) {
       parts.push(`~${w.estimatedHours}h of work against a ${budget}h/week budget`);
     }
 
     // Silence is a valid answer. A calm week with nothing clustered gets null so
     // that a warning in the UI always means something.
-    const warning =
-      parts.length === 0
-        ? null
-        : capitalizeFirst(parts.slice(0, 2).join(" -- "));
+    const strays = strayByWeek.get(w.weekStart);
+    const strayNote = strays
+      ? `${plural(strays.length, "deadline")} dated outside the term (${strays
+          .map((a) => formatShortDate(a.dueDate as string))
+          .join(", ")}) counted here`
+      : null;
+    const shown = [...parts.slice(0, 2), ...(strayNote ? [strayNote] : [])];
+    const warning = shown.length === 0 ? null : capitalizeFirst(shown.join(" -- "));
 
     return {
       weekStart: w.weekStart,
       weekNumber: w.weekNumber,
       assessmentIds: w.assessmentIds,
       estimatedHours: w.estimatedHours,
+      studyHours: w.studyHours,
+      dueHours: w.dueHours,
       intensity: w.intensity,
       warning,
     };
   });
+}
+
+/**
+ * The heaviest week is now the week with the most work *scheduled in it*, which
+ * is usually the run-up to a big deadline rather than the deadline's own week.
+ * Saying "heaviest week" alone would look wrong next to an empty deadline
+ * column, so the phrasing names the split that produced the number.
+ */
+function heaviestWeekPhrase(
+  hours: number,
+  studyHours: number,
+  dueHours: number,
+  scoredByBlocks: boolean,
+): string {
+  if (!scoredByBlocks) return `heaviest week of your semester (~${hours}h due this week)`;
+  const split =
+    dueHours > 0
+      ? `${studyHours}h of planned study plus ${dueHours}h of sitting and submitting`
+      : `${studyHours}h of planned study, all of it prep for what comes after`;
+  return `your heaviest week: ~${hours}h of work lands here -- ${split}`;
 }
 
 function capitalizeFirst(s: string): string {

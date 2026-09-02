@@ -360,26 +360,44 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Finds the "Syllabus AI" calendar, creating it on first sync.
+ * The user's "Syllabus AI" calendar list entry, or null if they have none.
  *
  * We match on summary rather than storing the id because the user may delete
  * the calendar between syncs; looking it up every time means the next sync
  * quietly recreates it instead of failing.
+ *
+ * Split out of `resolveCalendarId` so account deletion can ask the same
+ * question without the create-on-miss half -- `deleteSyllabusCalendar` must
+ * not conjure a calendar just to delete it. One name constant and one search
+ * for both callers: the definition of "ours" cannot be allowed to drift
+ * between the code that writes to a calendar and the code that destroys one.
+ *
+ * The whole entry comes back rather than just the id, because the caller that
+ * deletes needs to re-check what it is holding (see below).
  */
-async function resolveCalendarId(
+async function findSyllabusCalendar(
   api: calendar_v3.Calendar,
-  timeZone: string,
-): Promise<string> {
+): Promise<calendar_v3.Schema$CalendarListEntry | null> {
   let pageToken: string | undefined;
   do {
     const list = await withRetry(() =>
       api.calendarList.list({ maxResults: 250, pageToken, showHidden: true }),
     );
     for (const entry of list.data.items ?? []) {
-      if (entry.summary === CALENDAR_NAME && entry.id) return entry.id;
+      if (entry.summary === CALENDAR_NAME && entry.id) return entry;
     }
     pageToken = list.data.nextPageToken ?? undefined;
   } while (pageToken);
+  return null;
+}
+
+/** Finds the "Syllabus AI" calendar, creating it on first sync. */
+async function resolveCalendarId(
+  api: calendar_v3.Calendar,
+  timeZone: string,
+): Promise<string> {
+  const existing = await findSyllabusCalendar(api);
+  if (existing?.id) return existing.id;
 
   const created = await withRetry(() =>
     api.calendars.insert({
@@ -516,4 +534,71 @@ export async function planCalendarPayloads(
 ): Promise<calendar_v3.Schema$Event[]> {
   const plan = planEvents(opts, await resolveTimeZone(userId));
   return plan.events.map(toEventBody);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Deletion                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Removes the user's "Syllabus AI" calendar from their Google account. Returns
+ * false when there was none to remove.
+ *
+ * This is the ONLY destructive call this app makes against someone's Google
+ * account, and `calendars.delete` is not undoable -- it takes the calendar and
+ * every event on it. Aimed at the wrong id it is a catastrophe rather than a
+ * bug: `calendars.delete({ calendarId: "primary" })` erases a person's entire
+ * personal calendar, years of appointments this app never created and has no
+ * business touching.
+ *
+ * So the id is never supplied by a caller. It comes from `findSyllabusCalendar`
+ * -- the same summary match the sync uses -- and is then re-checked here, on
+ * the entry actually about to be deleted, against `primary` and against the
+ * exact calendar name. That re-check is deliberately redundant with the
+ * lookup: the lookup is shared code that a future change could loosen (a
+ * case-insensitive match, a fallback to the first calendar, a "" summary
+ * meaning primary), and none of those edits should be able to turn this
+ * function into a primary-calendar wipe. A guard is cheap; the failure it
+ * prevents is not recoverable.
+ *
+ * Throws on a real API failure so the caller can report it -- account deletion
+ * treats this as best effort and continues regardless.
+ */
+export async function deleteSyllabusCalendar(userId: string): Promise<boolean> {
+  const auth = await getAuthedClient(userId);
+  const api = google.calendar({ version: "v3", auth });
+
+  const entry = await findSyllabusCalendar(api);
+  if (!entry?.id) return false;
+  const calendarId = entry.id;
+
+  // Google treats the literal "primary" as an alias for the account's own
+  // calendar, and flags that entry with `primary: true`. Refuse both spellings.
+  if (entry.primary === true || calendarId === "primary") {
+    throw new Error(
+      `Refusing to delete the primary Google calendar: the "${CALENDAR_NAME}" lookup returned it.`,
+    );
+  }
+  // Only a calendar carrying our exact name is ours to destroy. Anything else
+  // is a calendar the user made, or one we mis-identified.
+  if (entry.summary !== CALENDAR_NAME) {
+    throw new Error(
+      `Refusing to delete Google calendar "${entry.summary ?? "(unnamed)"}": only "${CALENDAR_NAME}" is ours to remove.`,
+    );
+  }
+
+  try {
+    // `calendars.delete`, not `calendarList.delete`: the latter only
+    // unsubscribes the user from a calendar that then keeps existing, which is
+    // not what "delete my data" means.
+    await withRetry(() => api.calendars.delete({ calendarId }));
+  } catch (err) {
+    const info = describeGoogleError(err);
+    // Already gone -- the user deleted it themselves between the list and now.
+    // The end state is the one that was asked for, so this is not a failure,
+    // but we did not remove anything either.
+    if (info.status === 404 || info.status === 410) return false;
+    throw err;
+  }
+  return true;
 }

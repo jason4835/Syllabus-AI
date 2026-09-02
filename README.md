@@ -124,8 +124,12 @@ Two design choices worth naming:
 - Rate limits are held in memory, so on serverless they are per-instance and
   reset on a cold start. They make casual abuse annoying rather than free; the
   real spend ceiling is the hard limit you set on your OpenAI account.
-- No account deletion or data export yet. If a friend asks you to delete their
-  data, today that means a manual `delete from users where email = ...`.
+- Account deletion is total and immediate (courses, deadlines, plan, calendar
+  and Notion links, the account itself). It never deletes Notion pages, and
+  removes the Google "Syllabus AI" calendar only if the user ticks that box.
+- When a syllabus states no term dates, week numbering is *inferred* from its
+  term label ("Fall 2026" → late August start) and the heatmap says so. With
+  neither dates nor a label, weeks are anchored to the first deadline.
 - Calendar events use each user's browser-reported timezone, captured on first
   dashboard load. A user who signs in and never opens the dashboard before
   syncing would get the server's zone.

@@ -14,6 +14,13 @@
  * The fallback also catches a failed API call, because a chat box that returns
  * "something went wrong" when the network hiccups is worse than one that
  * answers from local data.
+ *
+ * Both paths share one voice, enforced in different ways. The model parrots the
+ * shape of its context, so the context is written the way a person speaks --
+ * "Tuesday, October 6th at 12:30 PM (two weeks out)", never "2026-10-06 12:30".
+ * Nothing in this file hands an ISO date or a 24-hour clock time to a student
+ * or to the model; `friendlyDate`, `friendlyTime` and `relativeDay` are the only
+ * way a date becomes words.
  */
 
 import type {
@@ -26,11 +33,13 @@ import type {
 } from "@/lib/types";
 import {
   addDays,
+  dayOfWeek,
   daysBetween,
   estimateAssessmentHours,
   estimatedHoursFor,
   formatShortDate,
   heaviestWeek,
+  minutesOfDay,
   mondayOf,
   parseISODate,
 } from "@/lib/plan/workload";
@@ -87,16 +96,44 @@ export async function answerQuestion(
 /* Model path                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The prompt is doing two jobs: keeping the model honest about the numbers, and
+ * keeping it from sounding like a form letter. The voice half is not decoration
+ * -- the first real user's complaint was that the answers read like a database
+ * row ("due on 2026-10-06 at 12:30") and hedged instead of answering ("as soon
+ * as possible" when the planner had already picked the day).
+ */
 const SYSTEM_PROMPT = [
-  "You are the study coach inside Syllabus AI. You answer questions about one student's semester.",
+  "You are the study coach inside Syllabus AI. You are talking to one student about their own semester.",
   "",
-  "Rules you must follow:",
-  "- Every date, deadline, weight and hour figure you state must come from the PLAN DATA below. Never infer or invent one.",
-  "- If the data does not contain the answer, say plainly that it is not in the syllabi you have, and suggest what the student could check. Do not guess.",
-  "- Refer to items by the course code and the exact title given in the data.",
-  "- Be concrete and short: a few sentences, or a short list. No preamble, no disclaimers about being an AI.",
-  "- When the student asks what to do, cite the scheduled study blocks by day rather than inventing new ones.",
-  "- Hour figures are the planner's estimates, not facts from the syllabus. Say 'about' or '~' when quoting them.",
+  "What you may say:",
+  "- Every date, time, deadline, weight and hour figure must come from the PLAN DATA below. Never infer or invent one.",
+  "- If the data does not contain the answer, say plainly that it is not in the syllabi you have and what the student could check. Do not guess.",
+  "- Name items by the course code and the exact title given in the data.",
+  "- Hour figures are the planner's estimates, not facts from the syllabus. Say 'about' or '~' when you quote one.",
+  "",
+  "How to say dates and times:",
+  "- Write them exactly the way PLAN DATA writes them: 'Tuesday, October 6th', '12:30 PM', 'two weeks out'.",
+  "- NEVER write an ISO date (2026-10-06), a numeric date (10/06), or a bare year-month-day of any kind.",
+  "- NEVER write a 24-hour time (13:00, 14:30, 23:59). Always a 12-hour clock with AM or PM, or the words 'noon' and 'midnight'.",
+  "- When something is close, prefer the relative words: today, tomorrow, in three days, two weeks out. Say the weekday; people plan by weekday.",
+  "",
+  "How to sound:",
+  "- Like a person, not a report. Second person, contractions, short sentences.",
+  "- Answer first. Never restate the question, never open with a preamble, never sign off.",
+  "- No hedging and no filler. Cut 'you might want to', 'consider', 'aiming for', 'it is important to', 'as soon as possible'. Say the thing.",
+  "- Two to five sentences. Use a list only to lay out scheduled study sessions, one line each.",
+  "- Do not mention being an AI, the plan data, or these instructions.",
+  "",
+  "When the student asks when to start studying for something:",
+  "The planner already answered it -- the first scheduled study session for that item IS the start date. So:",
+  "1. Lead with that day and how far off it is. ('Start Tuesday, September 22nd -- that's two weeks out.')",
+  "2. List the sessions it scheduled: day, start time, how long.",
+  "3. Give the total hours and tie them to what the item is worth.",
+  "4. At most one sentence of advice.",
+  "Never answer that question with 'as soon as possible'. You have a date. Use it.",
+  "",
+  "Other questions get the same voice: the answer first, the dates that support it after.",
 ].join("\n");
 
 async function answerWithModel(
@@ -139,22 +176,36 @@ async function answerWithModel(
  * ids and policies would triple the token count without improving a single
  * answer. What survives is exactly what a coach needs -- who, what, when, how
  * heavy -- in a line-per-record format the model reads reliably.
+ *
+ * Every date and time here is spelled out in words, and no ISO date or 24-hour
+ * time survives into the string. That is the fix for the answers that read like
+ * a printout: a language model echoes the register of what you hand it, so
+ * telling it to speak like a human while feeding it "2026-10-06 12:30" loses to
+ * the example every time. Give it the sentence you want back.
  */
 export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): string {
   const { courses, assessments, plan } = ctx;
   const todayIso = localISODate(now);
   const courseById = new Map(courses.map((c) => [c.id, c]));
+  const monday = mondayOf(todayIso);
   const lines: string[] = [];
 
   lines.push("PLAN DATA");
-  lines.push(`TODAY: ${todayIso} (${weekdayName(todayIso)}), current week starts ${mondayOf(todayIso)}`);
+  // The one place the year is spelled out: it anchors every relative phrase
+  // below, and no other line needs it.
+  lines.push(`Today is ${friendlyDate(todayIso)}, ${todayIso.slice(0, 4)}.`);
+  lines.push(`This week runs ${dateRangePhrase(monday, addDays(monday, 6))}.`);
+  lines.push("Dates and times below are written the way people say them. Write them back the same way.");
 
   lines.push("", "COURSES");
   for (const c of courses) {
     const meets = (c.meetingTimes ?? [])
-      .map((m) => `${(m.daysOfWeek ?? []).map(shortDay).join("")} ${m.startTime}-${m.endTime}`)
+      .map((m) => `${meetingDays(m.daysOfWeek ?? [])} ${timeRangePhrase(m.startTime, m.endTime)}`.trim())
       .join("; ");
-    const term = c.startDate && c.endDate ? ` | term ${c.startDate}..${c.endDate}` : "";
+    const term =
+      c.startDate && c.endDate
+        ? ` | term runs ${dateRangePhrase(c.startDate, c.endDate, todayIso)}`
+        : "";
     lines.push(`- ${c.code} ${c.title}${meets ? ` | meets ${meets}` : ""}${term}`);
   }
 
@@ -163,14 +214,20 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
     .slice()
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
-  lines.push("", "ASSESSMENTS (id | course | title | kind | weight | due | planner hour estimate)");
+  // No ids: nothing downstream parses this back, and an id that leaks into an
+  // answer ("assessment a3f9c1 is due...") is exactly the machine voice we are
+  // trying to get rid of. Course code plus title is how the student names it.
+  lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it's due | prep estimate)");
   for (const a of dated) {
     const code = courseById.get(a.courseId)?.code ?? "?";
-    const weight = a.weightPercent === null ? "weight n/a" : `${a.weightPercent}%`;
-    const time = a.dueTime ? ` ${a.dueTime}` : "";
-    const past = a.dueDate < todayIso ? " [past]" : "";
+    const weight = a.weightPercent === null ? "weight not stated" : `worth ${a.weightPercent}%`;
+    const at = friendlyTime(a.dueTime);
+    const relative =
+      a.dueDate < todayIso
+        ? `${relativeDay(todayIso, a.dueDate)}, already past`
+        : relativeDay(todayIso, a.dueDate);
     lines.push(
-      `- ${a.id} | ${code} | ${a.title} | ${a.kind} | ${weight} | due ${a.dueDate}${time}${past} | ~${estimatedHoursFor(a)}h`,
+      `- ${code} | ${a.title} | ${a.kind} | ${weight} | due ${friendlyDate(a.dueDate, todayIso)}${at ? ` at ${at}` : ""} (${relative}) | about ${estimatedHoursFor(a)}h of prep`,
     );
   }
 
@@ -183,11 +240,11 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
     }
   }
 
-  lines.push("", "WEEKS (number | monday | estimated hours | intensity 0-3 | warning)");
+  lines.push("", "WEEKLY LOAD (week | dates | estimated hours | how heavy | warning)");
   for (const w of plan.weeks) {
     if (w.assessmentIds.length === 0 && w.estimatedHours === 0) continue; // empty weeks say nothing
     lines.push(
-      `- W${w.weekNumber} | ${w.weekStart} | ~${w.estimatedHours}h | ${w.intensity} | ${w.warning ?? "-"}`,
+      `- Week ${w.weekNumber} | ${shortDayDate(w.weekStart)} to ${shortDayDate(addDays(w.weekStart, 6))} | about ${w.estimatedHours}h | ${INTENSITY_LABELS[w.intensity]} | ${w.warning ?? "-"}`,
     );
   }
 
@@ -197,10 +254,16 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
   const upcoming = plan.studyBlocks
     .filter((b) => b.start.slice(0, 10) >= todayIso && b.start.slice(0, 10) <= horizon)
     .slice(0, 40);
-  lines.push("", "SCHEDULED STUDY BLOCKS (next 3 weeks)");
+  lines.push("", "SCHEDULED STUDY SESSIONS (next three weeks)");
   if (upcoming.length === 0) lines.push("- none scheduled in this window");
   for (const b of upcoming) {
-    lines.push(`- ${b.start.slice(0, 10)} ${b.start.slice(11, 16)}-${b.end.slice(11, 16)} | ${b.title}`);
+    const day = b.start.slice(0, 10);
+    // Spelled out in full here rather than abbreviated: this is the line the
+    // model quotes back when it says when to start, so it should already be a
+    // sentence fragment a person would say out loud.
+    lines.push(
+      `- ${friendlyDate(day, todayIso)} (${relativeDay(todayIso, day)}), ${blockTimePhrase(b)} | ${humanizeClockTimes(b.title)}`,
+    );
   }
 
   return lines.join("\n");
@@ -534,7 +597,7 @@ export function answerLocally(question: string, ctx: ChatContext, now: Date = ne
   const intent = classify(question);
   switch (intent) {
     case "heaviest":
-      return answerHeaviest(ctx);
+      return answerHeaviest(ctx, now);
     case "dueThisWeek":
       return answerDueThisWeek(ctx, now);
     case "behind":
@@ -551,7 +614,8 @@ export function answerLocally(question: string, ctx: ChatContext, now: Date = ne
   }
 }
 
-function answerHeaviest(ctx: ChatContext): string {
+function answerHeaviest(ctx: ChatContext, now: Date): string {
+  const today = localISODate(now);
   const week = heaviestWeek(ctx.plan.weeks);
   if (!week) return "I don't have any dated work yet, so there's no heaviest week to point at. Upload a syllabus and I'll build the map.";
 
@@ -560,11 +624,16 @@ function answerHeaviest(ctx: ChatContext): string {
     .filter((a): a is Assessment => Boolean(a));
   const label = intensityWord(week.intensity);
   const lines = [
-    `Week ${week.weekNumber} (${formatShortDate(week.weekStart)}-${formatShortDate(addDays(week.weekStart, 6))}) is your heaviest: about ${week.estimatedHours}h of work, which I'd call ${label}.`,
+    `Your heaviest stretch is the week of ${friendlyDate(week.weekStart, today)} (${weekRelative(today, week.weekStart)}): about ${week.estimatedHours}h, which I'd call ${label}.`,
   ];
   if (items.length) {
-    lines.push("What lands that week:");
-    for (const a of items) lines.push(`  - ${courseCode(ctx, a)} ${a.title} (${a.kind}, due ${formatShortDate(a.dueDate as string)}) -- ~${estimatedHoursFor(a)}h`);
+    lines.push("Here's what lands:");
+    for (const a of items) {
+      const due = a.dueDate as string;
+      lines.push(
+        `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind} due ${weekdayThe(due, week.weekStart)}, about ${estimatedHoursFor(a)}h`,
+      );
+    }
   }
   if (week.warning) lines.push(week.warning + ".");
   const lead = ctx.plan.studyBlocks.filter(
@@ -572,7 +641,7 @@ function answerHeaviest(ctx: ChatContext): string {
   );
   if (lead.length) {
     lines.push(
-      `I've already pushed ${lead.length} study session${lead.length === 1 ? "" : "s"} for that week's work into earlier weeks, which is the only reason it's survivable.`,
+      `I've already pulled ${countWord(lead.length)} study session${lead.length === 1 ? "" : "s"} for that week's work into earlier weeks, which is the only reason it's survivable.`,
     );
   }
   return lines.join("\n");
@@ -591,28 +660,33 @@ function answerDueThisWeek(ctx: ChatContext, now: Date): string {
       .filter((a) => a.dueDate && a.dueDate > end)
       .sort((a, b) => (a.dueDate as string).localeCompare(b.dueDate as string))
       .slice(0, 3);
-    if (next.length === 0) return "Nothing is due this week, and I don't have anything dated after it either.";
-    const lines = ["Nothing is due this week. Next up:"];
+    if (next.length === 0) return "Nothing's due this week, and I don't have anything dated after it either.";
+    const lines = ["Nothing's due this week. Next up:"];
     for (const a of next) {
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${formatShortDate(a.dueDate as string)} (${daysBetween(today, a.dueDate as string)} days out)`);
+      const d = a.dueDate as string;
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
     }
     return lines.join("\n");
   }
 
-  const hours = due.reduce((s, a) => s + estimatedHoursFor(a), 0);
+  const hours = Math.round(due.reduce((s, a) => s + estimatedHoursFor(a), 0) * 4) / 4;
   const lines = [
-    `${due.length} thing${due.length === 1 ? "" : "s"} due this week (${formatShortDate(start)}-${formatShortDate(end)}), about ${Math.round(hours * 4) / 4}h of work:`,
+    `You've got ${countWord(due.length)} thing${due.length === 1 ? "" : "s"} due this week -- ${dateRangePhrase(start, end, today)} -- and about ${hours}h of work behind ${due.length === 1 ? "it" : "them"}:`,
   ];
   for (const a of due) {
-    const d = daysBetween(today, a.dueDate as string);
-    const when = d < 0 ? "already passed" : d === 0 ? "today" : d === 1 ? "tomorrow" : `in ${d} days`;
+    const d = a.dueDate as string;
+    const at = friendlyTime(a.dueTime);
+    const rel = relativeDay(today, d);
+    const when = daysBetween(today, d) < 0 ? "already passed" : rel;
     lines.push(
-      `  - ${courseCode(ctx, a)} ${a.title} (${a.kind}${a.weightPercent !== null ? `, ${a.weightPercent}%` : ""}) -- due ${formatShortDate(a.dueDate as string)}, ${when}`,
+      `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind}${a.weightPercent !== null ? ` worth ${a.weightPercent}%` : ""}, due ${weekdayThe(d, start)}${at ? ` at ${at}` : ""} (${when})`,
     );
   }
   const todaysBlocks = ctx.plan.studyBlocks.filter((b) => b.start.slice(0, 10) === today);
   if (todaysBlocks.length) {
-    lines.push(`Today's plan: ${todaysBlocks.map((b) => `${b.start.slice(11, 16)} ${b.title}`).join(", ")}.`);
+    lines.push(
+      `Today you're down for ${listPhrase(todaysBlocks.map((b) => `${humanizeClockTimes(b.title)} at ${clock(b.start.slice(11, 16))}`))}.`,
+    );
   }
   return lines.join("\n");
 }
@@ -641,29 +715,44 @@ function answerBehind(ctx: ChatContext, now: Date): string {
   const lines: string[] = [];
   if (missedByAssessment.size === 0 && passed.length === 0) {
     const nextBlock = ctx.plan.studyBlocks.find((b) => b.start >= nowIso);
-    lines.push("Nothing has slipped -- no past deadlines and no study sessions behind you.");
+    lines.push("You're not behind on anything -- no past deadlines, no study sessions you've blown past.");
     if (nextBlock) {
-      lines.push(`Next on the plan: ${nextBlock.title} on ${formatShortDate(nextBlock.start.slice(0, 10))} at ${nextBlock.start.slice(11, 16)}.`);
+      lines.push(
+        `Next on the plan is ${humanizeClockTimes(nextBlock.title)}, ${whenPhrase(today, nextBlock.start)}.`,
+      );
     }
     return lines.join("\n");
   }
 
   if (missedByAssessment.size > 0) {
-    lines.push("Study sessions the plan scheduled that have already gone by:");
+    const missedTotal = [...missedByAssessment.values()].reduce((s, b) => s + b.length, 0);
+    lines.push(
+      `You've walked past ${countWord(missedTotal)} study session${missedTotal === 1 ? "" : "s"} the plan had for you. Here's what that costs:`,
+    );
     for (const [id, blocks] of missedByAssessment) {
       const a = ctx.assessments.find((x) => x.id === id);
       if (!a) continue;
-      const d = daysBetween(today, a.dueDate as string);
+      const dueDate = a.dueDate as string;
       lines.push(
-        `  - ${courseCode(ctx, a)} ${a.title}: ${blocks.length} missed session${blocks.length === 1 ? "" : "s"}, and it's due in ${d} day${d === 1 ? "" : "s"} (${formatShortDate(a.dueDate as string)}).`,
+        `  - ${courseCode(ctx, a)} ${a.title}: ${countWord(blocks.length)} missed session${blocks.length === 1 ? "" : "s"}, and it's due ${friendlyDate(dueDate, today)} -- ${relativeDay(today, dueDate)}.`,
       );
     }
-    lines.push("Those hours don't disappear -- they get compressed into the days that are left.");
+    lines.push("Those hours don't disappear -- they get squeezed into the days you have left.");
   }
   if (passed.length > 0) {
-    lines.push("Deadlines already behind you (mark them off if they're done):");
+    // Lead with the state of things when there were no missed sessions to
+    // report -- opening a reply with a bare list header is how a report reads,
+    // not how an answer does.
+    if (missedByAssessment.size === 0) {
+      lines.push(
+        `Your study sessions are all on track, but ${countWord(passed.length)} deadline${passed.length === 1 ? " has" : "s have"} gone by. Mark them off if they're done:`,
+      );
+    } else {
+      lines.push("Deadlines already behind you (mark them off if they're done):");
+    }
     for (const a of passed) {
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- was due ${formatShortDate(a.dueDate as string)}`);
+      const d = a.dueDate as string;
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- was due ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
     }
   }
   return lines.join("\n");
@@ -682,51 +771,75 @@ function answerStudyFor(question: string, ctx: ChatContext, now: Date): string {
       .filter((a) => a.dueDate && a.dueDate >= localISODate(now))
       .sort((a, b) => (a.dueDate as string).localeCompare(b.dueDate as string))
       .slice(0, 4);
-    const lines = ["I couldn't tell which item you meant. Here's what's closest on the calendar:"];
+    const lines = ["I couldn't tell which one you meant. Here's what's closest on the calendar:"];
     for (const a of upcoming) {
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- due ${formatShortDate(a.dueDate as string)}`);
+      const d = a.dueDate as string;
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- due ${friendlyDate(d, localISODate(now))}, ${relativeDay(localISODate(now), d)}`);
     }
     lines.push("Name one of those and I'll give you the schedule I built for it.");
     return lines.join("\n");
   }
 }
 
+/**
+ * The answer to "when should I start studying for X".
+ *
+ * Ordered the way the student needs it, not the way the data is shaped: the
+ * planner already chose a start day, so that day is the first thing said. The
+ * old version opened with the item's metadata and buried the recommendation
+ * under the hour-estimate derivation, which is how an answer ends up sounding
+ * like "as soon as possible" even when a real date was sitting right there.
+ */
 function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string {
   const today = localISODate(now);
   const code = courseCode(ctx, a);
   const est = estimateAssessmentHours(a);
   const blocks = ctx.plan.studyBlocks.filter((b) => b.assessmentId === a.id);
+  const name = `${code} ${a.title}`.trim();
 
   if (!a.dueDate) {
-    return `${code} ${a.title} is in your plan but the syllabus never gave a resolvable date, so I can't schedule it. Check the syllabus or your LMS and add the date -- I'll build the study ladder as soon as it has one.`;
+    return `${name} is in your plan, but the syllabus never gave a date I could pin down, so I can't schedule around it. Add the date from the syllabus or your LMS and I'll build the study ladder right away.`;
   }
 
-  const d = daysBetween(today, a.dueDate);
-  const when =
-    d < 0 ? `was due ${formatShortDate(a.dueDate)}` : d === 0 ? "is due today" : `is due ${formatShortDate(a.dueDate)}, ${d} day${d === 1 ? "" : "s"} out`;
-
-  const lines = [
-    `${code} ${a.title} (${a.kind}${a.weightPercent !== null ? `, worth ${a.weightPercent}%` : ""}) ${when}. I budgeted about ${est.hours}h: ${est.explanation}`,
-  ];
+  const at = friendlyTime(a.dueTime);
+  const dueWhen = `${friendlyDate(a.dueDate, today)}${at ? ` at ${at}` : ""}`;
+  const dueRel = relativeDay(today, a.dueDate);
+  const worth = a.weightPercent !== null ? `, worth ${a.weightPercent}% of your grade` : "";
 
   if (blocks.length === 0) {
-    lines.push("I haven't got any study sessions on the calendar for it -- either the date has passed or there was no free window left before it.");
-    return lines.join("\n");
+    const past = daysBetween(today, a.dueDate) < 0;
+    return past
+      ? `${name} was due ${dueWhen}, ${dueRel}, so there's nothing left to schedule for it.`
+      : `${name} is due ${dueWhen} -- ${dueRel}${worth}. I haven't got any sessions on the calendar for it: there was no free window left before the deadline, so grab whatever time you can and budget about ${est.hours}h.`;
   }
 
-  const first = blocks[0];
-  const startDay = first.start.slice(0, 10);
+  const startDay = blocks[0].start.slice(0, 10);
   const untilStart = daysBetween(today, startDay);
+  const lines: string[] = [];
+
   lines.push(
     untilStart <= 0
-      ? `Start now -- the first session is ${formatShortDate(startDay)}.`
-      : `Start ${formatShortDate(startDay)} (${untilStart} day${untilStart === 1 ? "" : "s"} from now). Earlier is fine; later is where this gets expensive.`,
+      ? `Start today -- your first session is at ${clock(blocks[0].start.slice(11, 16))}.`
+      : `Start ${friendlyDate(startDay, today)} -- that's ${relativeDay(today, startDay)}.`,
   );
-  lines.push(`${blocks.length} session${blocks.length === 1 ? "" : "s"} on the plan:`);
+
+  lines.push(
+    `I've put ${countWord(blocks.length)} session${blocks.length === 1 ? "" : "s"} on your plan for ${name}:`,
+  );
   for (const b of blocks) {
-    lines.push(`  - ${formatShortDate(b.start.slice(0, 10))} ${b.start.slice(11, 16)}-${b.end.slice(11, 16)} -- ${b.title}`);
+    const day = b.start.slice(0, 10);
+    // The block title repeats the course and item, which the lead sentence just
+    // said. Four rows of "MATH 221 Midterm Exam 1 -- Review 3/4" is a database
+    // dump; "Review 3/4" is what a person would have written.
+    lines.push(`  - ${shortDayDate(day)}, ${blockTimePhrase(b)} -- ${sessionLabel(b.title, name)}`);
   }
-  lines.push(blocks[0].rationale);
+
+  lines.push(
+    `That's about ${est.hours}h in total, and it's due ${dueWhen} -- ${dueRel}${worth}.`,
+  );
+  // The planner's own rationale is the most persuasive sentence we have, but it
+  // was written for a UI card, so its clock times get the same 12-hour pass.
+  lines.push(humanizeClockTimes(blocks[0].rationale));
   return lines.join("\n");
 }
 
@@ -738,21 +851,27 @@ function answerOverview(ctx: ChatContext, now: Date): string {
     .slice(0, 3);
   const worst = heaviestWeek(ctx.plan.weeks);
 
-  const lines = ["Here's where you stand:"];
+  const lines: string[] = [];
   if (upcoming.length) {
-    lines.push("Next up:");
+    lines.push("Here's where you stand. Next up:");
     for (const a of upcoming) {
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${formatShortDate(a.dueDate as string)} (${daysBetween(today, a.dueDate as string)} days out)`);
+      const d = a.dueDate as string;
+      const at = friendlyTime(a.dueTime);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${friendlyDate(d, today)}${at ? ` at ${at}` : ""}, ${relativeDay(today, d)}`);
     }
   } else {
-    lines.push("Nothing dated ahead of you right now.");
+    lines.push("You've got nothing dated ahead of you right now.");
   }
   if (worst) {
-    lines.push(`Heaviest week ahead: week ${worst.weekNumber} starting ${formatShortDate(worst.weekStart)}, about ${worst.estimatedHours}h.`);
+    lines.push(
+      `Your heaviest week starts ${friendlyDate(worst.weekStart, today)} -- ${relativeDay(today, worst.weekStart)}, about ${worst.estimatedHours}h.`,
+    );
   }
   const next = ctx.plan.studyBlocks.find((b) => b.start.slice(0, 10) >= today);
-  if (next) lines.push(`Next study session: ${formatShortDate(next.start.slice(0, 10))} at ${next.start.slice(11, 16)} -- ${next.title}.`);
-  lines.push("Ask me when to start studying for something, what's due this week, what your heaviest week is, or what you're behind on.");
+  if (next) {
+    lines.push(`Your next study session is ${whenPhrase(today, next.start)} -- ${humanizeClockTimes(next.title)}.`);
+  }
+  lines.push("Ask me when to start studying for something, what's due this week, which week is your worst, or what you're behind on.");
   return lines.join("\n");
 }
 
@@ -768,6 +887,9 @@ function intensityWord(i: WeekLoad["intensity"]): string {
   return (["calm", "normal", "busy", "a crunch week"] as const)[i];
 }
 
+/** Same scale as `intensityWord`, but as a tag for a context line. */
+const INTENSITY_LABELS = ["calm", "normal", "busy", "crunch"] as const;
+
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
@@ -776,14 +898,235 @@ function localISODate(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const SHORT_DAYS = ["Su", "M", "Tu", "W", "Th", "F", "Sa"];
+/* -------------------------------------------------------------------------- */
+/* Saying dates and times the way people say them                              */
+/* -------------------------------------------------------------------------- */
 
-function weekdayName(iso: string): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  return DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+/*
+ * Everything below turns the storage format into speech. Dates in this app are
+ * floating local values -- the syllabus's own wall clock -- so there is no zone
+ * math to do here, only wording. `parseISODate` anchors at UTC midnight, and
+ * every formatter below is pinned to UTC for exactly that reason: the goal is
+ * to read the same digits back, never to convert them.
+ */
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const SHORT_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_FORMAT = new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" });
+
+/** Small numbers read better as words in prose; past twelve, digits win. */
+const NUMBER_WORDS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven",
+  "eight", "nine", "ten", "eleven", "twelve",
+];
+
+function countWord(n: number): string {
+  return NUMBER_WORDS[n] ?? String(n);
 }
 
-function shortDay(n: number): string {
-  return SHORT_DAYS[n] ?? String(n);
+/**
+ * "1st", "2nd", "3rd", "11th", "21st".
+ *
+ * The teens are the whole reason this is a function and not `n + "th"`: 11, 12
+ * and 13 take "th" even though their last digit says otherwise, and getting
+ * "the 21th" in front of a user is the kind of detail that makes the rest of
+ * the answer feel machine-written.
+ */
+export function ordinal(n: number): string {
+  const teens = Math.abs(n) % 100;
+  if (teens >= 11 && teens <= 13) return `${n}th`;
+  switch (Math.abs(n) % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+function weekdayName(iso: string): string {
+  return DAY_NAMES[dayOfWeek(iso)];
+}
+
+function dayNumber(iso: string): number {
+  return parseISODate(iso).getUTCDate();
+}
+
+function monthName(iso: string): string {
+  return MONTH_FORMAT.format(parseISODate(iso));
+}
+
+/**
+ * "Tuesday, October 6th" -- the form a person says out loud.
+ *
+ * The year appears only when it differs from today's, so a spring deadline
+ * cannot be mistaken for one that already went by, and an ordinary in-term date
+ * is not cluttered with a number nobody says.
+ */
+export function friendlyDate(iso: string, today?: string): string {
+  const base = `${weekdayName(iso)}, ${monthName(iso)} ${ordinal(dayNumber(iso))}`;
+  const year = iso.slice(0, 4);
+  return today && year !== today.slice(0, 4) ? `${base}, ${year}` : base;
+}
+
+/** "Tue, Oct 6" -- for list rows, where the full form would be noise. */
+function shortDayDate(iso: string): string {
+  return `${SHORT_DAY_NAMES[dayOfWeek(iso)]}, ${formatShortDate(iso)}`;
+}
+
+/**
+ * "Tuesday the 13th" -- how you refer to a day once the month is established
+ * by the sentence around it. Falls back to the full form across a month
+ * boundary, where dropping the month would be genuinely ambiguous.
+ */
+function weekdayThe(iso: string, contextIso: string): string {
+  if (iso.slice(0, 7) !== contextIso.slice(0, 7)) return friendlyDate(iso);
+  return `${weekdayName(iso)} the ${ordinal(dayNumber(iso))}`;
+}
+
+/** "Monday, October 12th through Sunday the 18th". */
+function dateRangePhrase(startIso: string, endIso: string, today?: string): string {
+  return `${friendlyDate(startIso, today)} through ${weekdayThe(endIso, startIso)}`;
+}
+
+/**
+ * "12:30 PM", "1 PM", "noon", "midnight".
+ *
+ * The trailing ":00" goes: nobody says "one o'clock zero zero". Noon and
+ * midnight get their names because "12 PM" makes readers stop and check.
+ */
+export function friendlyTime(hhmm: string | null): string | null {
+  const mins = minutesOfDay(hhmm);
+  if (mins === null) return null;
+  const h24 = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  if (m === 0 && h24 === 0) return "midnight";
+  if (m === 0 && h24 === 12) return "noon";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const meridiem = h24 < 12 ? "AM" : "PM";
+  return m === 0 ? `${h12} ${meridiem}` : `${h12}:${pad2(m)} ${meridiem}`;
+}
+
+/** Clock time from planner-produced "HH:MM", which is always well-formed. */
+function clock(hhmm: string): string {
+  return friendlyTime(hhmm) ?? hhmm;
+}
+
+/**
+ * "1 PM to 2:30 PM".
+ *
+ * Speech would drop the first AM/PM ("1 to 2:30 PM"), but this string is also
+ * what the model reads, and a bare "3:50" in its context is exactly the token
+ * it will echo back as a 24-hour time. Every clock time that leaves this file
+ * carries its meridiem.
+ */
+function timeRangePhrase(startHHMM: string, endHHMM: string): string {
+  const start = friendlyTime(startHHMM);
+  const end = friendlyTime(endHHMM);
+  if (!start || !end) return "";
+  return `${start} to ${end}`;
+}
+
+/** "1 PM to 2:30 PM (1.5h)" for one study block. */
+function blockTimePhrase(b: StudyBlock): string {
+  const start = b.start.slice(11, 16);
+  const end = b.end.slice(11, 16);
+  const startMins = minutesOfDay(start);
+  const endMins = minutesOfDay(end);
+  const range = timeRangePhrase(start, end);
+  if (startMins === null || endMins === null) return range;
+  const hours = Math.round(((endMins - startMins) / 60) * 4) / 4;
+  return `${range} (${hours}h)`;
+}
+
+/**
+ * How far off a day is, in words: "today", "tomorrow", "in three days",
+ * "two weeks out", "almost three weeks out".
+ *
+ * Past a week, days stop being meaningful to a student -- "in 17 days" is a
+ * number you have to convert in your head, while "just over two weeks out" is
+ * already the answer. Nothing here can produce "in 0 days".
+ */
+export function relativeDay(fromIso: string, toIso: string): string {
+  const delta = daysBetween(fromIso, toIso);
+  if (delta === 0) return "today";
+  if (delta === 1) return "tomorrow";
+  if (delta === -1) return "yesterday";
+
+  const ahead = delta > 0;
+  const days = Math.abs(delta);
+  const tail = ahead ? "out" : "ago";
+  if (days < 7) return ahead ? `in ${countWord(days)} days` : `${countWord(days)} days ago`;
+
+  const weeks = Math.floor(days / 7);
+  const spare = days % 7;
+  const weekPhrase = (n: number) => (n === 1 ? "a week" : `${countWord(n)} weeks`);
+  if (spare === 0) return `${weekPhrase(weeks)} ${tail}`;
+  // Round to the nearest week the way a person does: a couple of days over is
+  // "just over", most of the way to the next week is "almost".
+  if (spare <= 3) return `just over ${weekPhrase(weeks)} ${tail}`;
+  return `almost ${weekPhrase(weeks + 1)} ${tail}`;
+}
+
+/**
+ * When a study block happens, said once: "today at 3:50 PM", "tomorrow at
+ * 1 PM", "Friday, September 25th at 1 PM -- in three days". Repeating the
+ * weekday after "today" is the tell of generated copy.
+ */
+function whenPhrase(today: string, startIso: string): string {
+  const day = startIso.slice(0, 10);
+  const at = clock(startIso.slice(11, 16));
+  const rel = relativeDay(today, day);
+  if (rel === "today" || rel === "tomorrow" || rel === "yesterday") return `${rel} at ${at}`;
+  return `${friendlyDate(day, today)} at ${at} -- ${rel}`;
+}
+
+/**
+ * How far off a whole week is. A week that contains today is "this week", not
+ * "yesterday" -- which is what the day-level phrasing produces for a Monday
+ * week-start read on a Tuesday, and it reads as a bug.
+ */
+function weekRelative(today: string, weekStart: string): string {
+  const delta = daysBetween(mondayOf(today), weekStart);
+  if (delta === 0) return "this week";
+  if (delta === 7) return "next week";
+  if (delta === -7) return "last week";
+  return relativeDay(today, weekStart);
+}
+
+/** A study block's title with the item name it repeats stripped off the front. */
+function sessionLabel(title: string, name: string): string {
+  const clean = humanizeClockTimes(title);
+  if (clean === name) return "study session";
+  const prefix = `${name} -- `;
+  return clean.startsWith(prefix) ? clean.slice(prefix.length) : clean;
+}
+
+/** "Mon/Wed/Fri" for a class that meets those days. */
+function meetingDays(days: number[]): string {
+  return days.map((d) => SHORT_DAY_NAMES[d] ?? String(d)).join("/");
+}
+
+/** "a, b and c" -- no Oxford comma, because that is how this app writes. */
+function listPhrase(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * Rewrite 24-hour clock times inside copy we did not write.
+ *
+ * Block titles and rationales come from the planner, which formats for a UI
+ * card and can say things like "no free window before 18:00". Chat is a spoken
+ * register; this file promises no 24-hour times reach the student, so borrowed
+ * prose gets the same pass. Times already carrying AM/PM are left alone.
+ */
+function humanizeClockTimes(text: string): string {
+  return text.replace(/\b(\d{1,2}):(\d{2})\b(\s*(?:AM|PM|am|pm))?/g, (match, h, m, meridiem) => {
+    if (meridiem) return match;
+    return friendlyTime(`${h}:${m}`) ?? match;
+  });
 }

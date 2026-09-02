@@ -67,6 +67,24 @@ export interface Store {
    * the rest of the profile. Null when the user does not exist.
    */
   setUserTimezone(userId: string, timezone: string): Promise<User | null>;
+  /**
+   * The account-deletion primitive: erases the user and everything that
+   * belongs to them -- courses, assessments, calendar links, Notion links, the
+   * Notion connection, and the user row itself. False when there was no such
+   * user.
+   *
+   * This must stay TOTAL. Anything a future feature stores per user has to be
+   * covered here too, in every driver. A partial delete is worse than no
+   * delete feature at all: the user is told their data is gone, the rows are
+   * still there, and nothing in the product will ever surface them again for
+   * anyone to notice. Adding a per-user table without extending this method is
+   * the bug, not an omission to fix later.
+   *
+   * Deleting our own rows is the whole contract -- pages this app created in
+   * someone else's product (Notion) are the user's own notes and are left
+   * alone; see docs/NOTION.md.
+   */
+  deleteUser(userId: string): Promise<boolean>;
 
   listCourses(userId: string): Promise<Course[]>;
   getCourse(id: string): Promise<Course | null>;
@@ -145,6 +163,7 @@ export const store: Store = {
   upsertUser: (u) => getStore().upsertUser(u),
   setUserTimezone: (userId, timezone) =>
     getStore().setUserTimezone(userId, timezone),
+  deleteUser: (userId) => getStore().deleteUser(userId),
   listCourses: (userId) => getStore().listCourses(userId),
   getCourse: (id) => getStore().getCourse(id),
   createCourse: (userId, parsed) => getStore().createCourse(userId, parsed),

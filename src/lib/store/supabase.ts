@@ -518,6 +518,46 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return data ? userToDomain(data as UserRow) : null;
     },
 
+    /**
+     * One statement, because `users.id` is the cascade root for every table in
+     * supabase/schema.sql. Verified chain by chain against that file:
+     *
+     *   users
+     *     <- courses.user_id              on delete cascade
+     *          <- assessments.course_id        on delete cascade
+     *               <- calendar_links.assessment_id  on delete cascade
+     *     <- notion_connections.user_id   on delete cascade
+     *     <- notion_links.user_id         on delete cascade
+     *
+     * So `delete from users where id = ?` really does reach all six tables:
+     * the user row, their courses, those courses' assessments, the calendar
+     * links keyed on those assessments, the Notion connection, and every
+     * Notion link the user owns. Nothing is left for this method to sweep up
+     * by hand, and adding a redundant pre-delete would only invent a window
+     * where a failure leaves the account partly erased.
+     *
+     * `notion_links` is the one worth stating explicitly, because deleteCourse
+     * above *does* have to clear it manually: `entity_id` carries no foreign
+     * key (it mixes course, assessment and planner-minted session ids), so
+     * deleting a course cascades nothing there. Deleting the *user* is a
+     * different question -- `user_id` is denormalised onto every link row and
+     * does carry a cascade, so all three kinds go, session links included.
+     *
+     * If a future table stores something per user, give it
+     * `references public.users (id) on delete cascade` or delete it here.
+     */
+    async deleteUser(userId) {
+      // `.select("id")` is what makes "no such user" distinguishable from a
+      // successful delete: PostgREST reports no row count otherwise.
+      const { data, error } = await client
+        .from("users")
+        .delete()
+        .eq("id", userId)
+        .select("id");
+      if (error) fail("deleteUser", error);
+      return ((data ?? []) as { id: string }[]).length > 0;
+    },
+
     async listCourses(userId) {
       const { data, error } = await client
         .from("courses")
