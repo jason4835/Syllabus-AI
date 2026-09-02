@@ -56,6 +56,7 @@ export function RoadmapPanel({
   courses,
   assessments,
   accents,
+  coursePages = {},
   onRetry,
 }: {
   loading: boolean;
@@ -63,6 +64,8 @@ export function RoadmapPanel({
   courses: Course[];
   assessments: Assessment[];
   accents: Record<string, string>;
+  /** courseId -> Notion page URL, from the Notion status the shell holds. */
+  coursePages?: Record<string, string>;
   onRetry: () => void;
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -104,6 +107,7 @@ export function RoadmapPanel({
             const { weeks, undated } = groupByWeek(items);
             const isCollapsed = collapsed[course.id] === true;
             const bodyId = `roadmap-course-${course.id}`;
+            const notionUrl = coursePages[course.id];
 
             return (
               <article
@@ -131,6 +135,19 @@ export function RoadmapPanel({
                         .filter(Boolean)
                         .join(" · ")}
                     </p>
+                    {/* Only when the course actually has a page — a dead link
+                        is worse than no link. */}
+                    {notionUrl ? (
+                      <a
+                        href={notionUrl}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        aria-label={`Open ${course.code} in Notion`}
+                        className="mt-1 inline-block rounded-sm text-[0.75rem] text-muted transition-colors hover:text-ink"
+                      >
+                        Open in Notion ↗
+                      </a>
+                    ) : null}
                   </div>
                   <button
                     type="button"

@@ -713,3 +713,34 @@ Set the two `SUPABASE_*` variables and restart: the store picks its driver from
 env at first use, so nothing in the code changes. Existing volume data does not
 copy itself across — at this scale, re-uploading a few syllabi is usually faster
 than writing an importer.
+
+---
+
+## Appendix: Notion
+
+Optional. Without `NOTION_CLIENT_ID` / `NOTION_CLIENT_SECRET` the dashboard's
+Notion panel explains it is not configured and nothing else changes.
+
+1. Go to https://www.notion.so/my-integrations → **New integration**.
+2. Type must be **Public** (Internal integrations have no OAuth flow and cannot
+   be connected by other people's workspaces).
+3. Redirect URI: `https://<your-app>/api/notion/callback` — exact match, same
+   rule as Google.
+4. Capabilities: read, update and **insert** content. No user-information
+   capability is needed.
+5. Copy the OAuth client ID and secret into the service's variables and
+   redeploy.
+
+When a tester clicks **Connect Notion**, Notion's consent screen asks them to
+pick pages to share. Tell them to pick **one** page — the hub gets built under
+it. Sharing several is fine; they will be shown a picker.
+
+Notion allows an average of 3 requests/second **per integration, across all
+your users**. A full sync of one course is ~40 requests, so the app throttles
+itself and rate-limits each user to 4 Notion syncs per minute. A dozen active
+testers is comfortable; a hundred syncing at once would queue.
+
+Notion tokens do not expire; a tester who removes the integration from their
+workspace shows up as "Notion access was removed" and simply reconnects.
+
+Design and limits: `docs/NOTION.md`.

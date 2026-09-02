@@ -23,6 +23,10 @@
 --
 --   drop table if exists public.calendar_links, public.assessments,
 --                        public.courses, public.users cascade;
+--
+-- `notion_connections` and `notion_links` are NEW. A database created before
+-- they existed simply does not have them, and because they are additions rather
+-- than alterations, re-running this file does create them -- no drop needed.
 
 create extension if not exists "pgcrypto";
 
@@ -120,6 +124,70 @@ create table if not exists public.calendar_links (
 create index if not exists calendar_links_calendar_id_idx on public.calendar_links (calendar_id);
 
 -- ---------------------------------------------------------------------------
+-- notion_connections
+--
+-- One row per user, keyed by user_id rather than a surrogate: a user has one
+-- Notion workspace connection, and reconnecting replaces it. Kept out of
+-- `users` because it holds a bearer secret -- a `users` row can be handed
+-- around server-side without a redaction step, this one cannot.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.notion_connections (
+  -- text, to match users.id.
+  user_id            text primary key references public.users (id) on delete cascade,
+  -- Notion access tokens do not expire and there is no refresh token, so this
+  -- is a long-lived credential. Never selected into anything client-facing.
+  access_token       text not null,
+  workspace_id       text not null,
+  workspace_name     text,
+  bot_id             text,
+  -- The page the user shared during consent; null until one is chosen, which
+  -- is the whole point of the `needs_parent` status.
+  parent_page_id     text,
+  -- The "Syllabus AI" hub page and its three databases. Null until built.
+  hub_page_id        text,
+  hub_url            text,
+  courses_db_id      text,
+  assignments_db_id  text,
+  sessions_db_id     text,
+  status             text not null,
+  connected_at       text not null,
+  constraint notion_connections_status_check check (
+    status in ('connected','needs_parent','revoked')
+  )
+);
+
+-- ---------------------------------------------------------------------------
+-- notion_links
+--
+-- One row per Notion page we created for one of our entities. Its presence is
+-- what turns a re-sync into a property update instead of a duplicate page, so
+-- (kind, entity_id) is the primary key rather than a surrogate.
+--
+-- `entity_id` deliberately has NO foreign key: it holds course ids, assessment
+-- ids AND study-session ids in one column, and a session id is not a row id at
+-- all -- the planner mints them as `sb_<assessment_id>_<n>` and never stores
+-- them. Deleting a course therefore cannot cascade here; that cleanup lives in
+-- deleteCourse in src/lib/store/supabase.ts.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.notion_links (
+  -- text, to match users.id. Denormalised onto the row because entity_id has
+  -- nothing to join through for ownership.
+  user_id    text not null references public.users (id) on delete cascade,
+  kind       text not null,
+  entity_id  text not null,
+  page_id    text not null,
+  url        text,
+  primary key (kind, entity_id),
+  constraint notion_links_kind_check check (
+    kind in ('course','assessment','session')
+  )
+);
+
+create index if not exists notion_links_user_id_idx on public.notion_links (user_id);
+
+-- ---------------------------------------------------------------------------
 -- Row level security
 --
 -- The server routes connect with the SERVICE ROLE key, which bypasses RLS
@@ -129,10 +197,12 @@ create index if not exists calendar_links_calendar_id_idx on public.calendar_lin
 -- from a browser, a future realtime subscription).
 -- ---------------------------------------------------------------------------
 
-alter table public.users          enable row level security;
-alter table public.courses        enable row level security;
-alter table public.assessments    enable row level security;
-alter table public.calendar_links enable row level security;
+alter table public.users               enable row level security;
+alter table public.courses             enable row level security;
+alter table public.assessments         enable row level security;
+alter table public.calendar_links      enable row level security;
+alter table public.notion_connections  enable row level security;
+alter table public.notion_links        enable row level security;
 
 drop policy if exists users_self_access on public.users;
 create policy users_self_access on public.users
@@ -183,3 +253,19 @@ create policy calendar_links_owner_access on public.calendar_links
       where a.id = calendar_links.assessment_id and c.user_id = auth.uid()::text
     )
   );
+
+-- The Notion tables carry user_id directly, so their policies are a plain
+-- self-check -- no chain to walk. Note again that the server never sees these:
+-- the service-role key bypasses RLS and ownership is enforced in
+-- src/lib/store/supabase.ts.
+drop policy if exists notion_connections_owner_access on public.notion_connections;
+create policy notion_connections_owner_access on public.notion_connections
+  for all
+  using (user_id = auth.uid()::text)
+  with check (user_id = auth.uid()::text);
+
+drop policy if exists notion_links_owner_access on public.notion_links;
+create policy notion_links_owner_access on public.notion_links
+  for all
+  using (user_id = auth.uid()::text)
+  with check (user_id = auth.uid()::text);

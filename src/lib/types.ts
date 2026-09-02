@@ -148,3 +148,59 @@ export interface User {
 export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; detail?: string };
+
+/* ------------------------------------------------------------------------- */
+/* Notion                                                                     */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * One user's link to their Notion workspace. Lives apart from `User` because
+ * it carries a bearer secret and a handful of ids that only the Notion layer
+ * cares about -- keeping it separate means a `User` can be handed to the
+ * client without a redaction step.
+ */
+export interface NotionConnection {
+  userId: string;
+  /** Notion access tokens do not expire; this is revoked, never refreshed. */
+  accessToken: string;
+  workspaceId: string;
+  workspaceName: string | null;
+  botId: string | null;
+  /** The page the user shared during consent. Null until one is chosen. */
+  parentPageId: string | null;
+  /** The "Syllabus AI" hub page and its three databases. Null until built. */
+  hubPageId: string | null;
+  hubUrl: string | null;
+  coursesDbId: string | null;
+  assignmentsDbId: string | null;
+  sessionsDbId: string | null;
+  /**
+   * `needs_parent`: token in hand, no page to build under yet.
+   * `revoked`: a request came back 401 -- the user removed the integration.
+   */
+  status: "connected" | "needs_parent" | "revoked";
+  connectedAt: string;
+}
+
+/** Which of our entities a Notion page was created for. */
+export type NotionLinkKind = "course" | "assessment" | "session";
+
+/** Result of pushing a semester into Notion, mirroring CalendarSyncResult. */
+export interface NotionSyncResult {
+  created: { courses: number; assignments: number; sessions: number };
+  updated: { courses: number; assignments: number; sessions: number };
+  skipped: number;
+  hubUrl: string | null;
+  /** courseId -> Notion page URL, for "Open in Notion" links. */
+  coursePages: Record<string, string>;
+  errors: string[];
+}
+
+/** A Notion page we created for one of our entities -- the idempotency key. */
+export interface NotionLink {
+  userId: string;
+  kind: NotionLinkKind;
+  entityId: string;
+  pageId: string;
+  url: string | null;
+}

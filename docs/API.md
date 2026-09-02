@@ -18,6 +18,30 @@ Non-2xx responses still use this shape.
 | `/api/plan` | GET | — | `SemesterPlan` |
 | `/api/sync` | POST | `{ courseId?: string }` | `CalendarSyncResult` |
 | `/api/chat` | POST | `{ message: string; history?: {role,content}[] }` | `{ reply: string }` |
+| `/api/notion/auth` | GET | — | redirect to Notion consent (not JSON) |
+| `/api/notion/callback` | GET | `code`, `state` | redirect to `/dashboard?notion=connected` (not JSON) |
+| `/api/notion/status` | GET | — | `NotionStatus` (below) |
+| `/api/notion/parent` | POST | `{ pageId: string }` | `NotionStatus` — builds the hub under that page |
+| `/api/notion/sync` | POST | `{ courseId?: string }` | `NotionSyncResult & { dryRun: boolean }` |
+| `/api/notion/disconnect` | POST | — | `{ disconnected: true }` |
+
+`POST /api/upload` additionally returns `notion: { pageUrl: string | null; hubUrl: string | null; error: string | null } | null`
+— `null` when Notion is not connected; `error` set (and `pageUrl` null) when the
+upload succeeded but the Notion page could not be created. Notion failing never
+fails the upload.
+
+```ts
+interface NotionStatus {
+  configured: boolean;            // NOTION_CLIENT_ID + SECRET present on the server
+  connected: boolean;             // a connection record exists and is not revoked
+  status: "connected" | "needs_parent" | "revoked" | null;
+  workspaceName: string | null;
+  hubUrl: string | null;          // the "Syllabus AI" hub page, once built
+  needsParent: boolean;           // true => show the picker below
+  candidates: { id: string; title: string; url: string }[];   // pages the user shared
+  coursePages: Record<string, string>;   // courseId -> Notion page URL
+}
+```
 
 ## Rate limits
 

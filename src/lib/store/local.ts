@@ -27,10 +27,13 @@ import path from "node:path";
 import type {
   Assessment,
   Course,
+  NotionConnection,
+  NotionLink,
   ParsedSyllabus,
   User,
 } from "@/lib/types";
 import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
+import { notionSessionLinkPrefix } from "@/lib/store";
 
 interface CalendarLinkRecord extends CalendarLink {
   assessmentId: string;
@@ -42,6 +45,8 @@ interface Database {
   courses: Course[];
   assessments: Assessment[];
   calendarLinks: CalendarLinkRecord[];
+  notionConnections: NotionConnection[];
+  notionLinks: NotionLink[];
 }
 
 /**
@@ -60,12 +65,23 @@ function dbPath(): string {
 }
 
 function emptyDatabase(): Database {
-  return { users: [], courses: [], assessments: [], calendarLinks: [] };
+  return {
+    users: [],
+    courses: [],
+    assessments: [],
+    calendarLinks: [],
+    notionConnections: [],
+    notionLinks: [],
+  };
 }
 
 /**
  * Tolerant of a truncated or hand-edited file: a corrupt demo database should
  * degrade to "empty" rather than crash every route that touches storage.
+ *
+ * Per-key `Array.isArray` checks double as the migration story: a file written
+ * before a collection existed simply has no such key, and reading it back gives
+ * an empty array instead of `undefined` blowing up the first `.filter` call.
  */
 async function readDatabase(): Promise<Database> {
   let raw: string;
@@ -87,6 +103,12 @@ async function readDatabase(): Promise<Database> {
         : [],
       calendarLinks: Array.isArray(shape.calendarLinks)
         ? (shape.calendarLinks as CalendarLinkRecord[])
+        : [],
+      notionConnections: Array.isArray(shape.notionConnections)
+        ? (shape.notionConnections as NotionConnection[])
+        : [],
+      notionLinks: Array.isArray(shape.notionLinks)
+        ? (shape.notionLinks as NotionLink[])
         : [],
     };
   } catch {
@@ -146,6 +168,29 @@ function byDueDate(a: Assessment, b: Assessment): number {
   if (a.dueDate === null) return 1;
   if (b.dueDate === null) return -1;
   return a.dueDate < b.dueDate ? -1 : 1;
+}
+
+/**
+ * Does this Notion link belong to a course that is going away?
+ *
+ * Course and assessment links match by id. Session links cannot: study sessions
+ * are generated, never stored, so there is nothing to look their ids up in --
+ * they are matched by the planner's `sb_<assessmentId>_<n>` prefix instead.
+ */
+function isLinkOrphanedByCourse(
+  link: NotionLink,
+  userId: string,
+  courseId: string,
+  assessmentIds: Set<string>,
+): boolean {
+  // Scoped to the owner as well as the ids: the session match below is a
+  // prefix test, and only the course's own user can have links for it.
+  if (link.userId !== userId) return false;
+  if (link.kind === "course") return link.entityId === courseId;
+  if (link.kind === "assessment") return assessmentIds.has(link.entityId);
+  return [...assessmentIds].some((id) =>
+    link.entityId.startsWith(notionSessionLinkPrefix(id)),
+  );
 }
 
 export function createLocalStore(): Store {
@@ -277,6 +322,13 @@ export function createLocalStore(): Store {
         db.calendarLinks = db.calendarLinks.filter(
           (l) => !orphanIds.has(l.assessmentId),
         );
+        // The Notion pages themselves are deliberately left in place (see
+        // docs/NOTION.md); what goes is our pointer to them, so a course
+        // re-uploaded later builds fresh pages instead of patching pages that
+        // describe a deleted class.
+        db.notionLinks = db.notionLinks.filter(
+          (l) => !isLinkOrphanedByCourse(l, userId, courseId, orphanIds),
+        );
         return true;
       });
     },
@@ -338,6 +390,71 @@ export function createLocalStore(): Store {
         else db.calendarLinks[index] = record;
         return undefined;
       });
+    },
+
+    async getNotionConnection(userId) {
+      return readOnly((db) => {
+        const found = db.notionConnections.find((c) => c.userId === userId);
+        return found ? clone(found) : null;
+      });
+    },
+
+    async setNotionConnection(conn) {
+      return mutate((db) => {
+        const next = clone(conn);
+        const index = db.notionConnections.findIndex(
+          (c) => c.userId === conn.userId,
+        );
+        // Whole-record replace, not a merge: the callers that write this (the
+        // OAuth callback, the hub builder, the 401 handler) each hold the full
+        // connection, and a merge would quietly keep stale hub ids alive after
+        // a reconnect to a different workspace.
+        if (index === -1) db.notionConnections.push(next);
+        else db.notionConnections[index] = next;
+        return clone(next);
+      });
+    },
+
+    async deleteNotionConnection(userId) {
+      return mutate((db) => {
+        const before = db.notionConnections.length + db.notionLinks.length;
+        db.notionConnections = db.notionConnections.filter(
+          (c) => c.userId !== userId,
+        );
+        // The links are worthless without the token that created them, and
+        // keeping them would make a later reconnect patch pages in a workspace
+        // the user may no longer be using.
+        db.notionLinks = db.notionLinks.filter((l) => l.userId !== userId);
+        return before !== db.notionConnections.length + db.notionLinks.length;
+      });
+    },
+
+    async getNotionLink(kind, entityId) {
+      return readOnly((db) => {
+        const found = db.notionLinks.find(
+          (l) => l.kind === kind && l.entityId === entityId,
+        );
+        return found ? clone(found) : null;
+      });
+    },
+
+    async setNotionLink(link) {
+      await mutate((db) => {
+        const index = db.notionLinks.findIndex(
+          (l) => l.kind === link.kind && l.entityId === link.entityId,
+        );
+        // (kind, entityId) is the key, so re-linking after Notion 404s on a
+        // page the user deleted overwrites the dead page id in place.
+        if (index === -1) db.notionLinks.push(clone(link));
+        else db.notionLinks[index] = clone(link);
+        return undefined;
+      });
+    },
+
+    async listNotionLinks(userId) {
+      return readOnly((db) =>
+        clone(db.notionLinks.filter((l) => l.userId === userId)),
+      );
     },
   };
 }

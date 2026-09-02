@@ -19,6 +19,8 @@ import { UpcomingPanel } from "@/components/dashboard/upcoming-panel";
 import { HeatmapPanel } from "@/components/dashboard/heatmap-panel";
 import { RoadmapPanel } from "@/components/dashboard/roadmap-panel";
 import { SyncPanel } from "@/components/dashboard/sync-panel";
+import { NotionPanel } from "@/components/dashboard/notion-panel";
+import type { NotionStatus } from "@/components/dashboard/notion-panel";
 import { ChatPanel } from "@/components/dashboard/chat-panel";
 
 interface Failure {
@@ -46,6 +48,15 @@ export function DashboardShell() {
   const [coursesError, setCoursesError] = useState<Failure | undefined>();
   const [planError, setPlanError] = useState<Failure | undefined>();
 
+  // Notion status is fetched here, not in the panel, because the roadmap needs
+  // its `coursePages` map too and one mount must mean one request.
+  const [notionStatus, setNotionStatus] = useState<NotionStatus | null>(null);
+  const [notionLoading, setNotionLoading] = useState(true);
+  const [notionError, setNotionError] = useState<Failure | undefined>();
+  const notionRef = useRef<HTMLDivElement>(null);
+  const notionInFlight = useRef<Promise<void> | null>(null);
+  const [pendingNotionScroll, setPendingNotionScroll] = useState(false);
+
   const loadCourses = useCallback(async () => {
     setCoursesLoading(true);
     const result = await apiGet<CoursesPayload>("/api/courses");
@@ -71,6 +82,31 @@ export function DashboardShell() {
     setPlanLoading(false);
   }, []);
 
+  /**
+   * Callers overlap on the OAuth return (the mount load and the
+   * `?notion=connected` refetch fire in the same tick), so an in-flight request
+   * is shared rather than duplicated. Returning to a settled state re-fetches
+   * normally.
+   */
+  const loadNotion = useCallback((): Promise<void> => {
+    if (notionInFlight.current) return notionInFlight.current;
+    setNotionLoading(true);
+    const request = (async () => {
+      const result = await apiGet<NotionStatus>("/api/notion/status");
+      if (result.ok) {
+        setNotionStatus(result.data);
+        setNotionError(undefined);
+      } else {
+        setNotionError({ error: result.error, detail: result.detail });
+      }
+      setNotionLoading(false);
+    })().finally(() => {
+      notionInFlight.current = null;
+    });
+    notionInFlight.current = request;
+    return request;
+  }, []);
+
   const loadIdentity = useCallback(async () => {
     setConfigLoading(true);
     const [configResult, meResult] = await Promise.all([
@@ -86,7 +122,47 @@ export function DashboardShell() {
     void loadIdentity();
     void loadCourses();
     void loadPlan();
-  }, [loadIdentity, loadCourses, loadPlan]);
+    void loadNotion();
+  }, [loadIdentity, loadCourses, loadPlan, loadNotion]);
+
+  // StrictMode runs effects twice; the OAuth return must be handled once.
+  const notionReturnHandled = useRef(false);
+
+  /**
+   * `/api/notion/callback` sends the user back to `?notion=connected`. Pick the
+   * newly built connection up, put the panel in front of them, then strip the
+   * param so a refresh is not read as a second return from OAuth.
+   */
+  useEffect(() => {
+    if (notionReturnHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("notion") !== "connected") return;
+    notionReturnHandled.current = true;
+
+    void loadNotion();
+    setPendingNotionScroll(true);
+
+    params.delete("notion");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
+  }, [loadNotion]);
+
+  /**
+   * The Notion panel sits below the heatmap and roadmap, whose heights only
+   * settle once courses and the plan arrive. Scrolling before then aims at a
+   * moving target -- a smooth scroll is computed once, so the page grows out
+   * from under it and lands nowhere near the panel.
+   */
+  useEffect(() => {
+    if (!pendingNotionScroll) return;
+    if (coursesLoading || planLoading || notionLoading) return;
+    setPendingNotionScroll(false);
+    notionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [pendingNotionScroll, coursesLoading, planLoading, notionLoading]);
 
   // Ref, not state: the guard must survive React's StrictMode double-effect,
   // and re-rendering on it would be pointless -- nothing visible depends on it.
@@ -120,7 +196,10 @@ export function DashboardShell() {
   const refreshAll = useCallback(() => {
     void loadCourses();
     void loadPlan();
-  }, [loadCourses, loadPlan]);
+    // An upload can create Notion pages, so the "Open in Notion" links on the
+    // roadmap come from the same refresh as the courses they hang off.
+    void loadNotion();
+  }, [loadCourses, loadPlan, loadNotion]);
 
   const accents = useMemo(() => buildAccentMap(courses), [courses]);
   const nextAccent = accentVar(courses.length);
@@ -238,6 +317,7 @@ export function DashboardShell() {
                 courses={courses}
                 assessments={assessments}
                 accents={accents}
+                coursePages={notionStatus?.coursePages ?? {}}
                 onRetry={() => void loadCourses()}
               />
             </div>
@@ -253,6 +333,16 @@ export function DashboardShell() {
                 googleReady={config?.googleReady ?? false}
                 hasCourses={courses.length > 0}
               />
+              <div ref={notionRef}>
+                <NotionPanel
+                  status={notionStatus}
+                  loading={notionLoading}
+                  error={notionError}
+                  hasCourses={courses.length > 0}
+                  onStatus={setNotionStatus}
+                  onReload={() => void loadNotion()}
+                />
+              </div>
               <ChatPanel openaiReady={config?.openaiReady ?? false} />
             </div>
           </div>

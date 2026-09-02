@@ -17,6 +17,16 @@ export interface UploadResult {
   course: Course;
   assessments: Assessment[];
   warnings: string[];
+  /**
+   * Present only when Notion is connected. Optional rather than `| null`
+   * because an older server (or one whose Notion routes are not deployed) just
+   * omits the field, and the upload is still a success either way.
+   */
+  notion?: {
+    pageUrl: string | null;
+    hubUrl: string | null;
+    error: string | null;
+  } | null;
 }
 
 type Phase =
@@ -221,7 +231,7 @@ function ExtractionResult({
   result: UploadResult;
   accent: string;
 }) {
-  const { course, assessments, warnings } = result;
+  const { course, assessments, warnings, notion } = result;
   const flagged = assessments.filter((item) => item.confidence < 0.6);
   const totalWeight = course.gradeWeights.reduce(
     (sum, row) => sum + row.weightPercent,
@@ -259,6 +269,27 @@ function ExtractionResult({
             <Badge tone="warn">{flagged.length} to check</Badge>
           ) : null}
         </div>
+
+        {/*
+          Notion is a bonus on top of a finished upload, never a gate on it: a
+          failure is reported as a quiet aside so the extraction above still
+          reads as the success it is.
+        */}
+        {notion?.pageUrl ? (
+          <a
+            href={notion.pageUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            aria-label={`Open the Notion page for ${course.code}`}
+            className="mt-3 inline-block rounded-sm text-[0.8125rem] font-medium text-accent transition-colors hover:text-ink"
+          >
+            Created your Notion page →
+          </a>
+        ) : notion?.error ? (
+          <p className="mt-3 text-[0.75rem] leading-relaxed text-muted">
+            Uploaded — Notion page couldn&rsquo;t be created: {notion.error}
+          </p>
+        ) : null}
       </div>
 
       {warnings.length > 0 ? (

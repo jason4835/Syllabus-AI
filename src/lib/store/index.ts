@@ -12,6 +12,9 @@
 import type {
   Assessment,
   Course,
+  NotionConnection,
+  NotionLink,
+  NotionLinkKind,
   ParsedSyllabus,
   User,
 } from "@/lib/types";
@@ -39,6 +42,19 @@ export type UserUpsert = Omit<User, "createdAt" | "timezone"> & {
 export interface CalendarLink {
   googleEventId: string;
   calendarId: string;
+}
+
+/**
+ * Prefix of every Notion link id belonging to one assessment's study sessions.
+ *
+ * Study sessions are the one synced entity that is never persisted: the planner
+ * mints them on demand as `sb_<assessmentId>_<n>` (src/lib/plan/study.ts), so
+ * when a course is deleted there is no row to join against and their links can
+ * only be found by matching that prefix. Both drivers share this helper so the
+ * two cascades cannot drift apart from each other or from the planner.
+ */
+export function notionSessionLinkPrefix(assessmentId: string): string {
+  return `sb_${assessmentId}_`;
 }
 
 export interface Store {
@@ -73,6 +89,20 @@ export interface Store {
     googleEventId: string,
     calendarId: string,
   ): Promise<void>;
+
+  getNotionConnection(userId: string): Promise<NotionConnection | null>;
+  /** Upsert keyed by userId. Replaces the whole record. */
+  setNotionConnection(conn: NotionConnection): Promise<NotionConnection>;
+  /** Also removes that user's notion links. False when there was nothing to delete. */
+  deleteNotionConnection(userId: string): Promise<boolean>;
+
+  getNotionLink(
+    kind: NotionLinkKind,
+    entityId: string,
+  ): Promise<NotionLink | null>;
+  /** Upsert keyed by (kind, entityId): a re-link after a 404 must update in place, never duplicate. */
+  setNotionLink(link: NotionLink): Promise<void>;
+  listNotionLinks(userId: string): Promise<NotionLink[]>;
 }
 
 let instance: Store | null = null;
@@ -125,6 +155,12 @@ export const store: Store = {
   getCalendarLink: (assessmentId) => getStore().getCalendarLink(assessmentId),
   setCalendarLink: (assessmentId, googleEventId, calendarId) =>
     getStore().setCalendarLink(assessmentId, googleEventId, calendarId),
+  getNotionConnection: (userId) => getStore().getNotionConnection(userId),
+  setNotionConnection: (conn) => getStore().setNotionConnection(conn),
+  deleteNotionConnection: (userId) => getStore().deleteNotionConnection(userId),
+  getNotionLink: (kind, entityId) => getStore().getNotionLink(kind, entityId),
+  setNotionLink: (link) => getStore().setNotionLink(link),
+  listNotionLinks: (userId) => getStore().listNotionLinks(userId),
 };
 
 export default store;

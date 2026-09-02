@@ -21,10 +21,14 @@ import type {
   CoursePolicy,
   GradeWeight,
   MeetingTime,
+  NotionConnection,
+  NotionLink,
+  NotionLinkKind,
   ParsedSyllabus,
   User,
 } from "@/lib/types";
 import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
+import { notionSessionLinkPrefix } from "@/lib/store";
 
 // -- Row shapes -------------------------------------------------------------
 // Hand-written rather than generated so the mapping stays visible at review
@@ -75,6 +79,30 @@ interface CalendarLinkRow {
   updated_at: string;
 }
 
+interface NotionConnectionRow {
+  user_id: string;
+  access_token: string;
+  workspace_id: string;
+  workspace_name: string | null;
+  bot_id: string | null;
+  parent_page_id: string | null;
+  hub_page_id: string | null;
+  hub_url: string | null;
+  courses_db_id: string | null;
+  assignments_db_id: string | null;
+  sessions_db_id: string | null;
+  status: string;
+  connected_at: string;
+}
+
+interface NotionLinkRow {
+  user_id: string;
+  kind: string;
+  entity_id: string;
+  page_id: string;
+  url: string | null;
+}
+
 const ASSESSMENT_KINDS: readonly AssessmentKind[] = [
   "assignment",
   "exam",
@@ -104,6 +132,35 @@ function toKind(value: string): AssessmentKind {
   return (ASSESSMENT_KINDS as readonly string[]).includes(value)
     ? (value as AssessmentKind)
     : "other";
+}
+
+const NOTION_LINK_KINDS: readonly NotionLinkKind[] = [
+  "course",
+  "assessment",
+  "session",
+];
+
+const NOTION_STATUSES: readonly NotionConnection["status"][] = [
+  "connected",
+  "needs_parent",
+  "revoked",
+];
+
+/**
+ * An unrecognised status degrades to `revoked` rather than `connected`: the
+ * worst outcome of that is one reconnect prompt, whereas guessing "connected"
+ * would send sync requests with a token we have no reason to trust.
+ */
+function toNotionStatus(value: string): NotionConnection["status"] {
+  return (NOTION_STATUSES as readonly string[]).includes(value)
+    ? (value as NotionConnection["status"])
+    : "revoked";
+}
+
+function toNotionLinkKind(value: string): NotionLinkKind | null {
+  return (NOTION_LINK_KINDS as readonly string[]).includes(value)
+    ? (value as NotionLinkKind)
+    : null;
 }
 
 // -- Mappers ----------------------------------------------------------------
@@ -220,6 +277,69 @@ function calendarLinkToDomain(row: CalendarLinkRow): CalendarLink {
   return { googleEventId: row.google_event_id, calendarId: row.calendar_id };
 }
 
+function notionConnectionToDomain(row: NotionConnectionRow): NotionConnection {
+  return {
+    userId: row.user_id,
+    accessToken: row.access_token,
+    workspaceId: row.workspace_id,
+    workspaceName: row.workspace_name,
+    botId: row.bot_id,
+    parentPageId: row.parent_page_id,
+    hubPageId: row.hub_page_id,
+    hubUrl: row.hub_url,
+    coursesDbId: row.courses_db_id,
+    assignmentsDbId: row.assignments_db_id,
+    sessionsDbId: row.sessions_db_id,
+    status: toNotionStatus(row.status),
+    connectedAt: row.connected_at,
+  };
+}
+
+function notionConnectionToRow(conn: NotionConnection): NotionConnectionRow {
+  return {
+    user_id: conn.userId,
+    access_token: conn.accessToken,
+    workspace_id: conn.workspaceId,
+    workspace_name: conn.workspaceName,
+    bot_id: conn.botId,
+    parent_page_id: conn.parentPageId,
+    hub_page_id: conn.hubPageId,
+    hub_url: conn.hubUrl,
+    courses_db_id: conn.coursesDbId,
+    assignments_db_id: conn.assignmentsDbId,
+    sessions_db_id: conn.sessionsDbId,
+    status: conn.status,
+    connected_at: conn.connectedAt,
+  };
+}
+
+/**
+ * Null for a `kind` outside the union. Only a hand-written row can produce one
+ * (a check constraint guards the column), and dropping it beats coercing it
+ * into some other kind whose sync path would then patch the wrong page.
+ */
+function notionLinkToDomain(row: NotionLinkRow): NotionLink | null {
+  const kind = toNotionLinkKind(row.kind);
+  if (kind === null) return null;
+  return {
+    userId: row.user_id,
+    kind,
+    entityId: row.entity_id,
+    pageId: row.page_id,
+    url: row.url,
+  };
+}
+
+function notionLinkToRow(link: NotionLink): NotionLinkRow {
+  return {
+    user_id: link.userId,
+    kind: link.kind,
+    entity_id: link.entityId,
+    page_id: link.pageId,
+    url: link.url,
+  };
+}
+
 // -- Driver -----------------------------------------------------------------
 
 /** Postgres "no rows" from `.single()`; expected, not an error worth throwing. */
@@ -269,6 +389,65 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       fail("verifying course ownership", courseError);
     }
     return course ? row : null;
+  }
+
+  /**
+   * Drops the Notion links a deleted course leaves behind.
+   *
+   * `notion_links.entity_id` cannot carry a foreign key -- it holds course ids,
+   * assessment ids and planner-minted session ids in one column -- so nothing
+   * cascades from Postgres and the three kinds are cleared explicitly here.
+   * The Notion pages themselves are left alone on purpose (docs/NOTION.md).
+   */
+  async function deleteNotionLinksForCourse(
+    userId: string,
+    courseId: string,
+    assessmentIds: string[],
+  ): Promise<void> {
+    const { error: courseError } = await client
+      .from("notion_links")
+      .delete()
+      .eq("user_id", userId)
+      .eq("kind", "course")
+      .eq("entity_id", courseId);
+    if (courseError) fail("deleteCourse notion course link", courseError);
+
+    if (assessmentIds.length === 0) return;
+
+    const { error: assessmentError } = await client
+      .from("notion_links")
+      .delete()
+      .eq("user_id", userId)
+      .eq("kind", "assessment")
+      .in("entity_id", assessmentIds);
+    if (assessmentError) {
+      fail("deleteCourse notion assessment links", assessmentError);
+    }
+
+    // Session links can only be matched by prefix. Reading this user's session
+    // links and filtering in JS beats hand-assembling an N-clause PostgREST
+    // `or=(entity_id.like.*)` string, where one unescaped id would silently
+    // widen the delete.
+    const { data, error } = await client
+      .from("notion_links")
+      .select("entity_id")
+      .eq("user_id", userId)
+      .eq("kind", "session");
+    if (error) fail("deleteCourse notion session links", error);
+
+    const prefixes = assessmentIds.map(notionSessionLinkPrefix);
+    const orphaned = ((data ?? []) as { entity_id: string }[])
+      .map((r) => r.entity_id)
+      .filter((id) => prefixes.some((prefix) => id.startsWith(prefix)));
+    if (orphaned.length === 0) return;
+
+    const { error: sessionError } = await client
+      .from("notion_links")
+      .delete()
+      .eq("user_id", userId)
+      .eq("kind", "session")
+      .in("entity_id", orphaned);
+    if (sessionError) fail("deleteCourse notion session links", sessionError);
   }
 
   return {
@@ -418,6 +597,18 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     },
 
     async deleteCourse(userId, courseId) {
+      // Read the assessment ids BEFORE the delete: `on delete cascade` takes
+      // the assessment rows with the course, and the Notion links keyed on them
+      // would then be unreachable.
+      const { data: assessmentRows, error: assessmentError } = await client
+        .from("assessments")
+        .select("id")
+        .eq("course_id", courseId);
+      if (assessmentError) fail("deleteCourse assessment ids", assessmentError);
+      const assessmentIds = ((assessmentRows ?? []) as { id: string }[]).map(
+        (r) => r.id,
+      );
+
       // The user_id predicate is the ownership check: another user's id simply
       // matches no rows, so it is indistinguishable from "no such course".
       const { data, error } = await client
@@ -427,7 +618,12 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .eq("user_id", userId)
         .select("id");
       if (error) fail("deleteCourse", error);
-      return ((data ?? []) as { id: string }[]).length > 0;
+      if (((data ?? []) as { id: string }[]).length === 0) return false;
+
+      // Only after the delete succeeded: a caller who does not own the course
+      // must not be able to clear anyone's links.
+      await deleteNotionLinksForCourse(userId, courseId, assessmentIds);
+      return true;
     },
 
     async listAssessments(userId) {
@@ -481,6 +677,86 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .from("calendar_links")
         .upsert(row, { onConflict: "assessment_id" });
       if (error) fail("setCalendarLink", error);
+    },
+
+    async getNotionConnection(userId) {
+      const { data, error } = await client
+        .from("notion_connections")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("getNotionConnection", error);
+      return data ? notionConnectionToDomain(data as NotionConnectionRow) : null;
+    },
+
+    async setNotionConnection(conn) {
+      // Whole-record replace rather than the read-merge-write `upsertUser`
+      // does: every caller here (OAuth callback, hub builder, 401 handler)
+      // holds the complete connection, and merging would keep the previous
+      // workspace's hub ids alive after a reconnect elsewhere.
+      const { data, error } = await client
+        .from("notion_connections")
+        .upsert(notionConnectionToRow(conn), { onConflict: "user_id" })
+        .select("*")
+        .single();
+      if (error) fail("setNotionConnection", error);
+      return notionConnectionToDomain(data as NotionConnectionRow);
+    },
+
+    async deleteNotionConnection(userId) {
+      const { data: connections, error } = await client
+        .from("notion_connections")
+        .delete()
+        .eq("user_id", userId)
+        .select("user_id");
+      if (error) fail("deleteNotionConnection", error);
+
+      // The links are worthless without the token that created them, and
+      // leaving them would make a later reconnect patch pages in a workspace
+      // the user may no longer be using.
+      const { data: links, error: linkError } = await client
+        .from("notion_links")
+        .delete()
+        .eq("user_id", userId)
+        .select("entity_id");
+      if (linkError) fail("deleteNotionConnection links", linkError);
+
+      return (
+        ((connections ?? []) as { user_id: string }[]).length > 0 ||
+        ((links ?? []) as { entity_id: string }[]).length > 0
+      );
+    },
+
+    async getNotionLink(kind, entityId) {
+      const { data, error } = await client
+        .from("notion_links")
+        .select("*")
+        .eq("kind", kind)
+        .eq("entity_id", entityId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("getNotionLink", error);
+      return data ? notionLinkToDomain(data as NotionLinkRow) : null;
+    },
+
+    async setNotionLink(link) {
+      // (kind, entity_id) is the primary key, so re-linking after Notion 404s
+      // on a page the user deleted overwrites the dead page id in place instead
+      // of leaving two rows racing to describe one entity.
+      const { error } = await client
+        .from("notion_links")
+        .upsert(notionLinkToRow(link), { onConflict: "kind,entity_id" });
+      if (error) fail("setNotionLink", error);
+    },
+
+    async listNotionLinks(userId) {
+      const { data, error } = await client
+        .from("notion_links")
+        .select("*")
+        .eq("user_id", userId);
+      if (error) fail("listNotionLinks", error);
+      return ((data ?? []) as NotionLinkRow[])
+        .map(notionLinkToDomain)
+        .filter((link): link is NotionLink => link !== null);
     },
   };
 }

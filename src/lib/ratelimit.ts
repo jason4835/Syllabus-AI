@@ -86,6 +86,11 @@ export const RULES: Record<string, LimitRule> = {
   // someone sync several courses and retry; it stops a refresh-key loop.
   "sync:user:burst": { limit: 6, windowMs: MINUTE },
 
+  // One Notion sync is ~40 requests against an integration-wide 3/s budget
+  // shared by every user. 4/min per person covers "sync, fix a date, sync
+  // again" and stops a mashed button from starving everyone else.
+  "notion:user:burst": { limit: 4, windowMs: MINUTE },
+
   // Backstop across ALL users, so a single shared or leaked account cannot
   // become the whole bill. Deliberately above any one user's cap and below the
   // sum of everyone's: honest aggregate use for a dozen testers is a few
@@ -114,6 +119,7 @@ const RULE_SETS: Record<string, readonly string[]> = {
     "global:openai:daily",
   ],
   "sync:user": ["sync:user:burst"],
+  "notion:user": ["notion:user:burst"],
   "global:openai": ["global:openai:burst", "global:openai:daily"],
 };
 
@@ -336,6 +342,8 @@ const MESSAGES: Record<string, (wait: string) => string> = {
     `You've used today's questions. The limit resets ${wait}.`,
   "sync:user:burst": (wait) =>
     `Calendar sync is rate limited. Try again ${wait}.`,
+  "notion:user:burst": (wait) =>
+    `Notion sync is rate limited. Try again ${wait}.`,
   "global:openai:burst": (wait) =>
     `Syllabus AI is handling a lot of requests right now. Try again ${wait}.`,
   "global:openai:daily": (wait) =>

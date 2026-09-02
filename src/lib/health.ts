@@ -29,6 +29,7 @@ export interface HealthReport {
     google: boolean;
     supabase: boolean;
     sessionSecret: boolean;
+    notion: boolean;
   };
   /** Plain-language description of each thing that made the status `degraded`. */
   warnings: string[];
@@ -98,6 +99,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
       google,
       supabase,
       sessionSecret,
+      notion: has(env, "NOTION_CLIENT_ID") && has(env, "NOTION_CLIENT_SECRET"),
     },
     warnings,
   };

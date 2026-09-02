@@ -14,6 +14,7 @@ every semester.
 2. **Upload a syllabus PDF** — AI extracts courses, assignments, exams, due dates, grading weights, and key policies.
 3. **Get a semester roadmap** — week-by-week workload with recommended study blocks.
 4. **Sync to Google Calendar** — deadlines and study sessions land on a dedicated "Syllabus AI" calendar, not your primary one.
+5. **Get a Notion page per class** — connect Notion and every upload also produces a finished class page (course info, grading, schedule, policies) plus Assignments and Study Sessions databases you can view as a calendar. Nobody builds a Notion setup by hand again.
 
 ### The parts that aren't just a PDF-to-calendar pipe
 
@@ -44,6 +45,7 @@ Copy `.env.example` to `.env.local` and fill in what you want:
 |---|---|
 | `OPENAI_API_KEY` | Real AI extraction instead of the heuristic fallback |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google sign-in and real calendar writes |
+| `NOTION_CLIENT_ID` / `NOTION_CLIENT_SECRET` | Notion class pages. Create a *public* integration at notion.so/my-integrations and add `<origin>/api/notion/callback` as its redirect URI |
 | `SESSION_SECRET` | Signed sessions (`openssl rand -hex 32`). **Required in production** — without it the app refuses to serve requests, because the dev fallback is a published constant |
 | `DATA_DIR` | Durable storage on a mounted volume — the JSON store writes to `$DATA_DIR/db.json`. Single instance only |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Postgres instead of local JSON — run `supabase/schema.sql` first. Needed once you run more than one instance |
@@ -81,6 +83,8 @@ src/
                        deterministic heuristic fallback
     plan/              Workload model, spaced study scheduling, chat
     google/            OAuth and idempotent calendar sync
+    notion/            OAuth, hub + databases, idempotent page sync
+                       (design: docs/NOTION.md)
 supabase/schema.sql    Postgres DDL with RLS
 fixtures/              Three sample syllabi used by demo mode
 docs/API.md            API contract
@@ -104,8 +108,12 @@ Two design choices worth naming:
   and the due date from the last. A schedule row listing two deliverables will
   lose one. The AI extractor handles those correctly, so this only bites without
   an `OPENAI_API_KEY` — but keep it in mind if you edit the bundled fixtures.
-- The Notion dashboard from the full product vision is not built; this is the
-  weekend MVP scope (upload, extract, calendar, dashboard).
+- Notion sync is one-way and updates row *properties* on re-sync, never a
+  class page's body — so your notes on that page are safe, but a schedule
+  entry written into the body will not move if a date later changes (the
+  Assignments row it links to does). Notion's API cannot create Calendar
+  views; adding one is a single click in the Assignments database. Deleting a
+  course here never deletes anything in Notion. See docs/NOTION.md.
 - Sessions are a signed cookie, not a full auth provider. That is sound for this
   scale — it fails closed on a tampered cookie and refuses to run in production
   without a real `SESSION_SECRET` — but swap in Clerk or Auth.js if you need
