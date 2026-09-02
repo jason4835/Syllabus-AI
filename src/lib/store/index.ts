@@ -92,7 +92,14 @@ export function getStore(): Store {
     console.log("[store] driver=supabase");
   } else {
     instance = createLocalStore();
-    console.log("[store] driver=local (.data/db.json) -- set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY for Supabase");
+    const dir = (process.env.DATA_DIR ?? "").trim();
+    // Say plainly whether this data survives a redeploy. "driver=local" alone
+    // reads the same whether it is a durable volume or a disk about to vanish.
+    console.log(
+      dir
+        ? `[store] driver=local dir=${dir} (persistent volume) -- set SUPABASE_* to use Postgres instead`
+        : "[store] driver=local dir=.data (EPHEMERAL -- lost on redeploy) -- mount a volume and set DATA_DIR, or set SUPABASE_*",
+    );
   }
 
   return instance;

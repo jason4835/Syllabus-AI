@@ -1,10 +1,21 @@
 /**
- * Local JSON-file driver -- the demo/no-key fallback.
+ * Local JSON-file driver -- the demo/no-key fallback, and a legitimate small
+ * production store when it is pointed at durable storage.
  *
  * The whole database is one file (`.data/db.json`, gitignored) so a contributor
  * can clone, upload a syllabus and see the app work without provisioning
- * Supabase. It is deliberately dumb: correctness and durability across a dev
- * server restart matter here, throughput does not.
+ * Supabase. It is deliberately dumb: correctness and durability across a
+ * restart matter here, throughput does not.
+ *
+ * `DATA_DIR` overrides where that file lives, which is what makes a mounted
+ * volume (Railway, Fly, a Docker bind mount) work: point it at the mount and
+ * the data outlives the container. Without a volume the default is inside the
+ * deployment and every redeploy starts empty -- fine for a demo, silent data
+ * loss for anything else.
+ *
+ * One writer only. This is a single file guarded by an in-process lock, so it
+ * assumes ONE instance. Two replicas sharing a volume would overwrite each
+ * other; scale past that and it is time for Postgres.
  *
  * Server-only.
  */
@@ -33,8 +44,20 @@ interface Database {
   calendarLinks: CalendarLinkRecord[];
 }
 
-const DATA_DIR = path.join(process.cwd(), ".data");
-const DB_PATH = path.join(DATA_DIR, "db.json");
+/**
+ * Resolved per call rather than captured at module load, so a test (or a
+ * platform that injects env late) is not stuck with whatever was set at import.
+ */
+function dataDir(): string {
+  const configured = (process.env.DATA_DIR ?? "").trim();
+  // A relative DATA_DIR is resolved against cwd, so "./data" behaves sanely
+  // while "/data" (the usual mount point) is taken literally.
+  return configured ? path.resolve(configured) : path.join(process.cwd(), ".data");
+}
+
+function dbPath(): string {
+  return path.join(dataDir(), "db.json");
+}
 
 function emptyDatabase(): Database {
   return { users: [], courses: [], assessments: [], calendarLinks: [] };
@@ -47,7 +70,7 @@ function emptyDatabase(): Database {
 async function readDatabase(): Promise<Database> {
   let raw: string;
   try {
-    raw = await readFile(DB_PATH, "utf8");
+    raw = await readFile(dbPath(), "utf8");
   } catch {
     return emptyDatabase();
   }
@@ -76,10 +99,10 @@ async function readDatabase(): Promise<Database> {
  * database intact instead of a half-written JSON blob.
  */
 async function writeDatabase(db: Database): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${DB_PATH}.${process.pid}.${randomUUID()}.tmp`;
+  await mkdir(dataDir(), { recursive: true });
+  const tmp = `${dbPath()}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(tmp, `${JSON.stringify(db, null, 2)}\n`, "utf8");
-  await rename(tmp, DB_PATH);
+  await rename(tmp, dbPath());
 }
 
 /**

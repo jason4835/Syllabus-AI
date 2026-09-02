@@ -45,7 +45,8 @@ Copy `.env.example` to `.env.local` and fill in what you want:
 | `OPENAI_API_KEY` | Real AI extraction instead of the heuristic fallback |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google sign-in and real calendar writes |
 | `SESSION_SECRET` | Signed sessions (`openssl rand -hex 32`). **Required in production** — without it the app refuses to serve requests, because the dev fallback is a published constant |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Postgres instead of local JSON — run `supabase/schema.sql` first |
+| `DATA_DIR` | Durable storage on a mounted volume — the JSON store writes to `$DATA_DIR/db.json`. Single instance only |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Postgres instead of local JSON — run `supabase/schema.sql` first. Needed once you run more than one instance |
 
 For Google: create a **Web application** OAuth client, enable the **Google
 Calendar API**, and add `http://localhost:3000/api/auth/callback` as an
@@ -109,6 +110,9 @@ Two design choices worth naming:
   scale — it fails closed on a tampered cookie and refuses to run in production
   without a real `SESSION_SECRET` — but swap in Clerk or Auth.js if you need
   org accounts, MFA, or account recovery.
+- The volume-backed JSON store assumes a **single instance**: one file guarded
+  by an in-process lock. Two replicas sharing a volume would overwrite each
+  other's writes. Move to Supabase before scaling out.
 - Rate limits are held in memory, so on serverless they are per-instance and
   reset on a cold start. They make casual abuse annoying rather than free; the
   real spend ceiling is the hard limit you set on your OpenAI account.

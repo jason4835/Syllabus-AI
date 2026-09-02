@@ -657,3 +657,59 @@ vercel rollback
 
 Environment-variable changes do **not** apply to existing deployments — you must
 redeploy after changing one. A rollback restores the code, not the variables.
+
+---
+
+## Appendix: persistent volume instead of Supabase
+
+For a small deployment (one instance, a handful of users) the bundled JSON store
+is a legitimate production database, provided it writes somewhere durable. Set
+`DATA_DIR` to a mounted volume and the data outlives the container.
+
+### Railway
+
+1. Service → **Variables** → add `DATA_DIR` = `/data`
+2. Service → **Settings** → **Volumes** → **Add volume**, mount path `/data`
+3. Redeploy
+
+Do not set `PORT`; Railway injects it.
+
+### Verifying it took
+
+```bash
+curl -s https://<your-app>/api/health
+```
+
+`"storage":"volume"` and no storage warning means it is durable. `"storage":"local"`
+with a warning means `DATA_DIR` is unset and **your data dies on the next deploy**.
+
+The startup log says the same thing:
+
+```
+[store] driver=local dir=/data (persistent volume) -- set SUPABASE_* to use Postgres instead
+[store] driver=local dir=.data (EPHEMERAL -- lost on redeploy) -- mount a volume and set DATA_DIR, or set SUPABASE_*
+```
+
+### What you are accepting
+
+| | Volume | Supabase |
+|---|---|---|
+| Setup | two settings | project + run schema.sql |
+| Instances | **exactly one** | many |
+| Backups | yours to arrange | automatic, point-in-time |
+| Querying data | read the JSON file | SQL |
+| Good up to | a few dozen users | well beyond |
+
+The single-instance limit is real, not a formality: the store is one JSON file
+guarded by an in-process lock, so two replicas on one volume would clobber each
+other. If you ever raise the replica count, migrate to Supabase first.
+
+Back it up by copying `$DATA_DIR/db.json` off the volume periodically. It is one
+file, and it is the whole database.
+
+### Migrating to Supabase later
+
+Set the two `SUPABASE_*` variables and restart: the store picks its driver from
+env at first use, so nothing in the code changes. Existing volume data does not
+copy itself across — at this scale, re-uploading a few syllabi is usually faster
+than writing an importer.

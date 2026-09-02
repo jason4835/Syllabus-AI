@@ -23,7 +23,7 @@ export interface HealthReport {
   uptimeSeconds: number;
   time: string;
   /** Which persistence driver this instance is running on. */
-  storage: "supabase" | "local";
+  storage: "supabase" | "volume" | "local";
   capabilities: {
     openai: boolean;
     google: boolean;
@@ -75,9 +75,13 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
         : "SESSION_SECRET is not set, so every request is failing. Without it sessions would be signed with the public dev key and anyone could forge one. Set it and redeploy.",
     );
   }
-  if (isProduction && !supabase) {
+  // A local store is only a problem when nothing durable is behind it. An
+  // explicit DATA_DIR means the operator mounted a volume on purpose, so
+  // warning about it would train them to ignore this endpoint.
+  const persistentVolume = has(env, "DATA_DIR");
+  if (isProduction && !supabase && !persistentVolume) {
     warnings.push(
-      "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are not both set. Data is being written to a local file that a serverless deploy throws away on the next cold start.",
+      "Neither Supabase nor a persistent volume is configured. Data is being written inside the deployment and will be lost on the next redeploy or cold start. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, or mount a volume and set DATA_DIR to its path.",
     );
   }
 
@@ -88,7 +92,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
     environment: env.VERCEL_ENV ?? env.NODE_ENV ?? "development",
     uptimeSeconds,
     time: now.toISOString(),
-    storage: supabase ? "supabase" : "local",
+    storage: supabase ? "supabase" : persistentVolume ? "volume" : "local",
     capabilities: {
       openai: has(env, "OPENAI_API_KEY"),
       google,
