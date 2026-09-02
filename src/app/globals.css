@@ -1,0 +1,249 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Syllabus AI — design tokens
+
+   Aesthetic: "the good study desk". Warm paper ground, ink-dark type, a single
+   deep pine accent, and a workload ramp that runs sage -> amber -> clay. Serif
+   display type for headings gives it an academic voice; the UI type stays a
+   plain system sans so dense data reads fast.
+
+   Every color is a token. Light values live here; the dark set is redefined
+   below under prefers-color-scheme, and Tailwind utilities resolve through
+   var(--color-*) so both themes work with the same class names.
+   ========================================================================== */
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
+    Georgia, ui-serif, serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Display sizes (the rest of the scale is Tailwind's default). */
+  --text-hero: 2.75rem;
+  --text-hero--line-height: 1.06;
+  --text-hero--letter-spacing: -0.023em;
+  --text-display: 2rem;
+  --text-display--line-height: 1.12;
+  --text-display--letter-spacing: -0.018em;
+
+  /* --- Surfaces & type ---------------------------------------------------- */
+  --color-paper: #faf8f3;
+  --color-surface: #ffffff;
+  --color-raised: #f3f0e8;
+  --color-sunken: #efebe1;
+  --color-line: #e6e1d5;
+  --color-line-strong: #d3ccbb;
+  --color-ink: #1b1a16;
+  --color-ink-soft: #494640;
+  --color-muted: #757066;
+
+  /* --- Accent (deep pine) ------------------------------------------------- */
+  --color-accent: #1e5f4e;
+  --color-accent-hover: #174a3d;
+  --color-accent-on: #ffffff;
+  --color-accent-soft: #e3efe9;
+  --color-accent-line: #b6d6c9;
+
+  /* --- Status ------------------------------------------------------------- */
+  --color-warn: #96581a;
+  --color-warn-soft: #fbeedb;
+  --color-warn-line: #e8d3ad;
+  --color-danger: #ad3d2a;
+  --color-danger-soft: #fae5e0;
+  --color-danger-line: #eec4ba;
+  --color-ok: #2b7a5c;
+
+  /* --- Workload ramp (0 calm .. 3 crunch) --------------------------------- */
+  --color-track: #f2efe8;
+  --color-load-0: #bfb9a6;
+  --color-load-1: #8fb99c;
+  --color-load-2: #dda94f;
+  --color-load-3: #bd5540;
+
+  /* --- Per-course accents ------------------------------------------------- */
+  --color-course-1: #1e5f4e;
+  --color-course-2: #3a5ba0;
+  --color-course-3: #b0523c;
+  --color-course-4: #75487a;
+  --color-course-5: #8f6a24;
+  --color-course-6: #23768a;
+
+  /* --- Radii & depth ------------------------------------------------------ */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.75rem;
+
+  --shadow-card: 0 1px 2px rgb(28 26 20 / 0.04), 0 2px 10px -4px rgb(28 26 20 / 0.07);
+  --shadow-lift: 0 2px 4px rgb(28 26 20 / 0.05), 0 12px 28px -12px rgb(28 26 20 / 0.18);
+  --shadow-pop: 0 8px 32px -8px rgb(28 26 20 / 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: #14150f;
+    --color-surface: #1b1c16;
+    --color-raised: #22231c;
+    --color-sunken: #191a14;
+    --color-line: #302f27;
+    --color-line-strong: #45443a;
+    --color-ink: #f1eee4;
+    --color-ink-soft: #c5c0b3;
+    --color-muted: #928d80;
+
+    --color-accent: #6cc9aa;
+    --color-accent-hover: #86d8bc;
+    --color-accent-on: #0d1f19;
+    --color-accent-soft: #17322a;
+    --color-accent-line: #2c5347;
+
+    --color-warn: #e0ad5f;
+    --color-warn-soft: #2e2314;
+    --color-warn-line: #4d3c1e;
+    --color-danger: #e78770;
+    --color-danger-soft: #331a15;
+    --color-danger-line: #562c23;
+    --color-ok: #6cc9aa;
+
+    --color-track: #1e1f19;
+    --color-load-0: #4d4f43;
+    --color-load-1: #4f8f6d;
+    --color-load-2: #c2903f;
+    --color-load-3: #bd5a44;
+
+    --color-course-1: #62c8a8;
+    --color-course-2: #8ba7e8;
+    --color-course-3: #e28a6f;
+    --color-course-4: #c59ac9;
+    --color-course-5: #d7b25f;
+    --color-course-6: #6cc3d5;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 2px 12px -6px rgb(0 0 0 / 0.5);
+    --shadow-lift: 0 2px 6px rgb(0 0 0 / 0.45), 0 14px 32px -14px rgb(0 0 0 / 0.7);
+    --shadow-pop: 0 10px 36px -10px rgb(0 0 0 / 0.75);
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --grain: color-mix(in srgb, var(--color-ink) 3%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+    }
+  }
+
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-ink);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Small composed primitives. Kept here (rather than repeated as long utility
+   strings) so the visual language stays consistent across every panel.
+   -------------------------------------------------------------------------- */
+
+@utility panel {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+}
+
+@utility hairline {
+  border-bottom: 1px solid var(--color-line);
+}
+
+/* Ruled-paper ground for the landing hero. */
+@utility ruled {
+  background-image:
+    linear-gradient(to bottom, transparent 31px, var(--grain) 31px, var(--grain) 32px),
+    radial-gradient(120% 80% at 50% -10%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 60%);
+  background-size: 100% 32px, 100% 100%;
+}
+
+/* Diagonal hatch — the redundant, non-color cue for a crunch week. */
+@utility hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--color-surface) 55%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+@keyframes sa-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@utility skeleton {
+  background-color: var(--color-raised);
+  border-radius: var(--radius-sm);
+  animation: sa-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sa-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@utility rise {
+  animation: sa-rise 0.32s ease-out both;
+}
+
+/* Dotted fill — the non-color cue for a "busy" week. */
+@utility dotted {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--color-surface) 60%, transparent) 1px,
+    transparent 1.2px
+  );
+  background-size: 5px 5px;
+}

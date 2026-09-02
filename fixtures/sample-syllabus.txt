@@ -1,0 +1,159 @@
+NORTHBRIDGE UNIVERSITY
+Department of Mathematics
+
+MATH 221 - Multivariable Calculus
+Fall 2026
+
+Term dates: August 24, 2026 - December 18, 2026
+Last day of classes: Friday, December 11, 2026
+Finals week: December 14-18, 2026
+
+----------------------------------------------------------------------
+
+INSTRUCTOR
+
+Instructor: Dr. Elena Vasquez
+Email: e.vasquez@northbridge.edu
+Office: Hayes Hall 318
+Office hours: Tuesday 2:00-3:30 PM, Thursday 11:00 AM-12:30 PM, and by
+appointment. Drop-ins are welcome whenever the door is open.
+
+Teaching Assistant: Marcus Owusu (m.owusu@northbridge.edu)
+TA problem session: Thursday 5:00-6:15 PM, Hayes Hall 104
+
+MEETING TIMES
+
+Lecture: MWF 10:00-10:50 AM, Hayes Hall 210
+Recitation: Thursday 9:00-9:50 AM, Hayes Hall 104
+
+----------------------------------------------------------------------
+
+COURSE DESCRIPTION
+
+MATH 221 extends single-variable calculus to functions of several
+variables. Topics include vectors and the geometry of space, partial
+derivatives, multiple integrals, vector fields, line and surface
+integrals, and the theorems of Green, Stokes, and Gauss. The course
+closes with a modeling project in which teams apply vector calculus to
+a physical or data-driven problem of their choosing.
+
+Prerequisite: MATH 122 (Calculus II) with a grade of C or better.
+
+Textbook: Stewart, Calculus: Early Transcendentals, 9th edition.
+Chapters 12-16. A copy is on reserve at Cabot Library.
+
+----------------------------------------------------------------------
+
+GRADING
+
+Your final grade is computed from the following components:
+
+  Problem Sets (7)                      24%
+  Midterm Exam 1                        18%
+  Midterm Exam 2                        18%
+  Modeling Project                      15%
+  Final Exam                            22%
+  Participation and Attendance           3%
+                                       ----
+  Total                                100%
+
+Grading scale: A 93-100, A- 90-92, B+ 87-89, B 83-86, B- 80-82,
+C+ 77-79, C 73-76, C- 70-72, D 60-69, F below 60. I do not curve
+individual exams, but I reserve the right to curve final course
+averages upward at the end of the term.
+
+The Modeling Project grade is split between a proposal (worth one third
+of the project grade) and a final written report (two thirds).
+
+----------------------------------------------------------------------
+
+ASSIGNMENTS AND EXAM DATES
+
+All problem sets are submitted through Canvas and are due at 11:59 PM on
+the listed date. Exams are given in our regular classroom, Hayes 210.
+
+  Problem Set 1 ............ due Friday, September 4, 2026, 11:59 PM
+  Problem Set 2 ............ due Friday, September 18, 2026, 11:59 PM
+  Problem Set 3 ............ due Friday, October 2, 2026, 11:59 PM
+  Midterm Exam 1 ........... Wednesday, October 7, 2026, in class
+  Problem Set 4 ............ due Friday, October 16, 2026, 11:59 PM
+  Project proposal ......... due Friday, October 23, 2026, 11:59 PM
+  Problem Set 5 ............ due Friday, October 30, 2026, 11:59 PM
+  Problem Set 6 ............ due Friday, November 13, 2026, 11:59 PM
+  Midterm Exam 2 ........... Wednesday, November 18, 2026, in class
+  Problem Set 7 ............ due Friday, December 4, 2026, 11:59 PM
+  Project final report ..... due Friday, December 11, 2026, 11:59 PM
+  Final Exam ............... Wednesday, December 16, 2026, 10:15 AM-12:15 PM
+
+----------------------------------------------------------------------
+
+WEEKLY SCHEDULE
+
+Week 1  | Aug 24 - Aug 28 | Vectors; dot and cross products (12.1-12.4)   |
+Week 2  | Aug 31 - Sep 4  | Lines, planes, quadric surfaces (12.5-12.6)   | Problem Set 1 due Fri, Sep 4
+Week 3  | Sep 7 - Sep 11  | No class Mon (Labor Day); vector functions    |
+Week 4  | Sep 14 - Sep 18 | Arc length, curvature, motion (13.3-13.4)     | Problem Set 2 due Fri, Sep 18
+Week 5  | Sep 21 - Sep 25 | Partial derivatives, tangent planes (14.1-14.4)|
+Week 6  | Sep 28 - Oct 2  | Chain rule, directional derivatives (14.5-14.6)| Problem Set 3 due Fri, Oct 2
+Week 7  | Oct 5 - Oct 9   | Optimization; Lagrange multipliers (14.7-14.8) | Midterm Exam 1, Wed, Oct 7
+Week 8  | Oct 12 - Oct 16 | Double integrals (15.1-15.3)                  | Problem Set 4 due Fri, Oct 16
+Week 9  | Oct 19 - Oct 23 | Polar and triple integrals (15.4-15.7)        | Project proposal due Fri, Oct 23
+Week 10 | Oct 26 - Oct 30 | Change of variables (15.9)                    | Problem Set 5 due Fri, Oct 30
+Week 11 | Nov 2 - Nov 6   | Vector fields; line integrals (16.1-16.3)     |
+Week 12 | Nov 9 - Nov 13  | Green's theorem; curl and divergence (16.4-16.5)| Problem Set 6 due Fri, Nov 13
+Week 13 | Nov 16 - Nov 20 | Parametric surfaces; surface area (16.6)      | Midterm Exam 2, Wed, Nov 18
+Week 14 | Nov 23 - Nov 27 | Thanksgiving recess, Nov 25-27; no class      |
+Week 15 | Nov 30 - Dec 4  | Surface integrals; Stokes' theorem (16.7-16.8) | Problem Set 7 due Fri, Dec 4
+Week 16 | Dec 7 - Dec 11  | Divergence theorem; review (16.9)             | Project final report due Fri, Dec 11
+Finals  | Dec 14 - Dec 18 | Final Exam: Wednesday, Dec 16, 10:15 AM, Hayes 210
+
+The final exam is cumulative, with roughly 40% of the questions drawn
+from material covered after Midterm Exam 2.
+
+----------------------------------------------------------------------
+
+LATE WORK POLICY
+
+Each student has four late days for the semester, which may be spent on
+problem sets in whole-day increments and applied at your discretion
+without asking permission. Once your late days are exhausted, problem
+sets lose 20% of their earned score per calendar day and are not
+accepted more than three days after the deadline. Late days may not be
+applied to the project proposal, the project final report, or to any
+exam. If illness, a family emergency, or a documented university
+obligation prevents you from meeting a deadline, contact me before the
+due date and we will work something out; retroactive extensions are
+much harder to grant.
+
+ATTENDANCE POLICY
+
+Attendance is expected at all lectures and recitations and is worth 3%
+of your final grade. I take a roll count at the start of each Friday
+lecture. You may miss up to three lectures for any reason with no
+penalty and no explanation; after that, each additional unexcused
+absence reduces the participation component by one third. Missing an
+exam without prior arrangement results in a zero for that exam. Make-up
+exams are scheduled only for documented illness, religious observance,
+or university-sanctioned travel, and must be requested at least one week
+in advance when the conflict is foreseeable.
+
+ACADEMIC INTEGRITY
+
+All work you submit must be your own. You are encouraged to discuss
+problem sets with classmates and to work at the whiteboard together, but
+you must write up your final solutions independently and without a
+shared draft in front of you. List the names of everyone you worked with
+at the top of each submission; collaboration is not a violation, but
+undisclosed collaboration is. Copying solutions from a classmate, a
+solutions manual, Chegg, or a large language model and presenting them
+as your own is plagiarism and will be reported to the Office of Academic
+Integrity. Exams are closed-book and closed-note; a single handwritten
+formula sheet is permitted on both midterms and on the final.
+
+ACCESSIBILITY AND ACCOMMODATIONS
+
+Northbridge University is committed to full participation for students
+with disabilities. If you have an accommodation letter from Student
+Accessibility Services, please send it to me within the first two weeks
+of the term so we can arrange exam timing and any other supports well
+before Midterm Exam 1.

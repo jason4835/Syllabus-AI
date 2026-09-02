@@ -1,0 +1,205 @@
+NORTHBRIDGE UNIVERSITY
+Department of Chemistry
+
+CHEM 104 - General Chemistry II
+Fall 2026
+
+Term dates: August 24, 2026 - December 18, 2026
+Last day of classes: Friday, December 11, 2026
+Finals week: December 14-18, 2026
+University holidays: Labor Day, Monday, September 7, 2026; Thanksgiving
+recess, November 25-27, 2026.
+
+----------------------------------------------------------------------
+
+INSTRUCTOR
+
+Instructor: Dr. Adaeze Okonkwo
+Email: a.okonkwo@northbridge.edu
+Office: Faraday Hall 402
+Office hours: Monday 1:00-2:30 PM, Wednesday 3:00-4:30 PM, and by
+appointment. If both slots are impossible for you, email me and we will
+find a time; I would rather move an hour than lose a student.
+
+Laboratory Coordinator: Ben Lindqvist (b.lindqvist@northbridge.edu)
+Graduate Teaching Assistant: Sofia Marchetti (s.marchetti@northbridge.edu)
+
+MEETING TIMES
+
+Lecture: MWF 11:00-11:50 AM, Kepler Hall 130
+Laboratory: Tuesday 1:00-3:50 PM, Priestley Hall 12
+
+----------------------------------------------------------------------
+
+COURSE DESCRIPTION
+
+CHEM 104 is the second half of the general chemistry sequence. We begin
+with intermolecular forces and solutions, spend the heart of the term on
+kinetics and equilibrium, and close with thermodynamics, electrochemistry
+and a short unit on nuclear chemistry. The laboratory runs in parallel
+and is where most of the course actually happens.
+
+Prerequisite: CHEM 103 (General Chemistry I) with a grade of C or better.
+
+Textbook: Tro, Chemistry: A Molecular Approach, 5th edition, Chapters
+11-20. Two copies are on reserve at Cabot Library.
+
+Lab manual: Northbridge General Chemistry Laboratory Manual, Fall 2026
+printing. Required, and you must bring it to every lab period.
+
+----------------------------------------------------------------------
+
+GRADING
+
+Your final grade is computed from the following components:
+
+  Lab Reports (7)                       20%
+  Homework Sets (5)                     12%
+  Prelab Quizzes                         6%
+  Midterm Exam 1                        16%
+  Midterm Exam 2                        16%
+  Final Exam                            26%
+  Lecture Participation                  4%
+                                       ----
+  Total                                100%
+
+Grading scale: A 93-100, A- 90-92, B+ 87-89, B 83-86, B- 80-82,
+C+ 77-79, C 73-76, C- 70-72, D 60-69, F below 60. Exams are scaled when
+the class median falls below 70, and never scaled downward.
+
+Prelab quizzes are five short questions given in the first ten minutes
+of each lab period. They are not scheduled individually here; your two
+lowest prelab scores are dropped, so a single bad morning costs nothing.
+
+A passing grade in the laboratory is required to pass the course, no
+matter how strong your lecture average is.
+
+----------------------------------------------------------------------
+
+ASSIGNMENTS AND EXAM DATES
+
+Homework sets are submitted through the online system and are due at
+11:59 PM. Formal write-ups are uploaded to Canvas by 11:59 PM on the
+Monday following the experiment. Both midterms are common evening exams
+held in Dalton Auditorium, not in our regular lecture room.
+
+  Homework Set 1 ........... due Wednesday, September 9, 2026, 11:59 PM
+  Lab Report 1 ............. due Monday, September 14, 2026, 11:59 PM
+  Homework Set 2 ........... due Wednesday, September 23, 2026, 11:59 PM
+  Lab Report 2 ............. due Monday, September 28, 2026, 11:59 PM
+  Midterm Exam 1 ........... Tuesday, October 6, 2026, 7:00 PM-9:00 PM
+  Lab Report 3 ............. due Monday, October 12, 2026, 11:59 PM
+  Homework Set 3 ........... due Wednesday, October 21, 2026, 11:59 PM
+  Lab Report 4 ............. due Monday, October 26, 2026, 11:59 PM
+  Lab Report 5 ............. due Monday, November 2, 2026, 11:59 PM
+  Midterm Exam 2 ........... Tuesday, November 10, 2026, 7:00 PM-9:00 PM
+  Homework Set 4 ........... due Wednesday, November 18, 2026, 11:59 PM
+  Lab Report 6 ............. due Monday, November 23, 2026, 11:59 PM
+  Homework Set 5 ........... due Wednesday, December 2, 2026, 11:59 PM
+  Lab Report 7 ............. due Monday, December 7, 2026, 11:59 PM
+  Final Exam ............... Thursday, December 17, 2026, 8:00 AM-10:00 AM
+
+Both evening exams conflict with a number of other departments' evening
+sections. Check your other courses now and bring me any conflict in the
+first two weeks of term; a conflict raised the week of the exam is much
+harder to accommodate.
+
+----------------------------------------------------------------------
+
+LABORATORY
+
+The laboratory meets every Tuesday afternoon in Priestley Hall 12,
+starting in the second week of term with a safety and check-in session.
+Seven of the sessions are formal experiments that you write up; the rest
+are technique workshops and data-analysis periods with nothing to hand
+in. Goggles and closed shoes are required, you will be sent home without
+them, and a missed experiment cannot be made up in another section.
+
+  Experiment 1  Solution preparation and colligative properties
+  Experiment 2  Kinetics of the iodine clock reaction
+  Experiment 3  Determination of an equilibrium constant
+  Experiment 4  Acid-base titration and standardization
+  Experiment 5  Buffer capacity and pH measurement
+  Experiment 6  Solubility product of calcium hydroxide
+  Experiment 7  Electrochemical cells and the Nernst equation
+
+Each formal write-up follows the format in the manual: purpose,
+procedure deviations, data, propagated uncertainty, discussion,
+conclusion. Uncertainty analysis is worth a quarter of the grade on
+every one of them, so do not leave it to the last paragraph.
+
+----------------------------------------------------------------------
+
+WEEKLY SCHEDULE
+
+Week 1  | Aug 24 - Aug 28 | Intermolecular forces; liquids and solids (Ch. 11) |
+Week 2  | Aug 31 - Sep 4  | Solutions; colligative properties (Ch. 13)     |
+Week 3  | Sep 7 - Sep 11  | No class Mon (Labor Day); reaction rates (Ch. 14) | Homework Set 1 due Wed, Sep 9
+Week 4  | Sep 14 - Sep 18 | Rate laws; integrated rate laws (Ch. 14)       | Lab Report 1 due Mon, Sep 14
+Week 5  | Sep 21 - Sep 25 | Reaction mechanisms; catalysis (Ch. 14)        | Homework Set 2 due Wed, Sep 23
+Week 6  | Sep 28 - Oct 2  | Chemical equilibrium; the equilibrium constant (Ch. 15) | Lab Report 2 due Mon, Sep 28
+Week 7  | Oct 5 - Oct 9   | Le Chatelier's principle; equilibrium calculations (Ch. 15) | Midterm Exam 1, Tue, Oct 6
+Week 8  | Oct 12 - Oct 16 | Acids and bases; pH and pOH (Ch. 16)           | Lab Report 3 due Mon, Oct 12
+Week 9  | Oct 19 - Oct 23 | Weak acid and weak base equilibria (Ch. 16)    | Homework Set 3 due Wed, Oct 21
+Week 10 | Oct 26 - Oct 30 | Buffers and titration curves (Ch. 17)          | Lab Report 4 due Mon, Oct 26
+Week 11 | Nov 2 - Nov 6   | Solubility equilibria; complex ions (Ch. 17)   | Lab Report 5 due Mon, Nov 2
+Week 12 | Nov 9 - Nov 13  | Entropy and the second law (Ch. 18)            | Midterm Exam 2, Tue, Nov 10
+Week 13 | Nov 16 - Nov 20 | Free energy and spontaneity (Ch. 18)           | Homework Set 4 due Wed, Nov 18
+Week 14 | Nov 23 - Nov 27 | Thanksgiving recess, Nov 25-27; no class Wed-Fri | Lab Report 6 due Mon, Nov 23
+Week 15 | Nov 30 - Dec 4  | Electrochemistry; galvanic cells (Ch. 19)      | Homework Set 5 due Wed, Dec 2
+Week 16 | Dec 7 - Dec 11  | Electrolysis; nuclear chemistry; review (Ch. 20) | Lab Report 7 due Mon, Dec 7
+Finals  | Dec 14 - Dec 18 | Final Exam: Thursday, Dec 17, 8:00 AM, Dalton Auditorium
+
+The final exam is cumulative and weighted toward equilibrium,
+thermodynamics and electrochemistry. A periodic table and an equation
+sheet are provided; bring a non-programmable calculator.
+
+----------------------------------------------------------------------
+
+LATE WORK POLICY
+
+Homework sets may be submitted up to 48 hours late for 75% credit, and
+your lowest homework score is dropped at the end of the term. Formal
+write-ups are different: because the teaching assistants grade a whole
+section at once, a report handed in after the deadline loses one letter
+grade per day and is not accepted after four days. There are no late
+submissions for prelab quizzes, since they are written in the room.
+Exams are not rescheduled except for documented illness, religious
+observance, or a university-sanctioned commitment, and a conflict you
+can see coming must be reported to me at least one week ahead.
+
+ATTENDANCE POLICY
+
+Lecture attendance is worth 4% of the grade and is recorded through
+in-class response questions on roughly two thirds of the meetings; you
+may miss four of those with no penalty and no explanation. Laboratory
+attendance is not optional. Sections are full and there is no capacity
+to move you, so a missed experiment is a zero unless you arrange a swap
+with the laboratory coordinator before the period begins. A student who
+misses more than one experiment will not pass the laboratory component
+and therefore will not pass the course.
+
+ACADEMIC INTEGRITY
+
+Discuss the homework freely. Work through the hard problems at the
+whiteboard with anyone who will sit with you, then write your own
+solutions from your own understanding. Laboratory data is a different
+matter: you may share raw measurements with your bench partner, and you
+must say so when you do, but the analysis, the error propagation and
+every word of the discussion have to be yours. Fabricating or adjusting
+data to fit an expected result is the most serious offense in this
+course and is reported to the Office of Academic Integrity without
+exception. Copying from a solutions manual, a past semester's write-up,
+or a large language model and presenting it as your own is plagiarism.
+Exams are closed-book; a provided equation sheet is the only aid
+permitted.
+
+ACCESSIBILITY AND ACCOMMODATIONS
+
+Northbridge University is committed to full participation for students
+with disabilities. Send your accommodation letter from Student
+Accessibility Services to me and to the laboratory coordinator in the
+first two weeks of term. Exam accommodations for the evening midterms
+have to be booked with the testing center well in advance, and the
+laboratory has its own accessibility considerations we should talk
+through before Experiment 1.
