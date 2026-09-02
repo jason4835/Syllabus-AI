@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { messageOf } from "@/lib/api";
+import { messageOf, publicOrigin } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { exchangeCode } from "@/lib/google/oauth";
 import { createSession } from "@/lib/session";
@@ -9,7 +9,7 @@ import { store } from "@/lib/store";
 export const dynamic = "force-dynamic";
 
 function backToLanding(req: Request, reason: string) {
-  const url = new URL("/", req.url);
+  const url = new URL("/", publicOrigin(req));
   url.searchParams.set("auth_error", reason);
   return NextResponse.redirect(url);
 }
@@ -40,7 +40,7 @@ export async function GET(req: Request) {
       googleRefreshToken: refreshToken ?? existing?.googleRefreshToken ?? null,
     });
     await createSession(user.id);
-    return NextResponse.redirect(new URL("/dashboard", req.url));
+    return NextResponse.redirect(new URL("/dashboard", publicOrigin(req)));
   } catch (err) {
     logApiError("auth.callback_failed", err);
     return backToLanding(req, encodeURIComponent(messageOf(err)));

@@ -43,3 +43,31 @@ export function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
   return typeof err === "string" ? err : "Unexpected error";
 }
+
+/**
+ * The origin users actually see, for building redirects.
+ *
+ * Behind a reverse proxy (Railway, Fly, most hosts) `req.url` is the INTERNAL
+ * address -- `http://localhost:8080/...` -- so `new URL("/dashboard", req.url)`
+ * sends a real user to localhost on their own machine after a successful
+ * sign-in. The proxy tells us the public host in `X-Forwarded-Host`; an
+ * explicit `APP_URL` wins over even that, for hosts that do not set it.
+ */
+export function publicOrigin(req: Request): string {
+  const explicit = (process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
+  if (explicit) return explicit;
+
+  const headers = req.headers;
+  // X-Forwarded-Host may carry a comma-separated chain; the first is the edge.
+  const host = (headers.get("x-forwarded-host") ?? headers.get("host") ?? "")
+    .split(",")[0]
+    .trim();
+  if (host) {
+    const proto =
+      headers.get("x-forwarded-proto")?.split(",")[0].trim() ||
+      (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? "http" : "https");
+    return `${proto}://${host}`;
+  }
+  return new URL(req.url).origin;
+}
+
