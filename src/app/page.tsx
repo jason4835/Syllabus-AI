@@ -251,9 +251,24 @@ export default function LandingPage() {
             <a href="#why" className="rounded-sm hover:text-ink">
               Why it holds up
             </a>
+            {/*
+              AGPL-3.0 section 13: anyone interacting with a hosted instance
+              must be able to get the source. This link is how that obligation
+              is met, so keep it reachable on any deployment.
+            */}
+            <a
+              href="https://github.com/jason4835/Syllabus-AI"
+              className="rounded-sm hover:text-ink"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              Source
+            </a>
           </nav>
           <p className="text-[0.75rem] text-muted">
             Built for students who feel behind by week three.
+            <br />
+            &copy; 2026 Jason Paz &middot; AGPL-3.0
           </p>
         </div>
       </footer>

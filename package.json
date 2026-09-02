@@ -2,6 +2,13 @@
   "name": "syllabus-ai",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "author": "Jason Paz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jason4835/Syllabus-AI.git"
+  },
+  "homepage": "https://github.com/jason4835/Syllabus-AI",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",

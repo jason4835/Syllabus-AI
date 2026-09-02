@@ -117,3 +117,27 @@ Two design choices worth naming:
 - Calendar events use each user's browser-reported timezone, captured on first
   dashboard load. A user who signs in and never opens the dashboard before
   syncing would get the server's zone.
+
+## License
+
+Copyright © 2026 Jason Paz. Licensed under the
+[GNU Affero General Public License v3.0](LICENSE).
+
+In plain terms:
+
+- **You may** read it, fork it, modify it, run it yourself, and contribute back.
+- **You must** release your source under the same license if you distribute a
+  modified version **or run one as a network service**. That network clause is
+  the difference between AGPL and GPL, and it is the point: this is a hosted
+  app, so "I only run it, I don't ship it" would otherwise be a way around the
+  license entirely.
+- **The idea is not covered.** Copyright protects this code, not the concept of
+  turning a syllabus into a calendar. Build your own — just don't take this one
+  closed-source.
+
+If you deploy a modified copy, AGPL section 13 requires that your users can get
+your source. The footer's "Source" link is how this deployment satisfies that —
+if you fork it, point that link at *your* repository.
+
+Want to use it under different terms? The copyright is mine alone, so I can dual
+license it. Open an issue.
