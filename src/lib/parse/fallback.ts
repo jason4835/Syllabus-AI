@@ -20,11 +20,13 @@ import type {
   CoursePolicy,
   GradeWeight,
   MeetingTime,
+  NoClassPeriod,
   ParsedSyllabus,
 } from "../types";
 import {
   addDays,
   findDateSpans,
+  isoDayOfWeek,
   normalizeDate,
   normalizeDateRange,
   parseDaysOfWeek,
@@ -522,6 +524,340 @@ function mergeAssessments(items: LooseAssessment[]): LooseAssessment[] {
 }
 
 // ---------------------------------------------------------------------------
+// No-class periods
+// ---------------------------------------------------------------------------
+
+/**
+ * Phrases that mean "the class does not meet on these days".
+ *
+ * Deliberately narrow. Everything here has to survive contact with policy
+ * prose, which is why "closed" only counts next to a campus word ("closed-book"
+ * exams are not a holiday) and why a bare "break" still has to come with a date
+ * before it produces anything. The cost of a false positive is a class meeting
+ * silently missing from the student's calendar, which is worse than a break we
+ * failed to notice: that one only puts an extra meeting on the calendar, where
+ * the student can see it and delete it.
+ */
+const NO_CLASS_TRIGGER =
+  /\bno\s+class(?:es)?\b|\bclass(?:es)?\s+(?:will\s+be\s+|are\s+|is\s+)?cancell?ed\b|\bcancell?ed\s+class(?:es)?\b|\b(?:university|campus|college|school)\s+(?:is\s+|will\s+be\s+)?closed\b|\bholidays?\b|\brecess\b|\bbreaks?\b|\breading\s+days?\b/i;
+
+/** The stated last day of instruction -- everything after it is a no-class stretch. */
+const LAST_DAY_RE = /\blast\s+day\s+of\s+(?:class(?:es)?|instruction|lectures?)\b/i;
+
+/** The finals window, used only when no last day of classes was stated. */
+const FINALS_RE =
+  /\b(?:finals?\s+week|final\s+exam(?:ination)?s?\s+(?:period|week)|examination\s+period|exam\s+week)\b/i;
+
+/**
+ * Weekday words ONLY -- never the compact registrar codes.
+ *
+ * `parseDaysOfWeek` also accepts "MWF"/"TTh", which is right for a meeting-time
+ * line and catastrophic here: it reads the letters out of ordinary prose, so
+ * "Thanksgiving recess" would come back as Thursday.
+ */
+const NO_CLASS_WEEKDAYS: Record<string, number> = {
+  sunday: 0,
+  sun: 0,
+  monday: 1,
+  mon: 1,
+  tuesday: 2,
+  tues: 2,
+  tue: 2,
+  wednesday: 3,
+  weds: 3,
+  wed: 3,
+  thursday: 4,
+  thurs: 4,
+  thur: 4,
+  thu: 4,
+  friday: 5,
+  fri: 5,
+  saturday: 6,
+  sat: 6,
+};
+
+const WEEKDAY_WORD_PATTERN = Object.keys(NO_CLASS_WEEKDAYS)
+  .sort((a, b) => b.length - a.length)
+  .join("|");
+
+/** "No class Wed-Fri" -- a weekday range inside a week row. */
+const WEEKDAY_RANGE_RE = new RegExp(
+  `\\b(${WEEKDAY_WORD_PATTERN})\\b\\s*(?:-|to|through|thru|&|and)\\s*\\b(${WEEKDAY_WORD_PATTERN})\\b`,
+  "i",
+);
+
+const WEEKDAY_WORD_RE = new RegExp(`\\b(${WEEKDAY_WORD_PATTERN})\\b`, "gi");
+
+/**
+ * A clause longer than this is a paragraph, not a schedule note. Prose about
+ * "a break in the middle of the term" must not become a calendar fact.
+ */
+const MAX_NO_CLASS_CLAUSE = 160;
+
+interface DateWindow {
+  start: string;
+  end: string;
+}
+
+/** The ISO date of `dayOfWeek` inside a week window, or null if it falls outside. */
+function weekdayInWindow(window: DateWindow, dayOfWeek: number): string | null {
+  let cursor: string | null = window.start;
+  for (let i = 0; cursor !== null && cursor <= window.end && i < 21; i += 1) {
+    if (isoDayOfWeek(cursor) === dayOfWeek) return cursor;
+    cursor = addDays(cursor, 1);
+  }
+  return null;
+}
+
+/**
+ * The date span a schedule row covers ("Week 3 | Sep 7 - Sep 11 | ...").
+ *
+ * `skipIndex` is the cell we are resolving, so a cell that carries its own
+ * dates ("Thanksgiving recess, Nov 25-27") cannot be mistaken for the row's
+ * week window and resolve a weekday against itself.
+ */
+function rowWindow(cells: string[], skipIndex: number, ctx: DateContext): DateWindow | null {
+  for (let i = 0; i < cells.length; i += 1) {
+    if (i === skipIndex) continue;
+    const { start, end } = normalizeDateRange(cells[i], ctx);
+    if (!start || !end || start >= end) continue;
+    // A week row spans a week; anything wider is a term range, not a window a
+    // weekday can be resolved inside.
+    const span = Number(new Date(`${end}T00:00:00Z`).getTime() - new Date(`${start}T00:00:00Z`).getTime());
+    if (span > 13 * 86_400_000) continue;
+    return { start, end };
+  }
+  return null;
+}
+
+/**
+ * Turns the clause a period came from into a short human reason.
+ *
+ * The dates are stripped out because the period already carries them; what is
+ * left is the part a student actually wants to read ("Thanksgiving recess",
+ * "No class Mon (Labor Day)").
+ */
+function noClassReason(clause: string): string | null {
+  let text = clause;
+  const spans = findDateSpans(text);
+  for (let i = spans.length - 1; i >= 0; i -= 1) {
+    text = `${text.slice(0, spans[i].start)} ${text.slice(spans[i].end)}`;
+  }
+  text = collapse(text);
+
+  let previous = "";
+  while (text !== previous) {
+    previous = text;
+    text = text.replace(/^[\s,;:.\-–—|]+/, "").replace(/[\s,;:.\-–—|]+$/, "");
+    // The "-27, 2026" half of a range: `findDateSpans` only reports the
+    // fragment carrying the month, so the tail is left behind.
+    text = text.replace(/[-–—]?\s*\d{1,2}(?:st|nd|rd|th)?\s*,?\s*(?:\d{4})?\s*$/, "");
+    const words = text.split(" ");
+    const last = words[words.length - 1] ?? "";
+    if (words.length > 1 && WEEKDAY_RE.test(last)) text = words.slice(0, -1).join(" ");
+  }
+
+  const cleaned = collapse(text).slice(0, 90);
+  return cleaned.length >= 3 ? cleaned : null;
+}
+
+/**
+ * Every stretch of the term the syllabus says the class does not meet.
+ *
+ * Three sources, in the order we trust them:
+ *   1. An explicit note with its own dates ("Thanksgiving recess, Nov 25-27").
+ *   2. A weekday inside a week row ("No class Mon" in a `Week 3 | Sep 7 - Sep 11`
+ *      row resolves to that Monday).
+ *   3. The stated last day of classes: everything after it, through the end of
+ *      the term, is finals week and the reading gap before it.
+ *
+ * Nothing is inferred beyond that. A syllabus that never mentions a break gets
+ * an empty array, which is the honest answer -- inventing a Thanksgiving recess
+ * because most US terms have one would delete real class meetings from a
+ * calendar for a course that actually met.
+ */
+function findNoClassPeriods(
+  lines: string[],
+  ctx: DateContext,
+  termRange: { start: string | null; end: string | null; explicit: boolean },
+  warnings: string[],
+): NoClassPeriod[] {
+  const found: NoClassPeriod[] = [];
+  const unresolved: string[] = [];
+
+  for (const line of lines) {
+    if (!NO_CLASS_TRIGGER.test(line)) continue;
+    const cells = segments(line);
+
+    for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
+      const cell = cells[cellIndex];
+      if (!NO_CLASS_TRIGGER.test(cell)) continue;
+
+      let window: DateWindow | null | undefined;
+      const cellFound: NoClassPeriod[] = [];
+      const bare: string[] = [];
+
+      for (const rawClause of cell.split(/;/)) {
+        const clause = collapse(rawClause);
+        if (clause.length === 0 || clause.length > MAX_NO_CLASS_CLAUSE) continue;
+        if (!NO_CLASS_TRIGGER.test(clause)) continue;
+        // "Problem Set 5 due the Friday before spring break" is a deadline that
+        // mentions a break, not a break.
+        if (/\bdue\b/i.test(clause)) continue;
+
+        if (findDateSpans(clause).length > 0) {
+          const { start, end } = normalizeDateRange(clause, ctx);
+          if (start && end) {
+            cellFound.push({
+              start: start <= end ? start : end,
+              end: start <= end ? end : start,
+              reason: noClassReason(clause),
+            });
+          } else {
+            unresolved.push(clause);
+          }
+          continue;
+        }
+
+        WEEKDAY_WORD_RE.lastIndex = 0;
+        const weekdays = [...clause.matchAll(WEEKDAY_WORD_RE)].map(
+          (m) => NO_CLASS_WEEKDAYS[m[1].toLowerCase()],
+        );
+        if (weekdays.length === 0) {
+          bare.push(clause);
+          continue;
+        }
+
+        if (window === undefined) window = rowWindow(cells, cellIndex, ctx);
+        if (!window) {
+          unresolved.push(clause);
+          continue;
+        }
+
+        const reason = noClassReason(clause);
+        const range = WEEKDAY_RANGE_RE.exec(clause);
+        if (range) {
+          // "Wed-Fri" is one stretch, not two days with a hole in the middle.
+          const first = weekdayInWindow(window, NO_CLASS_WEEKDAYS[range[1].toLowerCase()]);
+          const last = weekdayInWindow(window, NO_CLASS_WEEKDAYS[range[2].toLowerCase()]);
+          if (first && last && first <= last) {
+            cellFound.push({ start: first, end: last, reason });
+            continue;
+          }
+        }
+        for (const day of new Set(weekdays)) {
+          const date = weekdayInWindow(window, day);
+          if (date) cellFound.push({ start: date, end: date, reason });
+          else unresolved.push(clause);
+        }
+      }
+
+      // A trailing bare "no class" restates the dated clause beside it
+      // ("Thanksgiving recess, Nov 25-27; no class") -- taking it as a separate
+      // fact would blank out the whole week the recess sits in. On its own,
+      // though, it means the row's entire week.
+      if (cellFound.length === 0 && bare.length > 0) {
+        if (window === undefined) window = rowWindow(cells, cellIndex, ctx);
+        if (window) {
+          cellFound.push({ start: window.start, end: window.end, reason: noClassReason(bare[0]) });
+        } else if (cells.length > 1) {
+          // Only worth a warning when it came out of a schedule row. A bare
+          // trigger in running prose ("take a break when you need one") names
+          // no days at all, so there is nothing for the reader to go fix.
+          unresolved.push(bare[0]);
+        }
+      }
+
+      found.push(...cellFound);
+    }
+  }
+
+  // Everything after the last day of classes: finals week plus the reading gap
+  // before it. Stated by the syllabus, not assumed -- and only when it really
+  // is before the end of the term.
+  const finals = firstResolvedRange(lines, FINALS_RE, ctx);
+  const lastDay = firstResolvedDate(lines, LAST_DAY_RE, ctx);
+  const termEnd = termRange.explicit ? termRange.end : (finals?.end ?? null);
+
+  if (lastDay && termEnd && lastDay < termEnd) {
+    const dayAfter = addDays(lastDay, 1);
+    if (dayAfter && dayAfter <= termEnd) {
+      found.push({ start: dayAfter, end: termEnd, reason: "After last day of classes" });
+    }
+  } else if (!lastDay && finals && finals.start <= finals.end) {
+    found.push({ start: finals.start, end: finals.end, reason: "Finals week" });
+  }
+
+  for (const phrase of [...new Set(unresolved)].slice(0, 5)) {
+    warnings.push(
+      `A no-class note ("${phrase.slice(0, 80)}") had no date we could resolve, so those days were left as normal class meetings.`,
+    );
+  }
+
+  return mergeNoClassPeriods(found);
+}
+
+/** First line matching `re` that also yields a date -- prose mentions resolve to null and are skipped. */
+function firstResolvedDate(lines: string[], re: RegExp, ctx: DateContext): string | null {
+  for (const line of lines) {
+    if (!re.test(line)) continue;
+    const date = normalizeDate(line, ctx);
+    if (date) return date;
+  }
+  return null;
+}
+
+function firstResolvedRange(lines: string[], re: RegExp, ctx: DateContext): DateWindow | null {
+  for (const line of lines) {
+    if (!re.test(line)) continue;
+    const { start, end } = normalizeDateRange(line, ctx);
+    if (start && end) return { start, end };
+  }
+  return null;
+}
+
+/**
+ * Sorts and folds overlapping periods together.
+ *
+ * A well-written syllabus states the same break twice (a header list and the
+ * week row), and the two mentions rarely have identical text. Overlap is the
+ * only reliable signal that they are the same closure, so overlapping ranges
+ * merge into one.
+ *
+ * Which reason survives follows `mergeAssessments`: the richer mention wins,
+ * because the two are usually the same closure described once in passing and
+ * once properly ("recess" in a wrapped header line, "Thanksgiving recess" in
+ * the week row).
+ *
+ * Exported because the AI extractor has to answer the same question about the
+ * periods the model returns, and two implementations of "is this the same
+ * closure" would eventually disagree.
+ */
+export function mergeNoClassPeriods(periods: NoClassPeriod[]): NoClassPeriod[] {
+  const sorted = [...periods].sort(
+    (a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end),
+  );
+
+  const out: NoClassPeriod[] = [];
+  for (const period of sorted) {
+    const previous = out[out.length - 1];
+    if (previous && period.start <= previous.end) {
+      const sameRange = period.start === previous.start && period.end === previous.end;
+      if (period.end > previous.end) previous.end = period.end;
+      if (
+        period.reason &&
+        (!previous.reason || (sameRange && period.reason.length > previous.reason.length))
+      ) {
+        previous.reason = period.reason;
+      }
+      continue;
+    }
+    out.push({ ...period });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Policies
 // ---------------------------------------------------------------------------
 
@@ -627,6 +963,7 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
   const gradeWeights = findGradeWeights(lines);
   const policies = findPolicies(text);
   const assessments = findAssessments(lines, inferenceCtx);
+  const noClass = findNoClassPeriods(lines, inferenceCtx, termRange, warnings);
 
   if (!code) {
     warnings.push("No course code (like \"MATH 221\") was found -- please set the course name yourself.");
@@ -677,6 +1014,9 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
       startDate: termRange.explicit ? termRange.start : null,
       endDate: termRange.explicit ? termRange.end : null,
       meetingTimes,
+      // Empty is a real answer: it means the syllabus never said the class
+      // skips a day, not that we failed to look.
+      noClass,
       gradeWeights,
       policies,
     },

@@ -2,7 +2,13 @@
 
 import { useEffect, useId, useMemo, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import type { Assessment, AssessmentKind, Course } from "@/lib/types";
+import type {
+  Assessment,
+  AssessmentKind,
+  Course,
+  MeetingTime,
+  NoClassPeriod,
+} from "@/lib/types";
 import { needsReview } from "@/lib/types";
 import { apiPost } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
@@ -20,9 +26,12 @@ import { CourseEditor } from "@/components/dashboard/course-editor";
 import { KIND_LABEL } from "@/components/labels";
 import { accentFor } from "@/components/course-accents";
 import {
+  formatDateShort,
   formatPercent,
+  formatTime,
   formatWeekRange,
   mondayOf,
+  parseDate,
   pluralize,
 } from "@/components/format";
 
@@ -202,6 +211,7 @@ export function RoadmapPanel({
                         .filter(Boolean)
                         .join(" · ")}
                     </p>
+                    <MeetsLine course={course} />
                     {/* Counts down as items are confirmed, then disappears. */}
                     {unreviewed > 0 ? (
                       <p className="mt-1.5">
@@ -572,5 +582,97 @@ function AddItemForm({
         <span className="text-[0.6875rem] text-muted">Esc to cancel</span>
       </div>
     </form>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Meeting pattern + the weeks it doesn't happen                              */
+/* -------------------------------------------------------------------------- */
+
+const DAY_LETTERS = ["Su", "M", "T", "W", "Th", "F", "Sa"];
+const MS_PER_DAY = 86_400_000;
+
+/** "MWF 10:00 AM–10:50 AM · Hayes Hall 210" */
+function formatMeeting(meeting: MeetingTime): string {
+  const days = [...(meeting.daysOfWeek ?? [])]
+    .sort((a, b) => a - b)
+    .map((day) => DAY_LETTERS[day] ?? "?")
+    .join("");
+  const start = formatTime(meeting.startTime);
+  const end = formatTime(meeting.endTime);
+  const span = start && end ? `${start}–${end}` : (start ?? end ?? "");
+  const when = [days, span].filter(Boolean).join(" ");
+  if (!when) return "";
+  return meeting.location ? `${when} · ${meeting.location}` : when;
+}
+
+/**
+ * "Sep 7 (Labor Day)", "Nov 25–27 (Thanksgiving)", "after Dec 11".
+ *
+ * A stretch that runs to the end of the term is the syllabus saying classes
+ * stop, not that a two-week holiday is coming — so it is written from the last
+ * day that *does* meet, which is the date a student is actually looking for.
+ */
+function formatNoClass(period: NoClassPeriod, termEnd: string | null): string {
+  const start = parseDate(period.start);
+  const end = parseDate(period.end);
+  const suffix = period.reason ? ` (${period.reason})` : "";
+  if (!start) return period.reason ?? "";
+
+  const termLast = parseDate(termEnd);
+  const runsToTermEnd =
+    end !== null &&
+    termLast !== null &&
+    end.getTime() > start.getTime() &&
+    end.getTime() >= termLast.getTime();
+  if (runsToTermEnd) {
+    const lastMeeting = new Date(start.getTime() - MS_PER_DAY);
+    return `after ${formatDateShort(lastMeeting)}${suffix}`;
+  }
+
+  if (!end || end.getTime() === start.getTime()) {
+    return `${formatDateShort(start)}${suffix}`;
+  }
+  // Same month: "Nov 25–27" beats repeating the month for two days apart.
+  const sameMonth =
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth();
+  const range = sameMonth
+    ? `${formatDateShort(start)}–${end.getDate()}`
+    : `${formatDateShort(start)} – ${formatDateShort(end)}`;
+  return `${range}${suffix}`;
+}
+
+/** The course's rhythm in one line — when it meets, and when it doesn't. */
+function MeetsLine({ course }: { course: Course }) {
+  const meets = (course.meetingTimes ?? [])
+    .map(formatMeeting)
+    .filter(Boolean)
+    .join("; ");
+
+  const summaries = (course.noClass ?? [])
+    .map((period) => formatNoClass(period, course.endDate))
+    .filter(Boolean);
+  // Three is what fits on a phone before the line wraps twice; the rest stay
+  // one hover away rather than pushing the assessment list down the page.
+  const shown = summaries.slice(0, 3);
+  const hidden = summaries.length - shown.length;
+  const noClass =
+    summaries.length === 0
+      ? ""
+      : `No class: ${shown.join(", ")}${hidden > 0 ? `, +${hidden} more` : ""}`;
+
+  if (!meets && !noClass) return null;
+
+  return (
+    <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
+      {meets ? `Meets ${meets}` : null}
+      {meets && noClass ? " — " : null}
+      {noClass ? (
+        <span title={hidden > 0 ? `No class: ${summaries.join(", ")}` : undefined}>
+          {noClass}
+        </span>
+      ) : null}
+    </p>
   );
 }

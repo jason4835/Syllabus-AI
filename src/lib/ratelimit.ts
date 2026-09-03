@@ -100,6 +100,11 @@ export const RULES: Record<string, LimitRule> = {
   // is nothing to protect here but the database's dignity.
   "edit:user:burst": { limit: 60, windowMs: MINUTE },
 
+  // The feed is unauthenticated -- the token is the credential -- so the
+  // limit is per token, and generous: Apple Calendar polls hourly, Outlook
+  // every few hours; 30/min only ever trips on a script.
+  "feed:token:burst": { limit: 30, windowMs: MINUTE },
+
   // Backstop across ALL users, so a single shared or leaked account cannot
   // become the whole bill. Deliberately above any one user's cap and below the
   // sum of everyone's: honest aggregate use for a dozen testers is a few
@@ -132,6 +137,7 @@ const RULE_SETS: Record<string, readonly string[]> = {
   // No daily companion and no global backstop: edits spend nothing, so there
   // is no bill for either to protect.
   "edit:user": ["edit:user:burst"],
+  "feed:token": ["feed:token:burst"],
   "global:openai": ["global:openai:burst", "global:openai:daily"],
 };
 
@@ -358,6 +364,8 @@ const MESSAGES: Record<string, (wait: string) => string> = {
     `Notion sync is rate limited. Try again ${wait}.`,
   "edit:user:burst": (wait) =>
     `You're making changes faster than the limit allows. Try again ${wait}.`,
+  "feed:token:burst": (wait) =>
+    `This calendar feed is being fetched too often. Try again ${wait}.`,
   "global:openai:burst": (wait) =>
     `Syllabus AI is handling a lot of requests right now. Try again ${wait}.`,
   "global:openai:daily": (wait) =>

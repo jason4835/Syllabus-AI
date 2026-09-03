@@ -15,8 +15,9 @@ import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
-import type { ParsedSyllabus } from "../types";
+import type { NoClassPeriod, ParsedSyllabus } from "../types";
 import { addDays, normalizeDate, parseTime, termWindowFromLabel, type DateContext } from "./dates";
+import { mergeNoClassPeriods } from "./fallback";
 
 /**
  * Structured outputs are only guaranteed on 4o-2024-08-06 and later. Overridable
@@ -78,6 +79,16 @@ const MeetingTimeSchema = z.object({
   location: z.string().nullable(),
 });
 
+/**
+ * A stretch of the term the class does not meet. Inclusive; a single day has
+ * start === end. Dates are ISO `YYYY-MM-DD`, re-verified in `sanitize`.
+ */
+const NoClassPeriodSchema = z.object({
+  start: z.string(),
+  end: z.string(),
+  reason: z.string().nullable(),
+});
+
 const CoursePolicySchema = z.object({
   category: z.enum(["late_work", "attendance", "integrity", "grading", "other"]),
   summary: z.string(),
@@ -92,6 +103,7 @@ const CourseSchema = z.object({
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
   meetingTimes: z.array(MeetingTimeSchema),
+  noClass: z.array(NoClassPeriodSchema),
   gradeWeights: z.array(GradeWeightSchema),
   policies: z.array(CoursePolicySchema),
 });
@@ -131,6 +143,13 @@ RULES
 7. MEETING TIMES are the recurring class/lecture/recitation meetings only. Office hours are NOT meeting times. daysOfWeek uses 0 = Sunday through 6 = Saturday.
 
 8. course.startDate and course.endDate are the term bounds, ISO, and only when the syllabus states or clearly implies them. Otherwise null.
+
+9. NO-CLASS PERIODS. course.noClass lists every stretch of the term when this class does NOT meet, as inclusive ISO date ranges ({ start, end, reason }); a single day has start === end. It decides which class meetings are left off the student's calendar, so both directions are errors: a missed break puts a class on the calendar that does not happen, and an invented one deletes a class that does.
+   - Take them from explicit statements: "no class", "no classes", "class cancelled", "university closed", a named holiday, a recess, a break, reading days. A weekday named inside a week row resolves against that row's dates -- "No class Mon" in a "Week 3 | Sep 7 - Sep 11" row is 2026-09-07.
+   - LAST DAY OF CLASSES: if the syllabus states one and it falls before the end of the term, add ONE period running from the DAY AFTER it through course.endDate, with reason "After last day of classes". That is what keeps finals week, and the reading gap before it, off the class schedule. If no last day of classes is stated but a finals/exam week range is, use that range itself with reason "Finals week".
+   - Keep a range as one entry: "Thanksgiving recess, Nov 25-27" is a single period, not three. Do not emit overlapping periods.
+   - reason is a short label copied from the syllabus's own wording ("Labor Day", "Thanksgiving recess"), or null when it gives none.
+   - Return [] when the syllabus mentions no breaks at all. Never add a holiday because your calendar knowledge says one falls in that week -- only what the document states.
 
 Return only what the syllabus supports. Use warnings for anything ambiguous, missing, or that you had to reason around.`;
 
@@ -234,6 +253,32 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
     );
   }
 
+  // Every no-class date is re-derived here for the same reason due dates are:
+  // this array decides which class meetings are NOT written to the calendar, so
+  // a hallucinated range would silently delete real meetings. A period we
+  // cannot verify is dropped and named in a warning, never approximated.
+  let droppedPeriods = 0;
+  const noClass: NoClassPeriod[] = [];
+  for (const period of raw.course.noClass ?? []) {
+    const start = normalizeDate(period.start ?? "", ctx);
+    // A single-day period is allowed to arrive with only a start.
+    const end = normalizeDate(period.end ?? "", ctx) ?? start;
+    if (!start || !end) {
+      droppedPeriods += 1;
+      continue;
+    }
+    noClass.push({
+      start: start <= end ? start : end,
+      end: start <= end ? end : start,
+      reason: trimOrNull(period.reason, 120),
+    });
+  }
+  if (droppedPeriods > 0) {
+    warnings.push(
+      `${droppedPeriods} no-class period(s) came back with dates we could not verify and were dropped, so those days are shown as normal class meetings.`,
+    );
+  }
+
   const gradeWeights = raw.course.gradeWeights
     .map((w) => ({ category: collapse(w.category), weightPercent: Number(w.weightPercent) }))
     .filter((w) => w.category.length > 0 && Number.isFinite(w.weightPercent) && w.weightPercent > 0);
@@ -266,6 +311,9 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
       startDate,
       endDate,
       meetingTimes,
+      // Overlaps folded together, so the same recess stated in the header and
+      // again in the week row is one period rather than two.
+      noClass: mergeNoClassPeriods(noClass),
       gradeWeights,
       policies,
     },
@@ -293,6 +341,7 @@ function mergeChunks(parts: ModelOutput[]): ModelOutput {
       startDate: null,
       endDate: null,
       meetingTimes: [],
+      noClass: [],
       gradeWeights: [],
       policies: [],
     },
@@ -301,6 +350,7 @@ function mergeChunks(parts: ModelOutput[]): ModelOutput {
   };
 
   const seenAssessment = new Set<string>();
+  const seenNoClass = new Set<string>();
   const seenWeight = new Set<string>();
   const seenPolicy = new Set<string>();
   const seenMeeting = new Set<string>();
@@ -320,6 +370,14 @@ function mergeChunks(parts: ModelOutput[]): ModelOutput {
       if (seenMeeting.has(key)) continue;
       seenMeeting.add(key);
       merged.course.meetingTimes.push(m);
+    }
+    // Keyed on the dates, not the wording: the chunk overlap shows the same
+    // break to two passes, which describe it in two different ways.
+    for (const p of c.noClass ?? []) {
+      const key = `${p.start}|${p.end}`;
+      if (seenNoClass.has(key)) continue;
+      seenNoClass.add(key);
+      merged.course.noClass.push(p);
     }
     for (const w of c.gradeWeights) {
       const key = titleKey(w.category);

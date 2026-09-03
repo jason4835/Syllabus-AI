@@ -64,6 +64,18 @@ export interface MeetingTime {
   location: string | null;
 }
 
+/**
+ * A stretch of the term when a course does not meet -- a holiday, a recess,
+ * or everything after the stated last day of classes. Inclusive dates; a
+ * single day has start === end. Drives which class meetings are NOT put on
+ * the calendar.
+ */
+export interface NoClassPeriod {
+  start: string;
+  end: string;
+  reason: string | null;
+}
+
 export interface Course {
   id: string;
   userId: string;
@@ -76,6 +88,11 @@ export interface Course {
   startDate: string | null;
   endDate: string | null;
   meetingTimes: MeetingTime[];
+  /**
+   * When the class does not meet. Empty means "meets every week of the
+   * term" -- the honest default when a syllabus says nothing about breaks.
+   */
+  noClass: NoClassPeriod[];
   gradeWeights: GradeWeight[];
   /** Late work, attendance, academic-integrity policies worth remembering. */
   policies: CoursePolicy[];
@@ -153,6 +170,8 @@ export interface CalendarSyncResult {
   created: number;
   updated: number;
   skipped: number;
+  /** Recurring class-meeting series written, one per meeting pattern. */
+  classSeries: number;
   calendarId: string;
   errors: string[];
 }
@@ -174,6 +193,12 @@ export interface User {
    * reports it; callers fall back to the server zone.
    */
   timezone: string | null;
+  /**
+   * Secret in the user's private calendar-feed URL. Anyone holding it can
+   * read the feed, so it is random, never logged, and resettable. Null until
+   * the user asks for a feed.
+   */
+  calendarFeedToken: string | null;
   createdAt: string;
 }
 

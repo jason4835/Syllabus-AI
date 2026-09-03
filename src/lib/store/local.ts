@@ -33,7 +33,11 @@ import type {
   User,
 } from "@/lib/types";
 import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
-import { notionSessionLinkPrefix } from "@/lib/store";
+import {
+  isFeedTokenShaped,
+  newCalendarFeedToken,
+  notionSessionLinkPrefix,
+} from "@/lib/store";
 
 interface CalendarLinkRecord extends CalendarLink {
   assessmentId: string;
@@ -91,6 +95,24 @@ function normalizeAssessment(row: Assessment): Assessment {
 }
 
 /**
+ * Same idea for courses: a row written before `noClass` existed has no such
+ * key, and `undefined` would reach the calendar layer as "not an array" rather
+ * than "this class has no breaks".
+ */
+function normalizeCourse(row: Course): Course {
+  return { ...row, noClass: Array.isArray(row.noClass) ? row.noClass : [] };
+}
+
+/** And for users: rows predating `timezone`/`calendarFeedToken` read back as null. */
+function normalizeUser(row: User): User {
+  return {
+    ...row,
+    timezone: row.timezone ?? null,
+    calendarFeedToken: row.calendarFeedToken ?? null,
+  };
+}
+
+/**
  * Tolerant of a truncated or hand-edited file: a corrupt demo database should
  * degrade to "empty" rather than crash every route that touches storage.
  *
@@ -111,8 +133,12 @@ async function readDatabase(): Promise<Database> {
     if (typeof parsed !== "object" || parsed === null) return emptyDatabase();
     const shape = parsed as Partial<Record<keyof Database, unknown>>;
     return {
-      users: Array.isArray(shape.users) ? (shape.users as User[]) : [],
-      courses: Array.isArray(shape.courses) ? (shape.courses as Course[]) : [],
+      users: Array.isArray(shape.users)
+        ? (shape.users as User[]).map(normalizeUser)
+        : [],
+      courses: Array.isArray(shape.courses)
+        ? (shape.courses as Course[]).map(normalizeCourse)
+        : [],
       assessments: Array.isArray(shape.assessments)
         ? (shape.assessments as Assessment[]).map(normalizeAssessment)
         : [],
@@ -278,6 +304,13 @@ export function createLocalStore(): Store {
           // know the browser's zone, and must not clear one already reported.
           timezone:
             u.timezone !== undefined ? u.timezone : (existing?.timezone ?? null),
+          // Same rule, and it matters more: dropping the feed token here would
+          // break every calendar app already subscribed to that URL, on every
+          // sign-in. The callers that upsert a user do not know it.
+          calendarFeedToken:
+            u.calendarFeedToken !== undefined
+              ? u.calendarFeedToken
+              : (existing?.calendarFeedToken ?? null),
           // First write wins: re-authenticating must not reset the join date.
           createdAt:
             existing?.createdAt ?? u.createdAt ?? new Date().toISOString(),
@@ -295,6 +328,43 @@ export function createLocalStore(): Store {
         const next: User = { ...db.users[index], timezone };
         db.users[index] = next;
         return clone(next);
+      });
+    },
+
+    async ensureCalendarFeedToken(userId) {
+      return mutate((db) => {
+        const index = db.users.findIndex((existing) => existing.id === userId);
+        if (index === -1) return null;
+        const current = db.users[index].calendarFeedToken;
+        // Read-or-mint inside the same serialized write, so two concurrent
+        // requests cannot each mint a token and leave one subscriber's URL
+        // dead the moment it was handed out.
+        if (current) return current;
+        const token = newCalendarFeedToken();
+        db.users[index] = { ...db.users[index], calendarFeedToken: token };
+        return token;
+      });
+    },
+
+    async resetCalendarFeedToken(userId) {
+      return mutate((db) => {
+        const index = db.users.findIndex((existing) => existing.id === userId);
+        if (index === -1) return null;
+        const token = newCalendarFeedToken();
+        db.users[index] = { ...db.users[index], calendarFeedToken: token };
+        return token;
+      });
+    },
+
+    async getUserByFeedToken(token) {
+      // Junk never reaches the data: an empty or truncated token is rejected
+      // before the lookup, and the comparison below is whole-value equality --
+      // never `startsWith`, which would let a guessed prefix find a real row.
+      if (!isFeedTokenShaped(token)) return null;
+      const needle = token.trim();
+      return readOnly((db) => {
+        const found = db.users.find((u) => u.calendarFeedToken === needle);
+        return found ? clone(found) : null;
       });
     },
 
@@ -381,6 +451,7 @@ export function createLocalStore(): Store {
           startDate: parsed.course.startDate,
           endDate: parsed.course.endDate,
           meetingTimes: clone(parsed.course.meetingTimes ?? []),
+          noClass: clone(parsed.course.noClass ?? []),
           gradeWeights: clone(parsed.course.gradeWeights ?? []),
           policies: clone(parsed.course.policies ?? []),
           createdAt: new Date().toISOString(),

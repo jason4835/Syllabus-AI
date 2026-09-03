@@ -18,6 +18,17 @@
  *    we guessed wrong, would keep getting every deadline in the old one. On a
  *    UTC host that put a New York student's 23:59 deadline at 19:59.
  *
+ * 4. WHAT goes on the calendar is decided in `@/lib/calendar/events`, not here.
+ *    This file is a translator: `CalendarEvent` in, Google's wire format out.
+ *    The ICS feed reads the same model, so a downloaded .ics and a synced
+ *    calendar cannot disagree about a title, a reminder, or which Monday a
+ *    class meets.
+ *
+ * Class meetings are written as ONE recurring event per meeting pattern rather
+ * than as forty-five singles: it is one API call instead of forty-five, it is
+ * one row in the user's calendar settings, and cancelling a break is an EXDATE
+ * rather than a diff. `classSeries` counts those series.
+ *
  * The dry-run path walks the exact same loop and skips only the network calls,
  * which is what lets demo mode report counts that match what a real sync would
  * do.
@@ -28,6 +39,14 @@
 import { google, type calendar_v3 } from "googleapis";
 import { store } from "@/lib/store";
 import { getAuthedClient } from "@/lib/google/oauth";
+import {
+  addDays,
+  buildCalendarPlan,
+  endOfDayUtc,
+  type CalendarEvent,
+  type CalendarPlan,
+} from "@/lib/calendar/events";
+import { resolveTerm } from "@/lib/plan";
 import type {
   Assessment,
   CalendarSyncResult,
@@ -44,13 +63,6 @@ const CALENDAR_NAME = "Syllabus AI";
  * somewhere unexpected.
  */
 export const DRY_RUN_CALENDAR_ID = "dry-run";
-
-/** How long an assessment's timed event runs before its due moment. */
-const TIMED_EVENT_DURATION_MINUTES = 60;
-
-const REMINDER_ONE_DAY = 24 * 60;
-const REMINDER_ONE_WEEK = 7 * 24 * 60;
-const REMINDER_STUDY_BLOCK = 30;
 
 /**
  * Last-resort zone: what the host process is in. Correct only for a user who
@@ -78,200 +90,118 @@ export interface SyncOptions {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Planning -- pure, shared by the real and dry-run paths                      */
+/* Planning -- delegated to the provider-neutral model                         */
 /* -------------------------------------------------------------------------- */
 
-type EventDateTime =
-  | { date: string }
-  | { dateTime: string; timeZone?: string };
-
-interface PlannedEvent {
-  /**
-   * Assessment id or study block id. This is the key both the calendar link
-   * table and this planner agree on -- everything else about an event can
-   * change between syncs, this cannot.
-   */
-  sourceId: string;
-  summary: string;
-  description: string;
-  start: EventDateTime;
-  end: EventDateTime;
-  /** Minutes-before values for popup reminders. */
-  reminderMinutes: number[];
-}
-
-interface SyncPlan {
-  events: PlannedEvent[];
-  /** Items we could not place on a calendar at all (no resolvable date). */
-  skipped: number;
-  /** Planning-time problems, e.g. a malformed date. Merged into the result. */
-  errors: string[];
-}
-
-const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const ISO_TIME = /^(\d{2}):(\d{2})$/;
-
 /**
- * Parses "YYYY-MM-DD" (+ optional "HH:MM") into UTC-epoch milliseconds.
+ * Builds the event list this sync intends to write.
  *
- * We treat the components as if they were UTC purely as arithmetic scaffolding
- * -- it lets us add and subtract hours without a DST-aware library. The value
- * is formatted straight back into a floating local datetime string, so no
- * timezone is ever actually applied.
+ * All the actual planning rules -- what a deadline event is called, how long it
+ * runs, which reminders it carries, which class meetings a holiday cancels --
+ * live in `@/lib/calendar/events`, so the ICS feed and this file cannot drift.
+ * What is left here is Google's wire format, and nothing else.
+ *
+ * The term window comes from the same `resolveTerm` the semester plan uses, so
+ * a class series is anchored to exactly the weeks the workload chart numbers.
  */
-function toEpochScaffold(date: string, time: string): number | null {
-  const d = ISO_DATE.exec(date);
-  const t = ISO_TIME.exec(time);
-  if (!d || !t) return null;
-  return Date.UTC(
-    Number(d[1]),
-    Number(d[2]) - 1,
-    Number(d[3]),
-    Number(t[1]),
-    Number(t[2]),
-  );
+function planEvents(opts: SyncOptions, timeZone: string): CalendarPlan {
+  return buildCalendarPlan({
+    courses: opts.courses,
+    assessments: opts.assessments,
+    studyBlocks: opts.studyBlocks ?? [],
+    timeZone,
+    term: resolveTerm(opts.courses, opts.assessments),
+  });
 }
 
-function pad(n: number): string {
+/* -------------------------------------------------------------------------- */
+/* CalendarEvent -> Google                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** RFC 5545 day abbreviations, indexed by `Date`'s 0 = Sunday numbering. */
+const RRULE_DAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"] as const;
+
+function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** Formats scaffold milliseconds back to a floating local "YYYY-MM-DDTHH:MM:SS". */
-function formatLocalDateTime(ms: number): string {
-  const d = new Date(ms);
+/** `Date` -> "YYYYMMDDTHHMMSSZ", the only UNTIL form Google accepts here. */
+function utcStamp(d: Date): string {
   return (
-    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` +
-    `T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:00`
+    `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}` +
+    `T${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}${pad2(d.getUTCSeconds())}Z`
   );
 }
 
-/** All-day events use an exclusive end date, so a one-day event ends the next day. */
-function nextDay(date: string): string | null {
-  const ms = toEpochScaffold(date, "00:00");
-  if (ms === null) return null;
-  return formatLocalDateTime(ms + 24 * 60 * 60 * 1000).slice(0, 10);
-}
-
-function describeAssessment(a: Assessment, courseTitle: string | null): string {
-  const lines: string[] = [];
-  lines.push(`Type: ${a.kind}`);
-  if (courseTitle) lines.push(`Course: ${courseTitle}`);
-  if (a.weightPercent !== null) {
-    lines.push(`Worth: ${a.weightPercent}% of the final grade`);
-  }
-  if (a.notes) lines.push("", a.notes);
-  // Trailing provenance line: makes it obvious in the user's calendar where an
-  // event came from, and lets them search for ours.
-  lines.push("", "Created by Syllabus AI");
-  return lines.join("\n");
-}
-
-function describeStudyBlock(b: StudyBlock): string {
-  return ["Study session", "", b.rationale, "", "Created by Syllabus AI"].join("\n");
+/** Local "YYYY-MM-DDTHH:MM" -> "YYYYMMDDTHHMMSS" (no Z: this one is local). */
+function localStamp(localDateTime: string): string {
+  return `${localDateTime.slice(0, 10).replace(/-/g, "")}T${localDateTime
+    .slice(11, 16)
+    .replace(":", "")}00`;
 }
 
 /**
- * Turns courses + assessments + study blocks into the exact list of events we
- * intend to have on the calendar. Pure: no store, no network. Both sync paths
- * call this, so dry-run counts cannot drift from real ones.
+ * The RRULE/EXDATE lines for a recurring event.
+ *
+ * Two Google rules that are easy to get wrong and fail quietly:
+ *
+ *  - When DTSTART carries a TZID, `UNTIL` must be in UTC. A local UNTIL is
+ *    rejected outright, and an UNTIL at midnight of the last day drops the
+ *    final class -- so it is the last *instant* of that day, converted through
+ *    the zone, which is why it moves with DST.
+ *  - EXDATE values must match DTSTART's form. Ours is local-with-TZID, so the
+ *    exclusions are local-with-the-same-TZID. A `Z`-suffixed EXDATE against a
+ *    TZID DTSTART is accepted and then silently excludes nothing, which shows
+ *    up as a class meeting on Thanksgiving.
  */
-function planEvents(opts: SyncOptions, timeZone: string): SyncPlan {
-  const events: PlannedEvent[] = [];
-  const errors: string[] = [];
-  let skipped = 0;
+function toRecurrence(event: CalendarEvent): string[] | undefined {
+  if (!event.recurrence) return undefined;
+  const { byDay, until, exdates } = event.recurrence;
 
-  const coursesById = new Map(opts.courses.map((c) => [c.id, c]));
+  const days = byDay.map((d) => RRULE_DAYS[d]).join(",");
+  const untilStamp = utcStamp(endOfDayUtc(until, event.timeZone));
+  const lines = [`RRULE:FREQ=WEEKLY;BYDAY=${days};UNTIL=${untilStamp}`];
 
-  for (const a of opts.assessments) {
-    const course = coursesById.get(a.courseId) ?? null;
-    // Fall back to the bare title rather than printing a placeholder code: an
-    // orphaned assessment is still more useful on the calendar than not.
-    const summary = course ? `${course.code}: ${a.title}` : a.title;
-    const description = describeAssessment(a, course ? course.title : null);
-
-    if (a.dueDate === null) {
-      // Nothing to schedule against. The UI surfaces these for manual dating.
-      skipped += 1;
-      continue;
-    }
-
-    // Exams get a second, week-out nudge -- that is the one deadline where a
-    // 24-hour warning is already too late to act on.
-    const reminderMinutes =
-      a.kind === "exam"
-        ? [REMINDER_ONE_WEEK, REMINDER_ONE_DAY]
-        : [REMINDER_ONE_DAY];
-
-    if (a.dueTime) {
-      const dueMs = toEpochScaffold(a.dueDate, a.dueTime);
-      if (dueMs === null) {
-        errors.push(`${a.title}: unparseable due date/time (${a.dueDate} ${a.dueTime})`);
-        skipped += 1;
-        continue;
-      }
-      // The event *ends* at the due moment, so it reads as "the hour before
-      // this is due" on the calendar rather than starting when it is too late.
-      const startMs = dueMs - TIMED_EVENT_DURATION_MINUTES * 60 * 1000;
-      events.push({
-        sourceId: a.id,
-        summary,
-        description,
-        start: { dateTime: formatLocalDateTime(startMs), timeZone },
-        end: { dateTime: formatLocalDateTime(dueMs), timeZone },
-        reminderMinutes,
-      });
-      continue;
-    }
-
-    const end = nextDay(a.dueDate);
-    if (!ISO_DATE.test(a.dueDate) || end === null) {
-      errors.push(`${a.title}: unparseable due date (${a.dueDate})`);
-      skipped += 1;
-      continue;
-    }
-    // All-day: `date` with no timeZone. A zone on a date-only event is what
-    // makes Google shift it into the neighbouring day.
-    events.push({
-      sourceId: a.id,
-      summary,
-      description,
-      start: { date: a.dueDate },
-      end: { date: end },
-      reminderMinutes,
-    });
+  // Omit the line entirely when there is nothing to exclude: an empty EXDATE
+  // is a malformed property, not a no-op.
+  if (exdates.length > 0) {
+    lines.push(
+      `EXDATE;TZID=${event.timeZone}:${exdates.map(localStamp).join(",")}`,
+    );
   }
-
-  for (const b of opts.studyBlocks ?? []) {
-    const course = coursesById.get(b.courseId) ?? null;
-    events.push({
-      sourceId: b.id,
-      summary: course ? `Study: ${course.code}: ${b.title}` : `Study: ${b.title}`,
-      description: describeStudyBlock(b),
-      // Planner output is already a local ISO datetime, per types.ts.
-      start: { dateTime: b.start, timeZone },
-      end: { dateTime: b.end, timeZone },
-      reminderMinutes: [REMINDER_STUDY_BLOCK],
-    });
-  }
-
-  return { events, skipped, errors };
+  return lines;
 }
 
-function toEventBody(planned: PlannedEvent): calendar_v3.Schema$Event {
-  return {
-    summary: planned.summary,
-    description: planned.description,
-    start: planned.start,
-    end: planned.end,
+function toEventBody(event: CalendarEvent): calendar_v3.Schema$Event {
+  const body: calendar_v3.Schema$Event = {
+    summary: event.title,
+    description: event.description,
+    start: event.allDay
+      ? { date: event.start }
+      : // Seconds are re-attached here: Google wants a full RFC 3339 local
+        // datetime, the model carries minute precision.
+        { dateTime: `${event.start}:00`, timeZone: event.timeZone },
+    end: event.allDay
+      ? // All-day events use an EXCLUSIVE end date, so a one-day event ends the
+        // next morning. A zone on a date-only event is what makes Google shift
+        // it into the neighbouring day, so there is none.
+        { date: addDays(event.end, 1) ?? event.end }
+      : { dateTime: `${event.end}:00`, timeZone: event.timeZone },
     reminders: {
       // The calendar's own defaults would add noise on top of ours.
       useDefault: false,
-      overrides: planned.reminderMinutes.map((minutes) => ({
+      overrides: event.reminderMinutes.map((minutes) => ({
         method: "popup",
         minutes,
       })),
     },
   };
+
+  if (event.location) body.location = event.location;
+  const recurrence = toRecurrence(event);
+  if (recurrence) body.recurrence = recurrence;
+
+  return body;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -439,6 +369,7 @@ export async function syncToCalendar(
     created: 0,
     updated: 0,
     skipped: plan.skipped,
+    classSeries: 0,
     calendarId: DRY_RUN_CALENDAR_ID,
     errors: [...plan.errors],
   };
@@ -459,9 +390,14 @@ export async function syncToCalendar(
     }
   }
 
-  for (const planned of plan.events) {
+  for (const event of plan.events) {
     try {
-      const link = await store.getCalendarLink(planned.sourceId);
+      // `event.key` is an assessment id, a study-block id, or `mt_<course>_<n>`.
+      // The link table's key column is plain text and has never cared which --
+      // a class series is linked, patched and re-created exactly like a
+      // deadline, so recurring events inherit the whole idempotency story for
+      // free instead of growing a second one.
+      const link = await store.getCalendarLink(event.key);
 
       if (link) {
         let relinked = false;
@@ -473,7 +409,7 @@ export async function syncToCalendar(
               calendar.events.patch({
                 calendarId: link.calendarId,
                 eventId: link.googleEventId,
-                requestBody: toEventBody(planned),
+                requestBody: toEventBody(event),
               }),
             );
           } catch (err) {
@@ -484,18 +420,19 @@ export async function syncToCalendar(
             const inserted = await withRetry(() =>
               calendar.events.insert({
                 calendarId: result.calendarId,
-                requestBody: toEventBody(planned),
+                requestBody: toEventBody(event),
               }),
             );
             const eventId = inserted.data.id;
             if (!eventId) throw new Error("Google returned no event id on insert.");
-            await store.setCalendarLink(planned.sourceId, eventId, result.calendarId);
+            await store.setCalendarLink(event.key, eventId, result.calendarId);
             relinked = true;
           }
         }
 
         if (relinked) result.created += 1;
         else result.updated += 1;
+        if (event.recurrence) result.classSeries += 1;
         continue;
       }
 
@@ -503,17 +440,20 @@ export async function syncToCalendar(
         const inserted = await withRetry(() =>
           api.events.insert({
             calendarId: result.calendarId,
-            requestBody: toEventBody(planned),
+            requestBody: toEventBody(event),
           }),
         );
         const eventId = inserted.data.id;
         if (!eventId) throw new Error("Google returned no event id on insert.");
-        await store.setCalendarLink(planned.sourceId, eventId, result.calendarId);
+        await store.setCalendarLink(event.key, eventId, result.calendarId);
       }
 
       result.created += 1;
+      // Counted only after the write succeeded, so a failed series is not
+      // reported as "3 class schedules added".
+      if (event.recurrence) result.classSeries += 1;
     } catch (err) {
-      result.errors.push(`${planned.summary}: ${describeGoogleError(err).message}`);
+      result.errors.push(`${event.title}: ${describeGoogleError(err).message}`);
     }
   }
 

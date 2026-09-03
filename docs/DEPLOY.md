@@ -546,6 +546,15 @@ Run this against the live URL, in order, before you send the link to anyone.
 
 ---
 
+### Also worth checking once
+
+- **Class meetings** — after a Google sync, the "Syllabus AI" calendar should
+  show recurring class events for each meeting pattern, with no event on the
+  holidays and breaks the syllabus names (Labor Day, Thanksgiving, after the
+  last day of classes). A syllabus that mentions no breaks gets every week.
+- **Calendar feed** — in the Sync panel, create the feed link, then subscribe
+  from Apple Calendar or Outlook. Reset the link and confirm the old URL 404s.
+
 ## 7. What to tell your testers
 
 Paste this, edited for your voice:

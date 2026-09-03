@@ -32,8 +32,10 @@
 -- if not exists` line, since `create table if not exists` will not add them.
 -- The ones that exist so far:
 --
---   users.timezone            -- IANA zone reported by the browser
---   assessments.reviewed_at   -- when the student confirmed or edited the item
+--   users.timezone                -- IANA zone reported by the browser
+--   users.calendar_feed_token     -- secret in the user's private .ics feed URL
+--   assessments.reviewed_at       -- when the student confirmed or edited the item
+--   courses.no_class              -- term days when the class does not meet
 
 create extension if not exists "pgcrypto";
 
@@ -56,6 +58,13 @@ create table if not exists public.users (
   -- IANA zone reported by the user's browser. Nullable: it arrives after the
   -- first sign-in, and calendar sync falls back to the server zone until then.
   timezone              text,
+  -- Secret embedded in the user's private calendar-feed URL. Like
+  -- google_refresh_token above, it is a credential: never selected into
+  -- anything client-facing, never logged. Anyone holding it can read that
+  -- user's whole semester, since a calendar app polling the feed cannot present
+  -- a session. Unique so a feed lookup is an exact single-row match, and
+  -- nullable because it is minted on first use, not at sign-up.
+  calendar_feed_token   text unique,
   created_at            text not null
 );
 
@@ -63,6 +72,13 @@ create table if not exists public.users (
 -- not exists` above is a no-op on those, so the column has to be added here;
 -- `add column if not exists` makes running the whole file again a no-op too.
 alter table public.users add column if not exists timezone text;
+
+-- Migration for databases created before `calendar_feed_token` existed. The
+-- unique index is created separately because `add column if not exists` cannot
+-- carry the constraint on a re-run.
+alter table public.users add column if not exists calendar_feed_token text;
+create unique index if not exists users_calendar_feed_token_idx
+  on public.users (calendar_feed_token);
 
 create index if not exists users_email_idx on public.users (lower(email));
 
@@ -81,10 +97,21 @@ create table if not exists public.courses (
   start_date     text,
   end_date       text,
   meeting_times  jsonb not null default '[]'::jsonb,
+  -- Inclusive date ranges when the class does NOT meet -- holidays, recesses,
+  -- and everything after the stated last day of classes. Drives which class
+  -- meetings are left off the calendar. `[]` means "meets every week of the
+  -- term", which is the honest default for a syllabus that says nothing.
+  no_class       jsonb not null default '[]'::jsonb,
   grade_weights  jsonb not null default '[]'::jsonb,
   policies       jsonb not null default '[]'::jsonb,
   created_at     text not null
 );
+
+-- Migration for databases created before `no_class` existed. `create table if
+-- not exists` above is a no-op on those, so the column has to be added here;
+-- `add column if not exists` makes running the whole file again a no-op too.
+alter table public.courses
+  add column if not exists no_class jsonb not null default '[]'::jsonb;
 
 create index if not exists courses_user_id_idx on public.courses (user_id);
 

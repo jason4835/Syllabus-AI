@@ -21,6 +21,7 @@ import type {
   CoursePolicy,
   GradeWeight,
   MeetingTime,
+  NoClassPeriod,
   NotionConnection,
   NotionLink,
   NotionLinkKind,
@@ -28,7 +29,11 @@ import type {
   User,
 } from "@/lib/types";
 import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
-import { notionSessionLinkPrefix } from "@/lib/store";
+import {
+  isFeedTokenShaped,
+  newCalendarFeedToken,
+  notionSessionLinkPrefix,
+} from "@/lib/store";
 import { ASSESSMENT_KINDS } from "@/lib/validation";
 
 // -- Row shapes -------------------------------------------------------------
@@ -42,6 +47,7 @@ interface UserRow {
   picture: string | null;
   google_refresh_token: string | null;
   timezone: string | null;
+  calendar_feed_token: string | null;
   created_at: string;
 }
 
@@ -55,6 +61,7 @@ interface CourseRow {
   start_date: string | null;
   end_date: string | null;
   meeting_times: unknown;
+  no_class: unknown;
   grade_weights: unknown;
   policies: unknown;
   created_at: string;
@@ -175,6 +182,10 @@ function userToDomain(row: UserRow): User {
     picture: row.picture,
     googleRefreshToken: row.google_refresh_token,
     timezone: row.timezone,
+    // `?? null` like `reviewed_at` below: a database that has not had the
+    // `calendar_feed_token` migration applied yet returns no such key, and
+    // `undefined` would leave the field missing from the domain object.
+    calendarFeedToken: row.calendar_feed_token ?? null,
     createdAt: row.created_at,
   };
 }
@@ -187,6 +198,7 @@ function userToRow(user: User): UserRow {
     picture: user.picture,
     google_refresh_token: user.googleRefreshToken,
     timezone: user.timezone,
+    calendar_feed_token: user.calendarFeedToken,
     created_at: user.createdAt,
   };
 }
@@ -202,6 +214,10 @@ function courseToDomain(row: CourseRow): Course {
     startDate: row.start_date,
     endDate: row.end_date,
     meetingTimes: jsonArray<MeetingTime>(row.meeting_times),
+    // Defaults to [] through `jsonArray`, which is also the migration story: a
+    // database without the `no_class` column reads back "this class has no
+    // breaks" rather than `undefined`.
+    noClass: jsonArray<NoClassPeriod>(row.no_class),
     gradeWeights: jsonArray<GradeWeight>(row.grade_weights),
     policies: jsonArray<CoursePolicy>(row.policies),
     createdAt: row.created_at,
@@ -219,6 +235,7 @@ function courseToRow(course: Course): CourseRow {
     start_date: course.startDate,
     end_date: course.endDate,
     meeting_times: course.meetingTimes,
+    no_class: course.noClass,
     grade_weights: course.gradeWeights,
     policies: course.policies,
     created_at: course.createdAt,
@@ -241,8 +258,9 @@ function coursePatchToRow(
   if (patch.term !== undefined) row.term = patch.term;
   if (patch.startDate !== undefined) row.start_date = patch.startDate;
   if (patch.endDate !== undefined) row.end_date = patch.endDate;
-  // The parser-owned columns (meeting_times, grade_weights, policies) are
-  // intentionally absent: nothing a person types should overwrite them.
+  // The parser-owned columns (meeting_times, no_class, grade_weights,
+  // policies) are intentionally absent: nothing a person types should
+  // overwrite them.
   return row;
 }
 
@@ -538,7 +556,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     async upsertUser(u: UserUpsert) {
       const { data: existing, error: readError } = await client
         .from("users")
-        .select("created_at, timezone")
+        .select("created_at, timezone, calendar_feed_token")
         .eq("id", u.id)
         .maybeSingle();
       if (readError && readError.code !== NO_ROWS) fail("upsertUser read", readError);
@@ -546,7 +564,11 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       // `upsert` replaces the whole row, so anything the caller did not send has
       // to be carried forward here or it is silently lost.
       const stored = existing as
-        | { created_at: string; timezone: string | null }
+        | {
+            created_at: string;
+            timezone: string | null;
+            calendar_feed_token: string | null;
+          }
         | null;
 
       const merged: User = {
@@ -558,6 +580,13 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         // Absent key means "keep what is stored": the sign-in flow does not
         // know the browser's zone, and must not clear one already reported.
         timezone: u.timezone !== undefined ? u.timezone : (stored?.timezone ?? null),
+        // Same rule, and it matters more: dropping the feed token here would
+        // break every calendar app already subscribed to that URL, on every
+        // sign-in. The callers that upsert a user do not know it.
+        calendarFeedToken:
+          u.calendarFeedToken !== undefined
+            ? u.calendarFeedToken
+            : (stored?.calendar_feed_token ?? null),
         // First write wins: signing in again must not reset the join date.
         createdAt: stored?.created_at ?? u.createdAt ?? new Date().toISOString(),
       };
@@ -579,6 +608,81 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .select("*")
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("setUserTimezone", error);
+      return data ? userToDomain(data as UserRow) : null;
+    },
+
+    async ensureCalendarFeedToken(userId) {
+      const { data: existing, error } = await client
+        .from("users")
+        .select("calendar_feed_token")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("ensureCalendarFeedToken read", error);
+      if (!existing) return null;
+
+      const stored = (existing as { calendar_feed_token: string | null })
+        .calendar_feed_token;
+      if (stored) return stored;
+
+      // `.is("calendar_feed_token", null)` makes the mint conditional: two
+      // concurrent first-time requests both reach here, and the loser updates
+      // no rows instead of overwriting the winner's token and killing a feed
+      // URL that has already been handed out.
+      const { data, error: writeError } = await client
+        .from("users")
+        .update({ calendar_feed_token: newCalendarFeedToken() })
+        .eq("id", userId)
+        .is("calendar_feed_token", null)
+        .select("calendar_feed_token")
+        .maybeSingle();
+      if (writeError && writeError.code !== NO_ROWS) {
+        fail("ensureCalendarFeedToken", writeError);
+      }
+      if (data) {
+        return (data as { calendar_feed_token: string | null }).calendar_feed_token;
+      }
+
+      // Lost the race: hand back whatever the winner wrote, so both callers
+      // publish the same URL.
+      const { data: after, error: rereadError } = await client
+        .from("users")
+        .select("calendar_feed_token")
+        .eq("id", userId)
+        .maybeSingle();
+      if (rereadError && rereadError.code !== NO_ROWS) {
+        fail("ensureCalendarFeedToken reread", rereadError);
+      }
+      return after
+        ? (after as { calendar_feed_token: string | null }).calendar_feed_token
+        : null;
+    },
+
+    async resetCalendarFeedToken(userId) {
+      // Unconditional, unlike `ensure`: the point of a reset is that the old
+      // token stops working, so it always writes a new one.
+      const { data, error } = await client
+        .from("users")
+        .update({ calendar_feed_token: newCalendarFeedToken() })
+        .eq("id", userId)
+        .select("calendar_feed_token")
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("resetCalendarFeedToken", error);
+      return data
+        ? (data as { calendar_feed_token: string | null }).calendar_feed_token
+        : null;
+    },
+
+    async getUserByFeedToken(token) {
+      // Junk never reaches the database: an empty or truncated token is
+      // rejected before the query. `.eq` is whole-value equality -- never
+      // `.like`/`.ilike`, which would let a guessed prefix match a real token.
+      if (!isFeedTokenShaped(token)) return null;
+      const { data, error } = await client
+        .from("users")
+        .select("*")
+        .eq("calendar_feed_token", token.trim())
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("getUserByFeedToken", error);
       return data ? userToDomain(data as UserRow) : null;
     },
 
@@ -654,6 +758,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         startDate: parsed.course.startDate,
         endDate: parsed.course.endDate,
         meetingTimes: parsed.course.meetingTimes,
+        noClass: parsed.course.noClass ?? [],
         gradeWeights: parsed.course.gradeWeights,
         policies: parsed.course.policies,
         createdAt: new Date().toISOString(),

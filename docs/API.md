@@ -11,6 +11,9 @@ Non-2xx responses still use this shape.
 | `/api/auth/logout` | POST | — | `{ ok: true }` |
 | `/api/me` | GET | — | `User \| null` |
 | `/api/me/timezone` | POST | `{ timezone: string }` (IANA zone) | `User` |
+| `/api/me/feed` | GET | — | `{ url: string \| null; webcal: string \| null }` — the user's private calendar-feed URL as https and as webcal, or nulls if none yet |
+| `/api/me/feed` | POST | `{ reset?: true }` | `{ url: string; webcal: string }` — creates the feed token, or with `reset` replaces it (old URL stops working immediately) |
+| `/api/feed/[token].ics` | GET | — | `text/calendar` — **unauthenticated by design**; the token is the credential. Deadlines, study sessions, and class meetings for the whole term. 404 for an unknown token. Rate limited per token. |
 | `/api/me` | DELETE | `{ confirm: "DELETE"; removeGoogleCalendar?: boolean }` | `{ deleted: true; googleCalendarRemoved: boolean }` — erases the account and every course, assessment, link and connection; clears the session. Notion pages are never touched. **400** unless `confirm` is exactly `"DELETE"`; **403** for the shared demo account. |
 | `/api/health` | GET | — | `{ status; version; commit; uptimeSeconds; time; capabilities; storage; warnings }` |
 | `/api/upload` | POST | `multipart/form-data`, field `file` (PDF); optional fields `replace` (course id) or `allowDuplicate` (`1`) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[]; replaced: string \| null }` — **409** `{ duplicateOf: { id; code; title; term } }` when the parsed course matches an existing one by code (case/space-insensitive) and term, unless `replace=<thatId>` (the old course and its assessments are deleted after the new one is saved; `replaced` carries the old id) or `allowDuplicate=1`. |

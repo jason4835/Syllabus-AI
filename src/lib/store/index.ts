@@ -9,6 +9,8 @@
  * Server-only. Nothing here may be imported from a client component.
  */
 
+import { randomBytes } from "node:crypto";
+
 import type {
   Assessment,
   Course,
@@ -29,10 +31,17 @@ import { createSupabaseStore } from "@/lib/store/supabase";
  * therefore means "leave the stored zone alone"; passing an explicit `null`
  * clears it. Without that distinction every re-authentication would wipe a
  * zone the user had already reported.
+ *
+ * `calendarFeedToken` is optional for exactly the same reason, and the stakes
+ * are higher: it is minted by `ensureCalendarFeedToken`, and a sign-in that
+ * dropped it would break every calendar app already subscribed to that URL.
+ * The callers that upsert a user (the OAuth callback, demo mode) do not know
+ * the token and must not have to.
  */
-export type UserUpsert = Omit<User, "createdAt" | "timezone"> & {
+export type UserUpsert = Omit<User, "createdAt" | "timezone" | "calendarFeedToken"> & {
   createdAt?: string;
   timezone?: string | null;
+  calendarFeedToken?: string | null;
 };
 
 /**
@@ -57,6 +66,34 @@ export function notionSessionLinkPrefix(assessmentId: string): string {
   return `sb_${assessmentId}_`;
 }
 
+/**
+ * Mints a calendar-feed secret: 32 random bytes, base64url.
+ *
+ * 256 bits from a CSPRNG, because this token is the ONLY thing standing between
+ * a URL and a student's whole semester -- there is no session, no cookie and no
+ * second factor on a feed request, since the calendar app polling it cannot
+ * present one. base64url so it can sit in a path segment unescaped.
+ *
+ * Shared by both drivers so the two cannot drift into different token strengths.
+ */
+export function newCalendarFeedToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+/**
+ * The shortest string worth a database lookup.
+ *
+ * A minted token is 43 characters; this only has to reject the empty string and
+ * the obviously truncated, so a hand-typed "abc" costs no query and cannot get
+ * anywhere near a row.
+ */
+const MIN_FEED_TOKEN_LENGTH = 20;
+
+/** Cheap shape check shared by both drivers, so neither queries on a junk token. */
+export function isFeedTokenShaped(token: string | null | undefined): token is string {
+  return typeof token === "string" && token.trim().length >= MIN_FEED_TOKEN_LENGTH;
+}
+
 export interface Store {
   getUser(id: string): Promise<User | null>;
   getUserByEmail(email: string): Promise<User | null>;
@@ -67,6 +104,30 @@ export interface Store {
    * the rest of the profile. Null when the user does not exist.
    */
   setUserTimezone(userId: string, timezone: string): Promise<User | null>;
+  /**
+   * The user's calendar-feed secret, minting one on first use. Null when the
+   * user does not exist.
+   *
+   * Idempotent on purpose: the feed URL is pasted into Google/Apple Calendar
+   * and then polled forever, so asking for it twice must not invalidate the
+   * subscription somebody already made.
+   */
+  ensureCalendarFeedToken(userId: string): Promise<string | null>;
+  /**
+   * Replaces the token with a fresh one, revoking every URL handed out so far.
+   * This is the "I shared that link by mistake" button, so it always rotates --
+   * never returns the existing value. Null when the user does not exist.
+   */
+  resetCalendarFeedToken(userId: string): Promise<string | null>;
+  /**
+   * The user a feed token belongs to, or null.
+   *
+   * This is an unauthenticated lookup -- the token IS the credential -- so the
+   * match is exact and whole-value. No prefix, no LIKE, no "starts with":
+   * anything that could match more than one stored token turns a guessable
+   * prefix into someone else's calendar.
+   */
+  getUserByFeedToken(token: string): Promise<User | null>;
   /**
    * The account-deletion primitive: erases the user and everything that
    * belongs to them -- courses, assessments, calendar links, Notion links, the
@@ -200,6 +261,9 @@ export const store: Store = {
   upsertUser: (u) => getStore().upsertUser(u),
   setUserTimezone: (userId, timezone) =>
     getStore().setUserTimezone(userId, timezone),
+  ensureCalendarFeedToken: (userId) => getStore().ensureCalendarFeedToken(userId),
+  resetCalendarFeedToken: (userId) => getStore().resetCalendarFeedToken(userId),
+  getUserByFeedToken: (token) => getStore().getUserByFeedToken(token),
   deleteUser: (userId) => getStore().deleteUser(userId),
   listCourses: (userId) => getStore().listCourses(userId),
   getCourse: (id) => getStore().getCourse(id),
