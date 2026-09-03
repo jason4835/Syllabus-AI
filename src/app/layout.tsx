@@ -2,20 +2,40 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
+/**
+ * Absolute base for OG/Twitter image URLs. Unfurlers (iMessage, Slack, X,
+ * LinkedIn, Discord) drop relative `og:image` values, so this has to resolve —
+ * `APP_URL` when the host sets it, the Railway origin otherwise.
+ */
+const metadataBase = new URL(
+  (process.env.APP_URL ?? "").trim().replace(/\/+$/, "") ||
+    "https://syllabus-ai-production.up.railway.app",
+);
+
+const DESCRIPTION =
+  "Upload your syllabus PDFs. Syllabus AI extracts every assignment, exam and grading weight, builds a semester roadmap with a workload heatmap, and syncs it to your Google Calendar.";
+
 export const metadata: Metadata = {
+  metadataBase,
   title: {
     default: "Syllabus AI — organize your semester in 60 seconds",
     template: "%s · Syllabus AI",
   },
-  description:
-    "Upload your syllabus PDFs. Syllabus AI extracts every assignment, exam and grading weight, builds a semester roadmap with a workload heatmap, and syncs it to your Google Calendar.",
+  description: DESCRIPTION,
   applicationName: "Syllabus AI",
   openGraph: {
-    title: "Syllabus AI",
-    description:
-      "Upload your syllabus. Let AI organize your semester in 60 seconds.",
+    title: "Syllabus AI — organize your semester in 60 seconds",
+    description: DESCRIPTION,
+    siteName: "Syllabus AI",
     type: "website",
+    locale: "en_US",
   },
+  twitter: {
+    card: "summary_large_image",
+    title: "Syllabus AI — organize your semester in 60 seconds",
+    description: DESCRIPTION,
+  },
+  // Icons come from the `icon.svg` / `apple-icon.tsx` file conventions.
 };
 
 export const viewport: Viewport = {
