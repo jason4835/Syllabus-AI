@@ -32,7 +32,21 @@ export interface Assessment {
   sourceText: string | null;
   /** 0..1 extractor confidence. Items below 0.6 are surfaced for review. */
   confidence: number;
+  /**
+   * When the user confirmed or edited this item; null until they have.
+   * Kept apart from `confidence` on purpose: a reviewed item is treated as
+   * certain everywhere, but the extractor's original score stays honest.
+   */
+  reviewedAt: string | null;
   notes: string | null;
+}
+
+/** The threshold below which an unreviewed item is flagged for review. */
+export const REVIEW_CONFIDENCE_THRESHOLD = 0.6;
+
+/** Single source of truth for "does this row need the user's eyes". */
+export function needsReview(a: Pick<Assessment, "confidence" | "reviewedAt">): boolean {
+  return !a.reviewedAt && a.confidence < REVIEW_CONFIDENCE_THRESHOLD;
 }
 
 /** A grading-scheme row, e.g. "Homework -- 30%". */

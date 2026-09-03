@@ -27,6 +27,13 @@
 -- `notion_connections` and `notion_links` are NEW. A database created before
 -- they existed simply does not have them, and because they are additions rather
 -- than alterations, re-running this file does create them -- no drop needed.
+--
+-- COLUMNS ADDED TO EXISTING TABLES need an explicit `alter table ... add column
+-- if not exists` line, since `create table if not exists` will not add them.
+-- The ones that exist so far:
+--
+--   users.timezone            -- IANA zone reported by the browser
+--   assessments.reviewed_at   -- when the student confirmed or edited the item
 
 create extension if not exists "pgcrypto";
 
@@ -96,12 +103,23 @@ create table if not exists public.assessments (
   source_text     text,
   -- 0..1 extractor confidence; the UI surfaces anything under 0.6 for review.
   confidence      numeric not null default 0,
+  -- ISO timestamp of the moment the student confirmed or edited this item;
+  -- null until they do. Text, like every other date here, because the domain
+  -- type is a string. Kept separate from `confidence` on purpose: a reviewed
+  -- item is treated as certain everywhere, while the extractor's own score
+  -- stays an honest record of how the row was produced.
+  reviewed_at     text,
   notes           text,
   constraint assessments_kind_check check (
     kind in ('assignment','exam','quiz','project','reading','lab','presentation','other')
   ),
   constraint assessments_confidence_check check (confidence >= 0 and confidence <= 1)
 );
+
+-- Migration for databases created before `reviewed_at` existed. `create table
+-- if not exists` above is a no-op on those, so the column has to be added here;
+-- `add column if not exists` makes running the whole file again a no-op too.
+alter table public.assessments add column if not exists reviewed_at text;
 
 create index if not exists assessments_course_id_idx on public.assessments (course_id);
 create index if not exists assessments_due_date_idx on public.assessments (due_date);

@@ -69,6 +69,7 @@ interface AssessmentRow {
   weight_percent: number | string | null;
   source_text: string | null;
   confidence: number | string;
+  reviewed_at: string | null;
   notes: string | null;
 }
 
@@ -103,7 +104,15 @@ interface NotionLinkRow {
   url: string | null;
 }
 
-const ASSESSMENT_KINDS: readonly AssessmentKind[] = [
+/**
+ * The `AssessmentKind` union as runtime data.
+ *
+ * Exported because it is the only such list in the codebase and a second copy
+ * is how the API and the database drift apart: the check constraint in
+ * supabase/schema.sql, the coercion below and `PATCH /api/assessments/[id]`'s
+ * validation all have to name the same eight strings, so they all read this.
+ */
+export const ASSESSMENT_KINDS: readonly AssessmentKind[] = [
   "assignment",
   "exam",
   "quiz",
@@ -234,6 +243,10 @@ function assessmentToDomain(row: AssessmentRow): Assessment {
     weightPercent: toNumberOrNull(row.weight_percent),
     sourceText: row.source_text,
     confidence: toNumberOrNull(row.confidence) ?? 0,
+    // `?? null` rather than a straight read: a database that has not had the
+    // `reviewed_at` migration applied yet returns no such key, and `undefined`
+    // would leave the field missing from the JSON the API sends.
+    reviewedAt: row.reviewed_at ?? null,
     notes: row.notes,
   };
 }
@@ -249,6 +262,7 @@ function assessmentToRow(assessment: Assessment): AssessmentRow {
     weight_percent: assessment.weightPercent,
     source_text: assessment.sourceText,
     confidence: assessment.confidence,
+    reviewed_at: assessment.reviewedAt,
     notes: assessment.notes,
   };
 }
@@ -269,6 +283,9 @@ function assessmentPatchToRow(
   if (patch.weightPercent !== undefined) row.weight_percent = patch.weightPercent;
   if (patch.sourceText !== undefined) row.source_text = patch.sourceText;
   if (patch.confidence !== undefined) row.confidence = patch.confidence;
+  // Reviewing is an edit like any other, so it travels in the same patch. The
+  // route sets it on every accepted request; nothing here decides policy.
+  if (patch.reviewedAt !== undefined) row.reviewed_at = patch.reviewedAt;
   if (patch.notes !== undefined) row.notes = patch.notes;
   return row;
 }
@@ -612,6 +629,9 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         weightPercent: a.weightPercent,
         sourceText: a.sourceText,
         confidence: a.confidence,
+        // Freshly extracted: nobody has looked at it yet. The parsers set this
+        // to null, and it is carried rather than assumed.
+        reviewedAt: a.reviewedAt,
         notes: a.notes,
       }));
 

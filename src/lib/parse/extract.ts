@@ -220,6 +220,10 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
         item.weightPercent === null ? null : clamp(Number(item.weightPercent), 0, 100),
       sourceText: trimOrNull(item.sourceText, 600),
       confidence: clamp(Number(item.confidence), 0, 1),
+      // Set here, never asked of the model: "a human has checked this" is a
+      // fact about the user, not about the document, and the schema above is
+      // deliberately free of any field the model could use to claim it.
+      reviewedAt: null,
       notes: trimOrNull(item.notes, 400),
     });
   }

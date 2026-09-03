@@ -456,6 +456,10 @@ function findAssessments(lines: string[], ctx: DateContext): LooseAssessment[] {
         weightPercent: inlineWeight ? Number(inlineWeight[1]) : null,
         sourceText: collapse(line).slice(0, 400),
         confidence: clamp(Number(confidence.toFixed(2)), 0.4, 0.6),
+        // Nothing here has been seen by a human yet. Everything this parser
+        // emits sits in the 0.4-0.6 band precisely so the UI asks the student
+        // to confirm it; marking it reviewed would erase that request.
+        reviewedAt: null,
         notes: null,
       });
       break; // One graded item per cell; the first match is the specific one.

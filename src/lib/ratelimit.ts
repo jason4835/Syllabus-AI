@@ -91,6 +91,15 @@ export const RULES: Record<string, LimitRule> = {
   // again" and stops a mashed button from starving everyone else.
   "notion:user:burst": { limit: 4, windowMs: MINUTE },
 
+  // Confirming and correcting extracted items costs nothing -- no model call,
+  // one small row update -- so this cap exists only to stop a script, never a
+  // person. A student fixing a badly-parsed syllabus works down the list fast:
+  // confirm, confirm, fix a date, confirm. 60/min is roughly one action per
+  // second sustained for a minute, which no one reaches by hand and any loop
+  // blows past immediately. Deliberately the loosest rule in this file; there
+  // is nothing to protect here but the database's dignity.
+  "edit:user:burst": { limit: 60, windowMs: MINUTE },
+
   // Backstop across ALL users, so a single shared or leaked account cannot
   // become the whole bill. Deliberately above any one user's cap and below the
   // sum of everyone's: honest aggregate use for a dozen testers is a few
@@ -120,6 +129,9 @@ const RULE_SETS: Record<string, readonly string[]> = {
   ],
   "sync:user": ["sync:user:burst"],
   "notion:user": ["notion:user:burst"],
+  // No daily companion and no global backstop: edits spend nothing, so there
+  // is no bill for either to protect.
+  "edit:user": ["edit:user:burst"],
   "global:openai": ["global:openai:burst", "global:openai:daily"],
 };
 
@@ -344,6 +356,8 @@ const MESSAGES: Record<string, (wait: string) => string> = {
     `Calendar sync is rate limited. Try again ${wait}.`,
   "notion:user:burst": (wait) =>
     `Notion sync is rate limited. Try again ${wait}.`,
+  "edit:user:burst": (wait) =>
+    `You're making changes faster than the limit allows. Try again ${wait}.`,
   "global:openai:burst": (wait) =>
     `Syllabus AI is handling a lot of requests right now. Try again ${wait}.`,
   "global:openai:daily": (wait) =>

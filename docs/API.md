@@ -16,6 +16,7 @@ Non-2xx responses still use this shape.
 | `/api/upload` | POST | `multipart/form-data`, field `file` (PDF) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[] }` |
 | `/api/courses` | GET | — | `{ courses: Course[]; assessments: Assessment[] }` |
 | `/api/courses/[id]` | DELETE | — | `{ deleted: true }` |
+| `/api/assessments/[id]` | PATCH | `{ title?; kind?; dueDate?; dueTime?; weightPercent?; notes?; reviewed?: true }` | `Assessment` — confirm and edit share this route. Any accepted change (including `reviewed: true` alone) sets `reviewedAt`, which clears the review flag. **422** with a field-level `detail` on invalid input; **404** when the item is not the caller's. Dates `YYYY-MM-DD` or null, times `HH:MM` or null, weight 0–100 or null. |
 | `/api/plan` | GET | — | `SemesterPlan` |
 | `/api/sync` | POST | `{ courseId?: string }` | `CalendarSyncResult` |
 | `/api/chat` | POST | `{ message: string; history?: {role,content}[] }` | `{ reply: string }` |

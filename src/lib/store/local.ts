@@ -76,6 +76,21 @@ function emptyDatabase(): Database {
 }
 
 /**
+ * Fills in fields added after a row was written.
+ *
+ * The per-key `Array.isArray` checks below are the migration story for whole
+ * collections; this is the same idea one level down, for a key added to an
+ * existing row. A `db.json` written before `reviewedAt` existed has assessments
+ * without it, and `undefined` is not `null`: it vanishes from the JSON the API
+ * returns, so `needsReview()` and the UI would be reading a missing property
+ * rather than "never reviewed". Normalising on read keeps every row that leaves
+ * this module a complete `Assessment`.
+ */
+function normalizeAssessment(row: Assessment): Assessment {
+  return { ...row, reviewedAt: row.reviewedAt ?? null };
+}
+
+/**
  * Tolerant of a truncated or hand-edited file: a corrupt demo database should
  * degrade to "empty" rather than crash every route that touches storage.
  *
@@ -99,7 +114,7 @@ async function readDatabase(): Promise<Database> {
       users: Array.isArray(shape.users) ? (shape.users as User[]) : [],
       courses: Array.isArray(shape.courses) ? (shape.courses as Course[]) : [],
       assessments: Array.isArray(shape.assessments)
-        ? (shape.assessments as Assessment[])
+        ? (shape.assessments as Assessment[]).map(normalizeAssessment)
         : [],
       calendarLinks: Array.isArray(shape.calendarLinks)
         ? (shape.calendarLinks as CalendarLinkRecord[])
@@ -381,6 +396,10 @@ export function createLocalStore(): Store {
           weightPercent: a.weightPercent,
           sourceText: a.sourceText,
           confidence: a.confidence,
+          // Freshly extracted: nobody has looked at it yet. The parsers set
+          // this to null, and it is carried rather than assumed so a future
+          // caller cannot silently lose it.
+          reviewedAt: a.reviewedAt,
           notes: a.notes,
         }));
 
