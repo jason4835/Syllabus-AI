@@ -99,6 +99,41 @@ export function formatTime(value: string | null): string | null {
   return `${display}:${match[2]} ${suffix}`;
 }
 
+/** The two halves of a 12h clock reading, kept apart so a range can share one. */
+function clockParts(value: string): { clock: string; suffix: "AM" | "PM" } | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const display = hour % 12 === 0 ? 12 : hour % 12;
+  return {
+    // Inside a range a whole hour is written bare: "8–9:50 AM", not "8:00".
+    clock: match[2] === "00" ? String(display) : `${display}:${match[2]}`,
+    suffix: hour >= 12 ? "PM" : "AM",
+  };
+}
+
+/**
+ * "10:15 AM–12:15 PM", "12:30–1:50 PM", "8–9:50 AM" — a sitting's start and
+ * end, written the way a syllabus writes it: the meridiem is said once when
+ * both ends share it, and twice when they straddle noon or midnight.
+ *
+ * A null `end` falls back to the lone start time, so a caller can hand over an
+ * assessment's two fields without branching on whether the range exists.
+ */
+export function formatTimeRange(
+  start: string | null,
+  end: string | null,
+): string | null {
+  if (!start) return null;
+  if (!end) return formatTime(start);
+  const from = clockParts(start);
+  const to = clockParts(end);
+  // Something the parser never produces: show both readings rather than lie.
+  if (!from || !to) return `${formatTime(start)}–${formatTime(end)}`;
+  const meridiem = from.suffix === to.suffix ? "" : ` ${from.suffix}`;
+  return `${from.clock}${meridiem}–${to.clock} ${to.suffix}`;
+}
+
 /** ISO `YYYY-MM-DD` of the Monday on or before `value`. */
 export function mondayOf(value: string | Date | null): string | null {
   const date = value instanceof Date ? value : parseDate(value);

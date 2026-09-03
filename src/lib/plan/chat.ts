@@ -31,6 +31,7 @@ import type {
   StudyBlock,
   WeekLoad,
 } from "@/lib/types";
+import { isSitting } from "@/lib/types";
 import {
   addDays,
   dayOfWeek,
@@ -110,6 +111,7 @@ const SYSTEM_PROMPT = [
   "- Every date, time, deadline, weight and hour figure must come from the PLAN DATA below. Never infer or invent one.",
   "- If the data does not contain the answer, say plainly that it is not in the syllabi you have and what the student could check. Do not guess.",
   "- Name items by the course code and the exact title given in the data.",
+  "- Exams, quizzes and presentations ARE ON a day and at a time -- they start then and you sit them. Assignments, projects, readings and labs ARE DUE at a time. Never say an exam is 'due'.",
   "- Hour figures are the planner's estimates, not facts from the syllabus. Say 'about' or '~' when you quote one.",
   "",
   "How to say dates and times:",
@@ -217,17 +219,19 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
   // No ids: nothing downstream parses this back, and an id that leaks into an
   // answer ("assessment a3f9c1 is due...") is exactly the machine voice we are
   // trying to get rid of. Course code plus title is how the student names it.
-  lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it's due | prep estimate)");
+  // "when it happens", not "when it's due": exams, quizzes and presentations are
+  // written as happening ON a day, and the model copies the shape it is given.
+  lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it happens -- 'on' for a sitting you attend, 'due' for a deadline | prep estimate)");
   for (const a of dated) {
     const code = courseById.get(a.courseId)?.code ?? "?";
     const weight = a.weightPercent === null ? "weight not stated" : `worth ${a.weightPercent}%`;
-    const at = friendlyTime(a.dueTime);
+    const at = atRange(a);
     const relative =
       a.dueDate < todayIso
         ? `${relativeDay(todayIso, a.dueDate)}, already past`
         : relativeDay(todayIso, a.dueDate);
     lines.push(
-      `- ${code} | ${a.title} | ${a.kind} | ${weight} | due ${friendlyDate(a.dueDate, todayIso)}${at ? ` at ${at}` : ""} (${relative}) | about ${estimatedHoursFor(a)}h of prep`,
+      `- ${code} | ${a.title} | ${a.kind} | ${weight} | ${whenWord(a)} ${friendlyDate(a.dueDate, todayIso)}${at ? ` at ${at}` : ""} (${relative}) | about ${estimatedHoursFor(a)}h of prep`,
     );
   }
 
@@ -631,7 +635,7 @@ function answerHeaviest(ctx: ChatContext, now: Date): string {
     for (const a of items) {
       const due = a.dueDate as string;
       lines.push(
-        `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind} due ${weekdayThe(due, week.weekStart)}, about ${estimatedHoursFor(a)}h`,
+        `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind} ${whenWord(a)} ${weekdayThe(due, week.weekStart)}, about ${estimatedHoursFor(a)}h`,
       );
     }
   }
@@ -675,11 +679,11 @@ function answerDueThisWeek(ctx: ChatContext, now: Date): string {
   ];
   for (const a of due) {
     const d = a.dueDate as string;
-    const at = friendlyTime(a.dueTime);
+    const at = atRange(a);
     const rel = relativeDay(today, d);
     const when = daysBetween(today, d) < 0 ? "already passed" : rel;
     lines.push(
-      `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind}${a.weightPercent !== null ? ` worth ${a.weightPercent}%` : ""}, due ${weekdayThe(d, start)}${at ? ` at ${at}` : ""} (${when})`,
+      `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind}${a.weightPercent !== null ? ` worth ${a.weightPercent}%` : ""}, ${whenWord(a)} ${weekdayThe(d, start)}${at ? ` at ${at}` : ""} (${when})`,
     );
   }
   const todaysBlocks = ctx.plan.studyBlocks.filter((b) => b.start.slice(0, 10) === today);
@@ -734,7 +738,7 @@ function answerBehind(ctx: ChatContext, now: Date): string {
       if (!a) continue;
       const dueDate = a.dueDate as string;
       lines.push(
-        `  - ${courseCode(ctx, a)} ${a.title}: ${countWord(blocks.length)} missed session${blocks.length === 1 ? "" : "s"}, and it's due ${friendlyDate(dueDate, today)} -- ${relativeDay(today, dueDate)}.`,
+        `  - ${courseCode(ctx, a)} ${a.title}: ${countWord(blocks.length)} missed session${blocks.length === 1 ? "" : "s"}, and it's ${whenWord(a)} ${friendlyDate(dueDate, today)} -- ${relativeDay(today, dueDate)}.`,
       );
     }
     lines.push("Those hours don't disappear -- they get squeezed into the days you have left.");
@@ -752,7 +756,7 @@ function answerBehind(ctx: ChatContext, now: Date): string {
     }
     for (const a of passed) {
       const d = a.dueDate as string;
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- was due ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- was ${whenWord(a)} ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
     }
   }
   return lines.join("\n");
@@ -774,7 +778,7 @@ function answerStudyFor(question: string, ctx: ChatContext, now: Date): string {
     const lines = ["I couldn't tell which one you meant. Here's what's closest on the calendar:"];
     for (const a of upcoming) {
       const d = a.dueDate as string;
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- due ${friendlyDate(d, localISODate(now))}, ${relativeDay(localISODate(now), d)}`);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${whenWord(a)} ${friendlyDate(d, localISODate(now))}, ${relativeDay(localISODate(now), d)}`);
     }
     lines.push("Name one of those and I'll give you the schedule I built for it.");
     return lines.join("\n");
@@ -801,16 +805,17 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
     return `${name} is in your plan, but the syllabus never gave a date I could pin down, so I can't schedule around it. Add the date from the syllabus or your LMS and I'll build the study ladder right away.`;
   }
 
-  const at = friendlyTime(a.dueTime);
+  const at = atPhrase(a);
   const dueWhen = `${friendlyDate(a.dueDate, today)}${at ? ` at ${at}` : ""}`;
+  const verb = whenWord(a);
   const dueRel = relativeDay(today, a.dueDate);
   const worth = a.weightPercent !== null ? `, worth ${a.weightPercent}% of your grade` : "";
 
   if (blocks.length === 0) {
     const past = daysBetween(today, a.dueDate) < 0;
     return past
-      ? `${name} was due ${dueWhen}, ${dueRel}, so there's nothing left to schedule for it.`
-      : `${name} is due ${dueWhen} -- ${dueRel}${worth}. I haven't got any sessions on the calendar for it: there was no free window left before the deadline, so grab whatever time you can and budget about ${est.hours}h.`;
+      ? `${name} was ${verb} ${dueWhen}, ${dueRel}, so there's nothing left to schedule for it.`
+      : `${name} is ${verb} ${dueWhen} -- ${dueRel}${worth}. I haven't got any sessions on the calendar for it: there was no free window left ${isSitting(a) ? "beforehand" : "before the deadline"}, so grab whatever time you can and budget about ${est.hours}h.`;
   }
 
   const startDay = blocks[0].start.slice(0, 10);
@@ -835,7 +840,7 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
   }
 
   lines.push(
-    `That's about ${est.hours}h in total, and it's due ${dueWhen} -- ${dueRel}${worth}.`,
+    `That's about ${est.hours}h in total, and it's ${verb} ${dueWhen} -- ${dueRel}${worth}.`,
   );
   // The planner's own rationale is the most persuasive sentence we have, but it
   // was written for a UI card, so its clock times get the same 12-hour pass.
@@ -856,7 +861,7 @@ function answerOverview(ctx: ChatContext, now: Date): string {
     lines.push("Here's where you stand. Next up:");
     for (const a of upcoming) {
       const d = a.dueDate as string;
-      const at = friendlyTime(a.dueTime);
+      const at = atRange(a);
       lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${friendlyDate(d, today)}${at ? ` at ${at}` : ""}, ${relativeDay(today, d)}`);
     }
   } else {
@@ -881,6 +886,40 @@ function answerOverview(ctx: ChatContext, now: Date): string {
 
 function courseCode(ctx: ChatContext, a: Assessment): string {
   return ctx.courses.find((c) => c.id === a.courseId)?.code ?? "";
+}
+
+/*
+ * An exam is not handed in. It starts, you sit it, it ends -- so it is ON a day
+ * at a time, while an assignment is DUE at one. Saying "your final is due at
+ * 10:15" is not just clumsy: it is the sentence that made a student read their
+ * exam as a cutoff and turn up when it was over. The three helpers below are the
+ * only place that distinction becomes words, on both the model path (which
+ * echoes the register of its context) and the local one.
+ */
+
+/** "on" for a sitting, "due" for a deadline. Reads after "is", "was" or "it's". */
+function whenWord(a: Assessment): string {
+  return isSitting(a) ? "on" : "due";
+}
+
+/**
+ * The clock half of when an item happens, for prose: "10:15 AM (until 12:15 PM)"
+ * for a sitting with a stated end, "10:15 AM" otherwise. Null when the syllabus
+ * gave no time at all.
+ */
+function atPhrase(a: Assessment): string | null {
+  const start = friendlyTime(a.dueTime);
+  if (!start) return null;
+  const end = isSitting(a) ? friendlyTime(a.endTime) : null;
+  return end ? `${start} (until ${end})` : start;
+}
+
+/** The same information compressed for a list row: "10:15 AM–12:15 PM". */
+function atRange(a: Assessment): string | null {
+  const start = friendlyTime(a.dueTime);
+  if (!start) return null;
+  const end = isSitting(a) ? friendlyTime(a.endTime) : null;
+  return end ? `${start}–${end}` : start;
 }
 
 function intensityWord(i: WeekLoad["intensity"]): string {

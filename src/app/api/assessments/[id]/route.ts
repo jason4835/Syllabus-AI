@@ -8,8 +8,7 @@ import {
   ASSESSMENT_FIELD_KEYS,
   Invalid,
   collectAssessmentFields,
-  requireDateForTime,
-} from "@/lib/validation";
+  requireDateForTime, requireStartForEnd } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +38,10 @@ function validate(body: Record<string, unknown>, current: Assessment): Partial<A
   requireDateForTime(
     fields.dueDate !== undefined ? fields.dueDate : current.dueDate,
     fields.dueTime !== undefined ? fields.dueTime : current.dueTime,
+  );
+  requireStartForEnd(
+    fields.dueTime !== undefined ? fields.dueTime : current.dueTime,
+    fields.endTime !== undefined ? fields.endTime : current.endTime,
   );
 
   if ("reviewed" in body && body.reviewed !== true) {

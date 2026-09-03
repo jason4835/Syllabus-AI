@@ -30,6 +30,7 @@ import type {
   MeetingTime,
   StudyBlock,
 } from "@/lib/types";
+import { isSitting } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Model                                                                       */
@@ -119,8 +120,26 @@ export interface CalendarPlan {
 /* Constants -- the planning rules, unchanged from the Google-only version      */
 /* -------------------------------------------------------------------------- */
 
-/** How long an assessment's timed event runs *before* its due moment. */
+/**
+ * How long a DEADLINE's timed event runs *before* its due moment.
+ *
+ * A deadline is a cutoff, so the block reads as "the hour before this is due".
+ * A sitting is not a cutoff -- see `DEFAULT_SITTING_MINUTES`.
+ */
 const TIMED_EVENT_DURATION_MINUTES = 60;
+
+/**
+ * How long a sitting runs when the syllabus gives a start but no end.
+ *
+ * One hour, deliberately conservative. The value is a guess, and the two ways of
+ * being wrong are not symmetric: a block that ends too early leaves time free
+ * that the student can still see is theirs, while a longer default (two or three
+ * hours, the length of a real final) paints over an afternoon that may not be
+ * booked at all, and every "when am I free" glance is wrong for the rest of the
+ * term. An hour also matches the shortest thing that is plausibly a sitting.
+ * The moment the syllabus states a range, `endTime` replaces this outright.
+ */
+export const DEFAULT_SITTING_MINUTES = 60;
 
 const REMINDER_ONE_DAY = 24 * 60;
 const REMINDER_ONE_WEEK = 7 * 24 * 60;
@@ -319,10 +338,71 @@ export function endOfDayUtc(date: string, timeZone: string): Date {
 /* Descriptions                                                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The stated end of a sitting, when it is one we can actually use: a well-formed
+ * "HH:MM" strictly after the start. Anything else -- missing, malformed, or not
+ * after the start -- means the syllabus gave no usable range and the default
+ * duration applies. One helper so the description can never claim a range the
+ * event does not have.
+ */
+function sittingEndTime(a: Assessment): string | null {
+  if (!isSitting(a) || !a.dueTime || !a.endTime) return null;
+  if (!ISO_TIME.test(a.dueTime) || !ISO_TIME.test(a.endTime)) return null;
+  // Both are zero-padded 24-hour times, so string order is clock order.
+  return a.endTime > a.dueTime ? a.endTime : null;
+}
+
+interface Clock12 {
+  hour: number;
+  minute: string;
+  meridiem: "AM" | "PM";
+}
+
+function parseClock(hhmm: string): Clock12 | null {
+  const m = ISO_TIME.exec(hhmm);
+  if (!m) return null;
+  const h24 = Number(m[1]);
+  if (h24 > 23 || Number(m[2]) > 59) return null;
+  return {
+    hour: h24 % 12 === 0 ? 12 : h24 % 12,
+    minute: m[2],
+    meridiem: h24 < 12 ? "AM" : "PM",
+  };
+}
+
+function clockText(c: Clock12): string {
+  return `${c.hour}:${c.minute} ${c.meridiem}`;
+}
+
+/**
+ * The description's one line about when the thing happens.
+ *
+ * A sitting STARTS at its time ("Starts 12:30 PM", or "12:30-1:50 PM" when the
+ * syllabus gave a range); a deadline IS its time ("Due 11:59 PM"). The wording
+ * is the difference a student reads at a glance, and it has to agree with the
+ * block the same item draws on the grid.
+ */
+function whenLine(a: Assessment): string | null {
+  if (!a.dueTime) return null; // all-day: the date is the whole story
+  const start = parseClock(a.dueTime);
+  if (!start) return null;
+  if (!isSitting(a)) return `Due ${clockText(start)}`;
+
+  const endTime = sittingEndTime(a);
+  const end = endTime ? parseClock(endTime) : null;
+  if (!end) return `Starts ${clockText(start)}`;
+  // Say the meridiem once when both halves share it: "12:30-1:50 PM".
+  return end.meridiem === start.meridiem
+    ? `${start.hour}:${start.minute}–${clockText(end)}`
+    : `${clockText(start)}–${clockText(end)}`;
+}
+
 function describeAssessment(a: Assessment, courseTitle: string | null): string {
   const lines: string[] = [];
   lines.push(`Type: ${a.kind}`);
   if (courseTitle) lines.push(`Course: ${courseTitle}`);
+  const when = whenLine(a);
+  if (when) lines.push(when);
   if (a.weightPercent !== null) {
     lines.push(`Worth: ${a.weightPercent}% of the final grade`);
   }
@@ -642,15 +722,34 @@ export function buildCalendarPlan(input: BuildInput): CalendarPlan {
       a.kind === "exam" ? [REMINDER_ONE_WEEK, REMINDER_ONE_DAY] : [REMINDER_ONE_DAY];
 
     if (a.dueTime) {
-      const dueMs = toEpochScaffold(a.dueDate, a.dueTime);
-      if (dueMs === null) {
+      const timeMs = toEpochScaffold(a.dueDate, a.dueTime);
+      if (timeMs === null) {
         plan.errors.push(`${a.title}: unparseable due date/time (${a.dueDate} ${a.dueTime})`);
         plan.skipped += 1;
         continue;
       }
-      // The event *ends* at the due moment, so it reads as "the hour before
-      // this is due" on the calendar rather than starting when it is too late.
-      const startMs = dueMs - TIMED_EVENT_DURATION_MINUTES * 60 * 1000;
+
+      // The two kinds of timed item are drawn in opposite directions, and this
+      // is the whole reason `isSitting` exists. An exam at 12:30 HAPPENS at
+      // 12:30; drawing it as the hour ending then -- the deadline rule, applied
+      // to everything -- put a student's 12:30-1:50 exam on the calendar as
+      // 11:30-12:30, an hour before the room even opened.
+      let startMs: number;
+      let endMs: number;
+      if (isSitting(a)) {
+        startMs = timeMs;
+        const endTime = sittingEndTime(a);
+        const statedEndMs = endTime ? toEpochScaffold(a.dueDate, endTime) : null;
+        // No stated end (or one we could not use) means the syllabus never said
+        // how long it runs, so the conservative default stands in.
+        endMs = statedEndMs ?? timeMs + DEFAULT_SITTING_MINUTES * 60 * 1000;
+      } else {
+        // A deadline's event *ends* at the due moment, so it reads as "the hour
+        // before this is due" rather than starting when it is already too late.
+        endMs = timeMs;
+        startMs = timeMs - TIMED_EVENT_DURATION_MINUTES * 60 * 1000;
+      }
+
       plan.events.push({
         key: a.id,
         kind: "assessment",
@@ -659,7 +758,7 @@ export function buildCalendarPlan(input: BuildInput): CalendarPlan {
         location: null,
         allDay: false,
         start: formatLocalDateTime(startMs),
-        end: formatLocalDateTime(dueMs),
+        end: formatLocalDateTime(endMs),
         timeZone,
         recurrence: null,
         reminderMinutes,

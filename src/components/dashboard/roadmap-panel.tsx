@@ -20,6 +20,8 @@ import {
   AssessmentRow,
   FORM_INPUT,
   FormField,
+  endTimeError,
+  endTimeHint,
 } from "@/components/dashboard/assessment-row";
 import { CourseEditor } from "@/components/dashboard/course-editor";
 import {
@@ -443,6 +445,7 @@ interface AddDraft {
   kind: AssessmentKind;
   dueDate: string;
   dueTime: string;
+  endTime: string;
   weightPercent: string;
 }
 
@@ -451,13 +454,14 @@ const EMPTY_DRAFT: AddDraft = {
   kind: "assignment",
   dueDate: "",
   dueTime: "",
+  endTime: "",
   weightPercent: "",
 };
 
 /**
  * The extractor misses things -- a deadline announced in class, an item buried
- * in prose. This is the smallest form that can add one: the same five fields
- * the row editor shows, minus the notes nobody types on the way in.
+ * in prose. This is the smallest form that can add one: the same fields the row
+ * editor shows, minus the notes nobody types on the way in.
  */
 function AddItemForm({
   course,
@@ -474,6 +478,7 @@ function AddItemForm({
   const [draft, setDraft] = useState<AddDraft>(EMPTY_DRAFT);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const endHint = endTimeHint(draft.kind);
 
   function patch(field: keyof AddDraft, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -484,6 +489,11 @@ function AddItemForm({
     const title = draft.title.trim();
     if (title.length === 0) {
       setError("Give this item a title.");
+      return;
+    }
+    const rangeError = endTimeError(draft.dueTime, draft.endTime);
+    if (rangeError) {
+      setError(rangeError);
       return;
     }
     const rawWeight = draft.weightPercent.trim();
@@ -506,6 +516,7 @@ function AddItemForm({
         kind: draft.kind,
         dueDate: draft.dueDate.trim() || null,
         dueTime: draft.dueTime.trim() || null,
+        endTime: draft.endTime.trim() || null,
         weightPercent,
       },
     );
@@ -592,6 +603,24 @@ function AddItemForm({
             value={draft.dueTime}
             disabled={pending}
             onChange={(event) => patch("dueTime", event.target.value)}
+            className={FORM_INPUT}
+          />
+        </FormField>
+
+        <FormField
+          label="End time"
+          htmlFor={`${fieldId}-end`}
+          hint={endHint}
+          onClear={draft.endTime ? () => patch("endTime", "") : undefined}
+          clearLabel="Clear the end time"
+        >
+          <input
+            id={`${fieldId}-end`}
+            type="time"
+            aria-describedby={endHint ? `${fieldId}-end-hint` : undefined}
+            value={draft.endTime}
+            disabled={pending}
+            onChange={(event) => patch("endTime", event.target.value)}
             className={FORM_INPUT}
           />
         </FormField>

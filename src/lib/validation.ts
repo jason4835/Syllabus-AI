@@ -49,6 +49,7 @@ export const ASSESSMENT_FIELD_KEYS = [
   "kind",
   "dueDate",
   "dueTime",
+  "endTime",
   "weightPercent",
   "notes",
 ] as const;
@@ -155,6 +156,12 @@ export function validateDueTime(value: unknown): string | null {
   throw new Invalid("dueTime must be HH:MM (24h) or null");
 }
 
+export function validateEndTime(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value === "string" && isRealTime(value)) return value;
+  throw new Invalid("endTime must be HH:MM (24h) or null");
+}
+
 /**
  * 0-100, rounded to two decimals -- the same precision `applyGradeWeights`
  * stores, so a hand-typed weight and a derived one look alike.
@@ -184,9 +191,19 @@ export function requireDateForTime(
   if (dueTime && !dueDate) throw new Invalid("dueTime requires a dueDate");
 }
 
+/**
+ * An end without a start is meaningless, and an end before the start is a
+ * typo -- the one that would draw an exam as ending before it began.
+ */
+export function requireStartForEnd(dueTime: string | null, endTime: string | null): void {
+  if (!endTime) return;
+  if (!dueTime) throw new Invalid("endTime requires a dueTime");
+  if (endTime <= dueTime) throw new Invalid("endTime must be after dueTime");
+}
+
 /** The user-settable half of an assessment, after validation. */
 export type AssessmentFields = Partial<
-  Pick<Assessment, "title" | "kind" | "dueDate" | "dueTime" | "weightPercent" | "notes">
+  Pick<Assessment, "title" | "kind" | "dueDate" | "dueTime" | "endTime" | "weightPercent" | "notes">
 >;
 
 /**
@@ -205,6 +222,7 @@ export function collectAssessmentFields(
   if ("kind" in body) fields.kind = validateAssessmentKind(body.kind);
   if ("dueDate" in body) fields.dueDate = validateDueDate(body.dueDate);
   if ("dueTime" in body) fields.dueTime = validateDueTime(body.dueTime);
+  if ("endTime" in body) fields.endTime = validateEndTime(body.endTime);
   if ("weightPercent" in body) {
     fields.weightPercent = validateWeightPercent(body.weightPercent);
   }

@@ -118,7 +118,10 @@ function emptyDatabase(): Database {
  * this module a complete `Assessment`.
  */
 function normalizeAssessment(row: Assessment): Assessment {
-  return { ...row, reviewedAt: row.reviewedAt ?? null };
+  // `endTime` is the same story one field over: a row written before exams
+  // carried an end time has no such key, and "we were never told" has to read
+  // back as null rather than vanish from the JSON the API returns.
+  return { ...row, endTime: row.endTime ?? null, reviewedAt: row.reviewedAt ?? null };
 }
 
 /**
@@ -631,6 +634,7 @@ export function createLocalStore(): Store {
           kind: a.kind,
           dueDate: a.dueDate,
           dueTime: a.dueTime,
+          endTime: a.endTime,
           weightPercent: a.weightPercent,
           sourceText: a.sourceText,
           confidence: a.confidence,
@@ -735,6 +739,7 @@ export function createLocalStore(): Store {
           kind: assessment.kind,
           dueDate: assessment.dueDate,
           dueTime: assessment.dueTime,
+          endTime: assessment.endTime,
           weightPercent: assessment.weightPercent,
           sourceText: assessment.sourceText,
           confidence: assessment.confidence,

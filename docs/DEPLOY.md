@@ -556,6 +556,9 @@ Run this against the live URL, in order, before you send the link to anyone.
   courses do). The upload result must ask which section you're in and add no
   class meetings until you answer; after choosing, a sync writes exactly that
   section's meetings and the "Removed" count clears anything stale.
+- **Exam times** — an exam the syllabus gives as "12:30–1:50 PM" must appear
+  on the calendar at 12:30–1:50, not as a block ending at 12:30. Assignments
+  keep a block ending at the deadline.
 - **Calendar feed** — in the Sync panel, create the feed link, then subscribe
   from Apple Calendar or Outlook. Reset the link and confirm the old URL 404s.
 

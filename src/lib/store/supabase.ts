@@ -86,6 +86,7 @@ interface AssessmentRow {
   kind: string;
   due_date: string | null;
   due_time: string | null;
+  end_time: string | null;
   weight_percent: number | string | null;
   source_text: string | null;
   confidence: number | string;
@@ -313,6 +314,10 @@ function assessmentToDomain(row: AssessmentRow): Assessment {
     kind: toKind(row.kind),
     dueDate: row.due_date,
     dueTime: row.due_time,
+    // `?? null` for the same reason `reviewed_at` below gets one: a database
+    // without the `end_time` migration returns no such key, and `undefined`
+    // would drop the field out of the JSON the API sends.
+    endTime: row.end_time ?? null,
     weightPercent: toNumberOrNull(row.weight_percent),
     sourceText: row.source_text,
     confidence: toNumberOrNull(row.confidence) ?? 0,
@@ -332,6 +337,7 @@ function assessmentToRow(assessment: Assessment): AssessmentRow {
     kind: assessment.kind,
     due_date: assessment.dueDate,
     due_time: assessment.dueTime,
+    end_time: assessment.endTime,
     weight_percent: assessment.weightPercent,
     source_text: assessment.sourceText,
     confidence: assessment.confidence,
@@ -353,6 +359,7 @@ function assessmentPatchToRow(
   if (patch.kind !== undefined) row.kind = patch.kind;
   if (patch.dueDate !== undefined) row.due_date = patch.dueDate;
   if (patch.dueTime !== undefined) row.due_time = patch.dueTime;
+  if (patch.endTime !== undefined) row.end_time = patch.endTime;
   if (patch.weightPercent !== undefined) row.weight_percent = patch.weightPercent;
   if (patch.sourceText !== undefined) row.source_text = patch.sourceText;
   if (patch.confidence !== undefined) row.confidence = patch.confidence;
@@ -966,6 +973,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         kind: a.kind,
         dueDate: a.dueDate,
         dueTime: a.dueTime,
+        endTime: a.endTime,
         weightPercent: a.weightPercent,
         sourceText: a.sourceText,
         confidence: a.confidence,
@@ -1091,6 +1099,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         kind: assessment.kind,
         dueDate: assessment.dueDate,
         dueTime: assessment.dueTime,
+        endTime: assessment.endTime,
         weightPercent: assessment.weightPercent,
         sourceText: assessment.sourceText,
         confidence: assessment.confidence,

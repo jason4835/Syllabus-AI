@@ -8,8 +8,7 @@ import {
   ASSESSMENT_FIELD_KEYS,
   Invalid,
   collectAssessmentFields,
-  requireDateForTime,
-} from "@/lib/validation";
+  requireDateForTime, requireStartForEnd } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +79,8 @@ function build(body: Record<string, unknown>): Omit<Assessment, "id" | "courseId
   const dueDate = fields.dueDate ?? null;
   const dueTime = fields.dueTime ?? null;
   requireDateForTime(dueDate, dueTime);
+  const endTime = fields.endTime ?? null;
+  requireStartForEnd(dueTime, endTime);
 
   const now = new Date().toISOString();
   return {
@@ -89,6 +90,7 @@ function build(body: Record<string, unknown>): Omit<Assessment, "id" | "courseId
     kind: fields.kind as Assessment["kind"],
     dueDate,
     dueTime,
+    endTime,
     weightPercent: fields.weightPercent ?? null,
     // Nothing was extracted, so there is nothing to quote.
     sourceText: null,

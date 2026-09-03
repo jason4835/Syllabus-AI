@@ -24,8 +24,17 @@ export interface Assessment {
   kind: AssessmentKind;
   /** ISO date (YYYY-MM-DD). Null when the syllabus gave no resolvable date. */
   dueDate: string | null;
-  /** Local time (HH:MM, 24h) when the syllabus specified one. */
+  /**
+   * Local time (HH:MM, 24h) when the syllabus specified one. For a deadline
+   * this is the cutoff; for a sitting (exam, quiz, presentation) it is when
+   * it STARTS -- see `isSitting`.
+   */
   dueTime: string | null;
+  /**
+   * When a sitting ends, if the syllabus gave a range ("12:30-1:50 PM").
+   * Null otherwise. Meaningless without `dueTime`.
+   */
+  endTime: string | null;
   /** Percentage of the final grade, when the syllabus states it. */
   weightPercent: number | null;
   /** Verbatim snippet the extractor based this item on -- powers "show source". */
@@ -39,6 +48,16 @@ export interface Assessment {
    */
   reviewedAt: string | null;
   notes: string | null;
+}
+
+/**
+ * A sitting happens AT its time, for a duration; a deadline is a cutoff you
+ * work up to. Calendars draw them differently, and getting this wrong put a
+ * student's exam block an hour before the exam.
+ */
+export const SITTING_KINDS: readonly AssessmentKind[] = ["exam", "quiz", "presentation"];
+export function isSitting(a: Pick<Assessment, "kind">): boolean {
+  return SITTING_KINDS.includes(a.kind);
 }
 
 /** The threshold below which an unreviewed item is flagged for review. */

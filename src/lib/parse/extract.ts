@@ -61,6 +61,13 @@ const AssessmentSchema = z.object({
   kind: AssessmentKindSchema,
   dueDate: z.string().nullable(),
   dueTime: z.string().nullable(),
+  /**
+   * When a sitting ends, for an item the syllabus gave a time range for. Null
+   * for a deadline, and for a sitting with only a start -- re-checked against
+   * `dueTime` in `sanitize`, because an end before its start would draw the
+   * exam block in the wrong place entirely.
+   */
+  endTime: z.string().nullable(),
   weightPercent: z.number().nullable(),
   sourceText: z.string().nullable(),
   confidence: z.number(),
@@ -163,6 +170,7 @@ RULES
    - If the syllabus omits the year, infer it from the term so the date lands INSIDE the term. A "Jan 20" in a Fall 2026 term is January 2027, not January 2026.
    - If you cannot resolve a date honestly, set dueDate to null, explain why in notes, and add a warning naming the item. NEVER guess a date. A null date is recoverable; a wrong date is not.
    - dueTime is 24-hour HH:MM, or null when no time is stated. "11:59 pm" is "23:59".
+   - When an item gives a time range, \`dueTime\` is the START and \`endTime\` the END, both 24h HH:MM. Exams and quizzes usually do.
 
 3. GRADING. Copy the grading-weight table into course.gradeWeights, one row per category, using the syllabus's own category names. If the weights do not sum to 100, record them as written and add a warning saying so. Put a per-item percentage in assessment.weightPercent only when the syllabus states one for that specific item.
 
@@ -266,11 +274,21 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
     const dueDate = item.dueDate ? normalizeDate(item.dueDate, ctx) : null;
     if (item.dueDate && !dueDate) droppedDates += 1;
 
+    const dueTime = item.dueTime ? parseTime(item.dueTime) : null;
+    // `endTime` goes back through `parseTime` like every other time, and is
+    // then held to the one thing that makes it meaningful: it has to come
+    // after the start. An end at or before the start (or with no start at all)
+    // is dropped rather than kept, because a calendar block drawn from it
+    // would sit somewhere the exam is not. Omitted entirely means null.
+    let endTime = item.endTime ? parseTime(item.endTime) : null;
+    if (endTime !== null && (dueTime === null || endTime <= dueTime)) endTime = null;
+
     assessments.push({
       title,
       kind: item.kind,
       dueDate,
-      dueTime: item.dueTime ? parseTime(item.dueTime) : null,
+      dueTime,
+      endTime,
       weightPercent:
         item.weightPercent === null ? null : clamp(Number(item.weightPercent), 0, 100),
       sourceText: trimOrNull(item.sourceText, 600),

@@ -3,12 +3,17 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import type { Assessment, AssessmentKind } from "@/lib/types";
-import { needsReview } from "@/lib/types";
+import { isSitting, needsReview } from "@/lib/types";
 import { apiDelete, apiPatch } from "@/components/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button, Spinner } from "@/components/ui/button";
 import { AlertIcon, CheckIcon } from "@/components/icons";
-import { formatDate, formatPercent, formatRelative, formatTime } from "@/components/format";
+import {
+  formatDate,
+  formatPercent,
+  formatRelative,
+  formatTimeRange,
+} from "@/components/format";
 import { KIND_LABEL, isHighStakes, kindLabel } from "@/components/labels";
 
 const KINDS = Object.keys(KIND_LABEL) as AssessmentKind[];
@@ -28,6 +33,7 @@ interface AssessmentPatch {
   kind?: AssessmentKind;
   dueDate?: string | null;
   dueTime?: string | null;
+  endTime?: string | null;
   weightPercent?: number | null;
   notes?: string | null;
 }
@@ -38,6 +44,7 @@ interface Draft {
   kind: AssessmentKind;
   dueDate: string;
   dueTime: string;
+  endTime: string;
   weightPercent: string;
   notes: string;
 }
@@ -48,10 +55,32 @@ function toDraft(assessment: Assessment): Draft {
     kind: assessment.kind,
     dueDate: assessment.dueDate ?? "",
     dueTime: assessment.dueTime ?? "",
+    endTime: assessment.endTime ?? "",
     weightPercent:
       assessment.weightPercent === null ? "" : String(assessment.weightPercent),
     notes: assessment.notes ?? "",
   };
+}
+
+/**
+ * The two rules the server enforces (422), said here first: a round trip to be
+ * told the end is before the start is a round trip the user did not need.
+ * Shared with the roadmap's add-item form so both forms refuse the same things.
+ */
+export function endTimeError(dueTime: string, endTime: string): string | null {
+  const end = endTime.trim();
+  if (end.length === 0) return null;
+  const due = dueTime.trim();
+  if (due.length === 0) return "Set a due time before an end time.";
+  if (end <= due) return "The end time must be after the due time.";
+  return null;
+}
+
+/** Only a sitting *ends*; a deadline just passes. */
+export function endTimeHint(kind: AssessmentKind): string | null {
+  return isSitting({ kind })
+    ? `When the ${KIND_LABEL[kind].toLowerCase()} ends`
+    : null;
 }
 
 /**
@@ -76,6 +105,11 @@ function buildPatch(
 
   const dueTime = draft.dueTime.trim() || null;
   if (dueTime !== assessment.dueTime) patch.dueTime = dueTime;
+
+  const rangeError = endTimeError(draft.dueTime, draft.endTime);
+  if (rangeError) return { error: rangeError };
+  const endTime = draft.endTime.trim() || null;
+  if (endTime !== assessment.endTime) patch.endTime = endTime;
 
   const rawWeight = draft.weightPercent.trim();
   let weightPercent: number | null = null;
@@ -158,6 +192,8 @@ export function AssessmentRow({
 
   const editable = typeof onChanged === "function";
   const flagged = showConfidence && needsReview(assessment);
+  // Follows the Type field: change an assignment to an exam and the hint appears.
+  const endHint = endTimeHint(draft.kind);
 
   function openEditor() {
     setDraft(toDraft(assessment));
@@ -322,6 +358,26 @@ export function AssessmentRow({
               />
             </FormField>
 
+            {/* Offered for every kind: an exam mis-read as an assignment is
+                fixed here, and its end time belongs in the same pass. */}
+            <FormField
+              label="End time"
+              htmlFor={`${fieldId}-end`}
+              hint={endHint}
+              onClear={draft.endTime ? () => patch("endTime", "") : undefined}
+              clearLabel={`Clear the end time for ${assessment.title}`}
+            >
+              <input
+                id={`${fieldId}-end`}
+                type="time"
+                aria-describedby={endHint ? `${fieldId}-end-hint` : undefined}
+                value={draft.endTime}
+                disabled={pending !== null}
+                onChange={(event) => patch("endTime", event.target.value)}
+                className={FORM_INPUT}
+              />
+            </FormField>
+
             <FormField
               label="Weight (% of grade)"
               htmlFor={`${fieldId}-weight`}
@@ -441,7 +497,8 @@ export function AssessmentRow({
   }
 
   const weight = formatPercent(assessment.weightPercent);
-  const time = formatTime(assessment.dueTime);
+  // A sitting with a range reads "12:30–1:50 PM"; everything else is unchanged.
+  const time = formatTimeRange(assessment.dueTime, assessment.endTime);
 
   return (
     <li className="group flex items-start gap-3 py-3">
@@ -597,6 +654,7 @@ export function FormField({
   className,
   onClear,
   clearLabel,
+  hint,
   children,
 }: {
   label: string;
@@ -604,6 +662,8 @@ export function FormField({
   className?: string;
   onClear?: () => void;
   clearLabel?: string;
+  /** Sits under the control, `${htmlFor}-hint` for the control to point at. */
+  hint?: string | null;
   children: ReactNode;
 }) {
   return (
@@ -624,6 +684,14 @@ export function FormField({
         ) : null}
       </div>
       {children}
+      {hint ? (
+        <p
+          id={`${htmlFor}-hint`}
+          className="mt-1 text-[0.6875rem] leading-snug text-muted"
+        >
+          {hint}
+        </p>
+      ) : null}
     </div>
   );
 }

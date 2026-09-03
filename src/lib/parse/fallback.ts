@@ -851,7 +851,81 @@ function segments(line: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-function findAssessments(lines: string[], ctx: DateContext): LooseAssessment[] {
+/**
+ * A written time range, captured in pieces so a trailing meridiem can be shared
+ * with the start and so the phrase itself can be quoted back in a warning.
+ *
+ * Deliberately unanchored: a schedule row wraps the range in a title, a date
+ * and a room ("Midterm 1 ... Tuesday, October 6, 2026, 12:30-1:50 PM"), so we
+ * scan for every range-shaped run rather than expecting one at a known spot.
+ */
+const TIME_RANGE_SHAPE =
+  /(\d{1,2}(?::\d{2})?)(?:\s*([ap])\.?\s*m\.?)?\s*(-|\bto\b|\buntil\b)\s*(\d{1,2}(?::\d{2})?)(?:\s*([ap])\.?\s*m\.?)?/gi;
+
+/** Every dash a syllabus might write a range with, flattened to a plain hyphen. */
+function plainDashes(s: string): string {
+  return s.replace(/[‐-―−]/g, "-");
+}
+
+/** Same warning from a summary table and again from the week grid is one warning. */
+function pushWarning(warnings: string[], message: string): void {
+  if (!warnings.includes(message)) warnings.push(message);
+}
+
+interface DueTimes {
+  start: string;
+  /** Null for a lone time, and for a range whose end did not land after its start. */
+  end: string | null;
+}
+
+/**
+ * Reads when an item happens, and -- when the syllabus wrote a range -- when it
+ * ends.
+ *
+ * This is the exam fix. "Midterm: Tuesday, Oct 6, 12:30-1:50 PM" used to keep
+ * only the 12:30 and throw the rest away, so the calendar drew a default-length
+ * block ENDING at 12:30, an hour before the student's exam actually started.
+ *
+ * A trailing meridiem governs both ends of a range -- "12:30-1:50 PM" is 12:30
+ * PM to 1:50 PM, "8-9:50 AM" is 08:00 to 09:50 -- so it is pushed onto a bare
+ * start before `parseTimeRange` reads the pair, rather than letting each end be
+ * read on its own. An end that is not after its start is a misprint or a
+ * misread; we keep the start, drop the end and say so, because an end time we
+ * made up is precisely the bug this replaced.
+ */
+function parseDueTimes(text: string, warnings: string[]): DueTimes | null {
+  const source = plainDashes(text);
+
+  TIME_RANGE_SHAPE.lastIndex = 0;
+  for (let m = TIME_RANGE_SHAPE.exec(source); m !== null; m = TIME_RANGE_SHAPE.exec(source)) {
+    const [phrase, startClock, startMeridiem, separator, endClock, endMeridiem] = m;
+    const normalized =
+      !startMeridiem && endMeridiem
+        ? `${startClock} ${endMeridiem}m ${separator} ${endClock} ${endMeridiem}m`
+        : phrase;
+    // "Oct 5-7" and "chapters 2 to 5" are the same shape; only a pair that
+    // actually reads as two clock times counts as a range.
+    const range = parseTimeRange(normalized);
+    if (!range) continue;
+
+    if (range.end > range.start) return { start: range.start, end: range.end };
+
+    pushWarning(
+      warnings,
+      `The time range "${collapse(phrase)}" ends at or before it starts, so only its start time was kept.`,
+    );
+    return { start: range.start, end: null };
+  }
+
+  const lone = parseTime(source);
+  return lone ? { start: lone, end: null } : null;
+}
+
+function findAssessments(
+  lines: string[],
+  ctx: DateContext,
+  warnings: string[],
+): LooseAssessment[] {
   const candidates: LooseAssessment[] = [];
 
   for (const line of lines) {
@@ -876,7 +950,10 @@ function findAssessments(lines: string[], ctx: DateContext): LooseAssessment[] {
       // "Week 5" alone is a schedule label, not an assignment.
       if (/^week\s*\d+$/i.test(title)) continue;
 
-      const dueTime = parseTime(cell) ?? (cellHasDate ? null : parseTime(line));
+      // The cell is preferred over the row for the same reason the date is: a
+      // week row carries other items' times too.
+      const times =
+        parseDueTimes(cell, warnings) ?? (cellHasDate ? null : parseDueTimes(line, warnings));
 
       // An explicit four-digit year removes the riskiest guess we make, so it
       // earns a little confidence; a missing date costs some.
@@ -892,7 +969,11 @@ function findAssessments(lines: string[], ctx: DateContext): LooseAssessment[] {
         title,
         kind: rule.kind,
         dueDate,
-        dueTime,
+        dueTime: times?.start ?? null,
+        // Null unless the syllabus actually wrote a range. A sitting with no
+        // stated end is one the calendar layer gets to make its own guess
+        // about; a wrong end here would look like a stated fact.
+        endTime: times?.end ?? null,
         weightPercent: inlineWeight ? Number(inlineWeight[1]) : null,
         sourceText: collapse(line).slice(0, 400),
         confidence: clamp(Number(confidence.toFixed(2)), 0.4, 0.6),
@@ -940,8 +1021,16 @@ function mergeAssessments(items: LooseAssessment[]): LooseAssessment[] {
         byDate.set(key, { ...item });
         continue;
       }
-      // Keep the richer of the two mentions.
-      existing.dueTime = existing.dueTime ?? item.dueTime;
+      // Keep the richer of the two mentions. An end time only travels with the
+      // start it was written next to: the deadline table's "10:15 AM-12:15 PM"
+      // and the week grid's bare "10:15 AM" are the same sitting, but pairing
+      // one mention's end with another's start would be an invented fact.
+      if (existing.dueTime === null) {
+        existing.dueTime = item.dueTime;
+        existing.endTime = item.endTime;
+      } else if (existing.endTime === null && item.dueTime === existing.dueTime) {
+        existing.endTime = item.endTime;
+      }
       existing.weightPercent = existing.weightPercent ?? item.weightPercent;
       existing.confidence = Math.max(existing.confidence, item.confidence);
       if ((item.sourceText?.length ?? 0) > (existing.sourceText?.length ?? 0)) {
@@ -1400,7 +1489,7 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
   const meetingTimes = findMeetingTimes(lines);
   const gradeWeights = findGradeWeights(lines);
   const policies = findPolicies(text);
-  const assessments = findAssessments(lines, inferenceCtx);
+  const assessments = findAssessments(lines, inferenceCtx, warnings);
   const noClass = findNoClassPeriods(lines, inferenceCtx, termRange, warnings);
 
   if (!code) {

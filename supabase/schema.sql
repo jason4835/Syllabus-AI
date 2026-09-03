@@ -36,6 +36,7 @@
 --   users.calendar_feed_token     -- secret in the user's private .ics feed URL
 --   users.calendar_prefs          -- what the sync and the .ics feed include
 --   assessments.reviewed_at       -- when the student confirmed or edited the item
+--   assessments.end_time          -- when a sitting ends, when the syllabus gave a range
 --   courses.no_class              -- term days when the class does not meet
 --   courses.section               -- the section the student picked, of the many listed
 --   calendar_links.user_id        -- who a synced event belongs to
@@ -158,7 +159,13 @@ create table if not exists public.assessments (
   title           text not null,
   kind            text not null default 'other',
   due_date        text,
+  -- For a deadline, the cutoff; for a sitting (exam, quiz, presentation), when
+  -- it STARTS. `end_time` is when that sitting ends, and is set only when the
+  -- syllabus actually wrote a range ("12:30-1:50 PM") -- null otherwise, and
+  -- meaningless without `due_time`. Keeping the end is what stops the calendar
+  -- from drawing a default-length block that ENDS at the start of the exam.
   due_time        text,
+  end_time        text,
   weight_percent  numeric,
   source_text     text,
   -- 0..1 extractor confidence; the UI surfaces anything under 0.6 for review.
@@ -180,6 +187,7 @@ create table if not exists public.assessments (
 -- if not exists` above is a no-op on those, so the column has to be added here;
 -- `add column if not exists` makes running the whole file again a no-op too.
 alter table public.assessments add column if not exists reviewed_at text;
+alter table public.assessments add column if not exists end_time text;
 
 create index if not exists assessments_course_id_idx on public.assessments (course_id);
 create index if not exists assessments_due_date_idx on public.assessments (due_date);
