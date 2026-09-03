@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from "react";
 import type { Assessment, Course } from "@/lib/types";
+import { needsReview } from "@/lib/types";
 import { Panel } from "@/components/ui/panel";
+import { Badge } from "@/components/ui/badge";
 import { RouteIcon, UploadIcon } from "@/components/icons";
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import { LoadingRegion, SkeletonRows } from "@/components/ui/skeleton";
@@ -58,6 +60,7 @@ export function RoadmapPanel({
   accents,
   coursePages = {},
   onRetry,
+  onAssessmentChanged,
 }: {
   loading: boolean;
   error?: { error: string; detail?: string };
@@ -67,6 +70,8 @@ export function RoadmapPanel({
   /** courseId -> Notion page URL, from the Notion status the shell holds. */
   coursePages?: Record<string, string>;
   onRetry: () => void;
+  /** Hand a confirmed or edited item back to the shell. */
+  onAssessmentChanged?: (updated: Assessment) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -106,6 +111,7 @@ export function RoadmapPanel({
             const items = byCourse.get(course.id) ?? [];
             const { weeks, undated } = groupByWeek(items);
             const isCollapsed = collapsed[course.id] === true;
+            const unreviewed = items.filter(needsReview).length;
             const bodyId = `roadmap-course-${course.id}`;
             const notionUrl = coursePages[course.id];
 
@@ -135,6 +141,14 @@ export function RoadmapPanel({
                         .filter(Boolean)
                         .join(" · ")}
                     </p>
+                    {/* Counts down as items are confirmed, then disappears. */}
+                    {unreviewed > 0 ? (
+                      <p className="mt-1.5">
+                        <Badge tone="warn">
+                          {unreviewed} need{unreviewed === 1 ? "s" : ""} review
+                        </Badge>
+                      </p>
+                    ) : null}
                     {/* Only when the course actually has a page — a dead link
                         is worse than no link. */}
                     {notionUrl ? (
@@ -207,6 +221,7 @@ export function RoadmapPanel({
                                   courseCode={course.code}
                                   color={color}
                                   showConfidence
+                                  onChanged={onAssessmentChanged}
                                 />
                               ))}
                             </ul>
@@ -226,6 +241,7 @@ export function RoadmapPanel({
                                   color={color}
                                   showRelative={false}
                                   showConfidence
+                                  onChanged={onAssessmentChanged}
                                 />
                               ))}
                             </ul>

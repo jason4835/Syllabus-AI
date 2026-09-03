@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useId, useRef, useState } from "react";
+import { needsReview } from "@/lib/types";
 import type { DragEvent } from "react";
 import type { Assessment, Course } from "@/lib/types";
 import { apiUpload } from "@/components/api-client";
@@ -40,15 +41,38 @@ export function UploadPanel({
   demoMode,
   accent,
   onUploaded,
+  onAssessmentChanged,
 }: {
   demoMode: boolean;
   /** Accent the newly added course will carry elsewhere in the dashboard. */
   accent: string;
   onUploaded: (result: UploadResult) => void;
+  /** Hand a confirmed or edited item back to the shell. */
+  onAssessmentChanged?: (updated: Assessment) => void;
 }) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+
+  const onRowChanged = useCallback(
+    (updated: Assessment) => {
+      setPhase((current) =>
+        current.kind === "done"
+          ? {
+              kind: "done",
+              result: {
+                ...current.result,
+                assessments: current.result.assessments.map((item) =>
+                  item.id === updated.id ? updated : item,
+                ),
+              },
+            }
+          : current,
+      );
+      onAssessmentChanged?.(updated);
+    },
+    [onAssessmentChanged],
+  );
   const [dragging, setDragging] = useState(false);
 
   const busy = phase.kind === "uploading" || phase.kind === "parsing";
@@ -124,7 +148,11 @@ export function UploadPanel({
       }
     >
       {phase.kind === "done" ? (
-        <ExtractionResult result={phase.result} accent={accent} />
+        <ExtractionResult
+          result={phase.result}
+          accent={accent}
+          onChanged={onAssessmentChanged ? onRowChanged : undefined}
+        />
       ) : (
         <div className="space-y-3">
           <div
@@ -227,12 +255,14 @@ export function UploadPanel({
 function ExtractionResult({
   result,
   accent,
+  onChanged,
 }: {
   result: UploadResult;
   accent: string;
+  onChanged?: (updated: Assessment) => void;
 }) {
   const { course, assessments, warnings, notion } = result;
-  const flagged = assessments.filter((item) => item.confidence < 0.6);
+  const flagged = assessments.filter(needsReview);
   const totalWeight = course.gradeWeights.reduce(
     (sum, row) => sum + row.weightPercent,
     0,
@@ -367,6 +397,7 @@ function ExtractionResult({
               courseCode={course.code}
               color={accent}
               showConfidence
+              onChanged={onChanged}
             />
           ))}
         </ul>

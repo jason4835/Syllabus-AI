@@ -16,6 +16,7 @@ export function UpcomingPanel({
   assessments,
   accents,
   onRetry,
+  onAssessmentChanged,
 }: {
   loading: boolean;
   error?: { error: string; detail?: string };
@@ -23,6 +24,8 @@ export function UpcomingPanel({
   assessments: Assessment[];
   accents: Record<string, string>;
   onRetry: () => void;
+  /** Hand a confirmed or edited item back to the shell. */
+  onAssessmentChanged?: (updated: Assessment) => void;
 }) {
   const byId = new Map(courses.map((course) => [course.id, course]));
 
@@ -73,6 +76,7 @@ export function UpcomingPanel({
                 courseCode={byId.get(assessment.courseId)?.code ?? "Course"}
                 color={accentFor(accents, assessment.courseId)}
                 showConfidence
+                onChanged={onAssessmentChanged}
               />
             ))}
           </ul>

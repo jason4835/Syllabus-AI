@@ -81,6 +81,20 @@ export function apiPost<T>(path: string, body?: unknown): Promise<ApiResult<T>> 
   );
 }
 
+/** Partial updates — the row editor and its Confirm button both come through here. */
+export function apiPatch<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+  return envelope<T>(
+    fetch(path, {
+      method: "PATCH",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body ?? {}),
+    }),
+  );
+}
+
 export interface UploadHandlers {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;

@@ -244,6 +244,21 @@ export function DashboardShell() {
     [refreshAll],
   );
 
+  /**
+   * A confirmed or edited item comes back from the server already final, so
+   * it replaces its row in place -- no refetch of every course. The plan is
+   * refetched because a moved date moves study blocks and week loads.
+   */
+  const onAssessmentChanged = useCallback(
+    (updated: Assessment) => {
+      setAssessments((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      void loadPlan();
+    },
+    [loadPlan],
+  );
+
   const demoMode = config?.demoMode ?? false;
   const weeks = plan?.weeks ?? [];
 
@@ -328,6 +343,7 @@ export function DashboardShell() {
                 courses={courses}
                 assessments={assessments}
                 accents={accents}
+                onAssessmentChanged={onAssessmentChanged}
                 onRetry={() => void loadCourses()}
               />
               <RoadmapPanel
@@ -336,6 +352,7 @@ export function DashboardShell() {
                 courses={courses}
                 assessments={assessments}
                 accents={accents}
+                onAssessmentChanged={onAssessmentChanged}
                 coursePages={notionStatus?.coursePages ?? {}}
                 onRetry={() => void loadCourses()}
               />
@@ -346,6 +363,7 @@ export function DashboardShell() {
                 demoMode={demoMode}
                 accent={nextAccent}
                 onUploaded={onUploaded}
+                onAssessmentChanged={onAssessmentChanged}
               />
               <SyncPanel
                 demoMode={demoMode}
