@@ -10,7 +10,10 @@
  * 2. Sync is idempotent. Every event we create is recorded in the store
  *    against the id of the assessment or study block that produced it, so a
  *    second sync PATCHes instead of duplicating. Re-syncing is the normal
- *    case (a syllabus gets re-parsed, a date gets corrected), not the edge.
+ *    case (a syllabus gets re-parsed, a date gets corrected), not the edge --
+ *    and it is a two-way street: a link whose event is no longer in the plan is
+ *    deleted from Google, so the calendar converges on the plan instead of
+ *    accumulating everything the app has ever believed.
  *
  * 3. Every timed event carries the *user's* IANA zone explicitly. Leaving the
  *    datetimes floating makes Google resolve them in the calendar's zone, and
@@ -47,8 +50,10 @@ import {
   type CalendarPlan,
 } from "@/lib/calendar/events";
 import { resolveTerm } from "@/lib/plan";
+import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
 import type {
   Assessment,
+  CalendarPrefs,
   CalendarSyncResult,
   Course,
   StudyBlock,
@@ -73,18 +78,33 @@ function serverTimeZone(): string {
 }
 
 /**
- * The zone every datetime in this sync is anchored to. The stored value comes
- * from the user's own browser, so it beats anything the server can infer.
+ * Everything about the *user* that planning depends on, read in one go.
+ *
+ * The zone comes from the user's own browser, so it beats anything the server
+ * can infer. The preferences come from the same row, and an explicit
+ * `opts.prefs` beats both -- that is how a preview screen asks "what would this
+ * sync look like if I turned office hours on?" without saving anything first.
  */
-async function resolveTimeZone(userId: string): Promise<string> {
+async function resolveSyncContext(
+  userId: string,
+  opts: SyncOptions,
+): Promise<{ timeZone: string; prefs: CalendarPrefs }> {
   const user = await store.getUser(userId);
-  return user?.timezone ?? serverTimeZone();
+  return {
+    timeZone: user?.timezone ?? serverTimeZone(),
+    prefs: opts.prefs ?? user?.calendarPrefs ?? DEFAULT_CALENDAR_PREFS,
+  };
 }
 
 export interface SyncOptions {
   courses: Course[];
   assessments: Assessment[];
   studyBlocks?: StudyBlock[];
+  /**
+   * What to put on the calendar. Defaults to the user's stored preferences,
+   * and to `DEFAULT_CALENDAR_PREFS` when they have none.
+   */
+  prefs?: CalendarPrefs;
   /** Compute the plan and the counts without touching the network. Powers demo mode. */
   dryRun?: boolean;
 }
@@ -104,14 +124,58 @@ export interface SyncOptions {
  * The term window comes from the same `resolveTerm` the semester plan uses, so
  * a class series is anchored to exactly the weeks the workload chart numbers.
  */
-function planEvents(opts: SyncOptions, timeZone: string): CalendarPlan {
+function planEvents(
+  opts: SyncOptions,
+  timeZone: string,
+  prefs: CalendarPrefs,
+): CalendarPlan {
   return buildCalendarPlan({
     courses: opts.courses,
     assessments: opts.assessments,
     studyBlocks: opts.studyBlocks ?? [],
     timeZone,
     term: resolveTerm(opts.courses, opts.assessments),
+    prefs,
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Reconciliation                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The link keys this sync is allowed to delete: everything that could belong to
+ * the courses being synced, and nothing else.
+ *
+ * This scope is the whole safety story of the cleanup pass. "Delete every link
+ * that is not in the plan" would be correct only if every sync planned every
+ * course -- and syncing one course after editing it does not. Scoped by key
+ * shape instead:
+ *
+ *  - an assessment's own id (its link key IS the id);
+ *  - `sb_<assessmentId>_` for the study sessions the planner mints from it,
+ *    which exist only in memory and can be found no other way;
+ *  - `mt_<courseId>_` for the course's meeting series, whose trailing index
+ *    shifts the moment `meetingTimes` is edited -- which is exactly why the old
+ *    keys need removing rather than updating.
+ *
+ * A course absent from `opts.courses` contributes no key and no prefix, so its
+ * events cannot be touched by someone else's sync.
+ */
+function reconciliationScope(opts: SyncOptions): {
+  keys: string[];
+  keyPrefixes: string[];
+} {
+  const courseIds = new Set(opts.courses.map((c) => c.id));
+  const assessments = opts.assessments.filter((a) => courseIds.has(a.courseId));
+
+  return {
+    keys: assessments.map((a) => a.id),
+    keyPrefixes: [
+      ...assessments.map((a) => `sb_${a.id}_`),
+      ...opts.courses.map((c) => `mt_${c.id}_`),
+    ],
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -350,10 +414,21 @@ async function resolveCalendarId(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Pushes assessments and study blocks to the user's "Syllabus AI" calendar.
+ * Pushes assessments, study blocks and class meetings to the user's
+ * "Syllabus AI" calendar, and removes the ones that should no longer be there.
+ *
+ * The sync is a RECONCILIATION, not an append. It used to only ever insert and
+ * patch, which meant nothing the app had put on a calendar could ever be taken
+ * off it: a multi-section syllabus wrote a weekly series for every section --
+ * plus office hours mislabelled "class" -- and choosing the right section
+ * afterwards added the right series next to the ten wrong ones, with no way
+ * out but deleting them by hand. So the plan is now the whole truth: whatever
+ * we have a link for, inside the scope of this sync, and that the plan no
+ * longer contains, is deleted from Google and unlinked.
  *
  * Per-event failures are collected in `errors` and never abort the run: one
- * bad date should not cost a student the other twenty deadlines.
+ * bad date should not cost a student the other twenty deadlines, and one
+ * undeletable event should not strand the other nine.
  */
 export async function syncToCalendar(
   userId: string,
@@ -361,15 +436,19 @@ export async function syncToCalendar(
 ): Promise<CalendarSyncResult> {
   const dryRun = opts.dryRun === true;
   // Resolved before the dryRun branch so a dry run plans against exactly the
-  // zone a real sync would use.
-  const timeZone = await resolveTimeZone(userId);
-  const plan = planEvents(opts, timeZone);
+  // zone and preferences a real sync would use.
+  const { timeZone, prefs } = await resolveSyncContext(userId, opts);
+  const plan = planEvents(opts, timeZone, prefs);
 
   const result: CalendarSyncResult = {
     created: 0,
     updated: 0,
     skipped: plan.skipped,
     classSeries: 0,
+    removed: 0,
+    // Straight through from the planner: the UI's prompt to pick a section is
+    // driven by the same pass that withheld the meetings.
+    needsSection: [...plan.needsSection],
     calendarId: DRY_RUN_CALENDAR_ID,
     errors: [...plan.errors],
   };
@@ -425,7 +504,7 @@ export async function syncToCalendar(
             );
             const eventId = inserted.data.id;
             if (!eventId) throw new Error("Google returned no event id on insert.");
-            await store.setCalendarLink(event.key, eventId, result.calendarId);
+            await store.setCalendarLinkForUser(userId, event.key, eventId, result.calendarId);
             relinked = true;
           }
         }
@@ -445,7 +524,7 @@ export async function syncToCalendar(
         );
         const eventId = inserted.data.id;
         if (!eventId) throw new Error("Google returned no event id on insert.");
-        await store.setCalendarLink(event.key, eventId, result.calendarId);
+        await store.setCalendarLinkForUser(userId, event.key, eventId, result.calendarId);
       }
 
       result.created += 1;
@@ -457,7 +536,82 @@ export async function syncToCalendar(
     }
   }
 
+  await removeStaleEvents(userId, opts, plan, dryRun ? null : api, result);
+
   return result;
+}
+
+/**
+ * Deletes the events this sync's plan no longer contains.
+ *
+ * Runs after the writes, over the links belonging to the courses in this sync
+ * (see `reconciliationScope`). A link whose key is not among the planned keys
+ * describes an event whose reason to exist is gone: a section the student is
+ * not in, a meeting the syllabus no longer lists, a category they switched off,
+ * an assessment that lost its due date. Google first, then the link -- an
+ * orphaned link is recoverable (the next sync deletes it) while an orphaned
+ * Google event is exactly the bug this exists to fix, and would be unreachable.
+ *
+ * A dry run walks the identical diff and reports the identical `removed`,
+ * without a single network call, so demo mode can honestly say "would remove
+ * 10". That is only true because the diff is computed from the plan and the
+ * store, and the network is used solely to carry it out.
+ */
+async function removeStaleEvents(
+  userId: string,
+  opts: SyncOptions,
+  plan: CalendarPlan,
+  api: calendar_v3.Calendar | null,
+  result: CalendarSyncResult,
+): Promise<void> {
+  const desired = new Set(plan.events.map((e) => e.key));
+  const { keys, keyPrefixes } = reconciliationScope(opts);
+  if (keys.length === 0 && keyPrefixes.length === 0) return;
+
+  let links: { key: string; googleEventId: string; calendarId: string }[];
+  try {
+    links = await store.listCalendarLinks(userId, { keys, keyPrefixes });
+  } catch (err) {
+    // Never fatal: the events we just wrote are correct either way, and a
+    // cleanup that cannot read its own links simply has nothing to do.
+    result.errors.push(`Could not list existing calendar links: ${describeGoogleError(err).message}`);
+    return;
+  }
+
+  for (const link of links) {
+    if (desired.has(link.key)) continue;
+
+    if (api === null) {
+      // Dry run: same diff, no calls.
+      result.removed += 1;
+      continue;
+    }
+
+    try {
+      const calendar = api;
+      try {
+        await withRetry(() =>
+          calendar.events.delete({
+            calendarId: link.calendarId,
+            eventId: link.googleEventId,
+          }),
+        );
+      } catch (err) {
+        const info = describeGoogleError(err);
+        // 404/410: already gone -- the student deleted it themselves, or a
+        // previous run got as far as Google and no further. The end state is
+        // the one we wanted, so this counts as removed and the link still goes.
+        if (info.status !== 404 && info.status !== 410) throw err;
+      }
+      await store.deleteCalendarLink(link.key);
+      result.removed += 1;
+    } catch (err) {
+      // The link is deliberately left in place so the next sync retries it.
+      result.errors.push(
+        `Could not remove a calendar event (${link.key}): ${describeGoogleError(err).message}`,
+      );
+    }
+  }
 }
 
 /**
@@ -465,14 +619,16 @@ export async function syncToCalendar(
  *
  * Which zone an event ends up in is otherwise only observable in what Google
  * received, so this is the one seam that makes the timezone behaviour testable.
- * It shares `resolveTimeZone` and `planEvents` with `syncToCalendar`, so it
- * cannot report a payload the real path would not send.
+ * It shares `resolveSyncContext` and `planEvents` with `syncToCalendar`, so it
+ * cannot report a payload the real path would not send -- including which
+ * meetings the user's preferences and section choice leave out.
  */
 export async function planCalendarPayloads(
   userId: string,
   opts: SyncOptions,
 ): Promise<calendar_v3.Schema$Event[]> {
-  const plan = planEvents(opts, await resolveTimeZone(userId));
+  const { timeZone, prefs } = await resolveSyncContext(userId, opts);
+  const plan = planEvents(opts, timeZone, prefs);
   return plan.events.map(toEventBody);
 }
 

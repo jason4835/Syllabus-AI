@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CalendarSyncResult } from "@/lib/types";
-import { apiGet, apiPost } from "@/components/api-client";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import type { CalendarPrefs, CalendarSyncResult, Course, User } from "@/lib/types";
+import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
+import { apiGet, apiPatch, apiPost } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, Spinner } from "@/components/ui/button";
 import { ErrorState, Note } from "@/components/ui/states";
@@ -46,10 +47,16 @@ export function SyncPanel({
   demoMode,
   googleReady,
   hasCourses,
+  courses = [],
+  onChooseSection,
 }: {
   demoMode: boolean;
   googleReady: boolean;
   hasCourses: boolean;
+  /** Only to name the courses a sync result reports back by id. */
+  courses?: Course[];
+  /** Send the student to that course's chooser on the roadmap. */
+  onChooseSection?: (courseId: string) => void;
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
 
@@ -88,6 +95,8 @@ export function SyncPanel({
             until the Google credentials are set.
           </Note>
         ) : null}
+
+        <CalendarPrefsSection />
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
@@ -144,6 +153,44 @@ export function SyncPanel({
                 note="one per meeting pattern"
               />
             </dl>
+            {/* Removals are the quiet half of a sync and the half a student
+                will otherwise notice as events silently missing. */}
+            {(state.result.removed ?? 0) > 0 ? (
+              <p className="mt-2 rounded-md border border-line bg-surface px-3 py-2 text-[0.8125rem] leading-relaxed text-ink-soft">
+                <span className="font-mono text-ink tabular-nums">
+                  {state.result.removed}
+                </span>{" "}
+                removed — no longer in your syllabus or deselected
+              </p>
+            ) : null}
+
+            {(state.result.needsSection ?? []).length > 0 ? (
+              <div className="mt-3">
+                <Note tone="warn">
+                  <span className="block">
+                    Class meetings were skipped for{" "}
+                    {courseCodes(courses, state.result.needsSection).join(", ")} —
+                    the syllabus lists several sections and we won&rsquo;t guess
+                    which one is yours.
+                  </span>
+                  <span className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                    {state.result.needsSection.map((courseId) => (
+                      <SectionJump
+                        key={courseId}
+                        code={courseCode(courses, courseId)}
+                        onClick={
+                          onChooseSection
+                            ? () => onChooseSection(courseId)
+                            : undefined
+                        }
+                        courseId={courseId}
+                      />
+                    ))}
+                  </span>
+                </Note>
+              </div>
+            ) : null}
+
             <p className="mt-3 text-[0.75rem] text-muted">
               Calendar:{" "}
               <code className="rounded-sm bg-raised px-1 py-0.5 font-mono text-ink-soft">
@@ -171,6 +218,162 @@ export function SyncPanel({
         <FeedSection demoMode={demoMode} />
       </div>
     </Panel>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Courses a sync could not finish                                            */
+/* -------------------------------------------------------------------------- */
+
+function courseCode(courses: Course[], courseId: string): string {
+  return courses.find((course) => course.id === courseId)?.code ?? "a course";
+}
+
+function courseCodes(courses: Course[], ids: string[]): string[] {
+  return ids.map((id) => courseCode(courses, id));
+}
+
+/**
+ * A jump, not a route: the chooser is already on this page, a panel away. The
+ * anchor is the fallback for a shell that did not hand us a handler — it still
+ * lands on the course card rather than nowhere.
+ */
+function SectionJump({
+  code,
+  courseId,
+  onClick,
+}: {
+  code: string;
+  courseId: string;
+  onClick?: () => void;
+}) {
+  const className =
+    "rounded-sm text-[0.8125rem] font-medium text-ink underline decoration-warn-line underline-offset-2 transition-colors hover:text-accent";
+  if (!onClick) {
+    return (
+      <a href={`#roadmap-card-${courseId}`} className={className}>
+        {code}: Choose your section
+      </a>
+    );
+  }
+  return (
+    <button type="button" onClick={onClick} className={className}>
+      {code}: Choose your section
+    </button>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* What to add                                                                */
+/* -------------------------------------------------------------------------- */
+
+const PREF_ROWS: { key: keyof CalendarPrefs; label: string }[] = [
+  { key: "classes", label: "Class meetings" },
+  { key: "recitations", label: "Recitations & labs" },
+  { key: "officeHours", label: "Office hours" },
+  { key: "deadlines", label: "Deadlines & exams" },
+  { key: "studySessions", label: "Study sessions" },
+];
+
+/** Defaults for anything the server did not say, so a stale shape still renders. */
+function mergePrefs(raw: Partial<CalendarPrefs> | null | undefined): CalendarPrefs {
+  const merged = { ...DEFAULT_CALENDAR_PREFS };
+  for (const { key } of PREF_ROWS) {
+    if (typeof raw?.[key] === "boolean") merged[key] = raw[key];
+  }
+  return merged;
+}
+
+/**
+ * Five checkboxes standing between a syllabus and a calendar. They save one at
+ * a time, immediately: a "Save preferences" button would be one more thing to
+ * forget before pressing Sync, and the cost of a failed write is a checkbox
+ * that flips back, which is exactly what happened.
+ */
+function CalendarPrefsSection() {
+  const headingId = useId();
+  const [prefs, setPrefs] = useState<CalendarPrefs | null>(null);
+  const [saving, setSaving] = useState<keyof CalendarPrefs | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void apiGet<User | null>("/api/me").then((result) => {
+      if (!live) return;
+      // A 404, a signed-out session, a server without the field yet: the
+      // honest answer in every case is the documented default set.
+      setPrefs(mergePrefs(result.ok ? result.data?.calendarPrefs : null));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function toggle(key: keyof CalendarPrefs, value: boolean) {
+    if (!prefs) return;
+    const previous = prefs;
+    setPrefs({ ...prefs, [key]: value });
+    setSaving(key);
+    setFailure(null);
+    const result = await apiPatch<Partial<CalendarPrefs>>(
+      "/api/me/calendar-prefs",
+      { [key]: value },
+    );
+    setSaving(null);
+    if (!result.ok) {
+      // Rolled back rather than left looking saved: the next sync would follow
+      // the server's copy, not the box on screen.
+      setPrefs(previous);
+      setFailure(result.detail ?? result.error);
+      return;
+    }
+    setPrefs(mergePrefs({ ...previous, [key]: value, ...result.data }));
+  }
+
+  return (
+    <section aria-labelledby={headingId} className="space-y-2">
+      <div>
+        <h3 id={headingId} className="text-[0.875rem] font-semibold text-ink">
+          What to add
+        </h3>
+        <p className="mt-1 text-[0.8125rem] leading-relaxed text-muted">
+          Applies to the Google sync and the subscription feed. Anything you
+          switch off is removed from both on the next sync.
+        </p>
+      </div>
+
+      {!prefs ? (
+        <LoadingRegion label="Loading what your calendar includes">
+          <SkeletonRows rows={2} />
+        </LoadingRegion>
+      ) : (
+        <ul className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+          {PREF_ROWS.map(({ key, label }) => (
+            <li key={key}>
+              <label className="flex items-start gap-2.5 text-[0.8125rem] leading-relaxed text-ink">
+                <input
+                  type="checkbox"
+                  checked={prefs[key]}
+                  disabled={saving === key}
+                  onChange={(event) => void toggle(key, event.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-[color:var(--color-accent)]"
+                />
+                {label}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {failure ? (
+        <p
+          role="alert"
+          className="rounded-md border border-danger-line bg-danger-soft px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-danger"
+        >
+          That didn&rsquo;t save — {failure}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

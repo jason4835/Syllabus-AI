@@ -55,12 +55,29 @@ export interface GradeWeight {
   weightPercent: number;
 }
 
+/**
+ * What a recurring meeting is. Titles, defaults and the user's sync choices
+ * all key off this -- office hours must never be put on a calendar as "class".
+ */
+export type MeetingKind = "lecture" | "recitation" | "lab" | "office_hours" | "other";
+
 /** Recurring class meeting, e.g. "MWF 10:00-10:50". */
 export interface MeetingTime {
+  kind: MeetingKind;
+  /**
+   * Section label exactly as the syllabus writes it ("A", "Section 3", "LEC
+   * 01"), when the syllabus lists more than one section. Null when there is
+   * only one, or the meeting applies to everyone (office hours, usually).
+   * A big course's syllabus lists every section; the student is in one.
+   */
+  section: string | null;
+  /** Who runs this meeting when the syllabus says (office hours especially). */
+  instructor: string | null;
   /** 0 = Sunday .. 6 = Saturday */
   daysOfWeek: number[];
   startTime: string; // HH:MM
   endTime: string; // HH:MM
+  /** Verbatim from the syllabus for THIS meeting. Never guessed or geocoded. */
   location: string | null;
 }
 
@@ -88,6 +105,13 @@ export interface Course {
   startDate: string | null;
   endDate: string | null;
   meetingTimes: MeetingTime[];
+  /**
+   * The section the student chose, matching a `MeetingTime.section`. Null
+   * until chosen -- and while the syllabus lists several sections and this is
+   * null, no section-specific meeting is synced, because guessing puts the
+   * student in someone else's classroom.
+   */
+  section: string | null;
   /**
    * When the class does not meet. Empty means "meets every week of the
    * term" -- the honest default when a syllabus says nothing about breaks.
@@ -172,6 +196,10 @@ export interface CalendarSyncResult {
   skipped: number;
   /** Recurring class-meeting series written, one per meeting pattern. */
   classSeries: number;
+  /** Events removed because their source no longer exists or is deselected. */
+  removed: number;
+  /** Course ids whose syllabus lists several sections and none is chosen yet. */
+  needsSection: string[];
   calendarId: string;
   errors: string[];
 }
@@ -199,8 +227,26 @@ export interface User {
    * the user asks for a feed.
    */
   calendarFeedToken: string | null;
+  /** What the calendar sync and feed include. Office hours are opt-in. */
+  calendarPrefs: CalendarPrefs;
   createdAt: string;
 }
+
+export interface CalendarPrefs {
+  classes: boolean;      // lectures
+  recitations: boolean;  // recitations and labs
+  officeHours: boolean;
+  deadlines: boolean;    // assessments: assignments, exams, ...
+  studySessions: boolean;
+}
+
+export const DEFAULT_CALENDAR_PREFS: CalendarPrefs = {
+  classes: true,
+  recitations: true,
+  officeHours: false,
+  deadlines: true,
+  studySessions: true,
+};
 
 /** Envelope every API route returns, so the client has one shape to handle. */
 export type ApiResult<T> =

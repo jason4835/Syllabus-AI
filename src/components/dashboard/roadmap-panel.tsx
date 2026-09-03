@@ -6,7 +6,6 @@ import type {
   Assessment,
   AssessmentKind,
   Course,
-  MeetingTime,
   NoClassPeriod,
 } from "@/lib/types";
 import { needsReview } from "@/lib/types";
@@ -23,12 +22,19 @@ import {
   FormField,
 } from "@/components/dashboard/assessment-row";
 import { CourseEditor } from "@/components/dashboard/course-editor";
+import {
+  SectionChooser,
+  meetingSummary,
+  meetingSummaryWithKind,
+  meetingsForStudent,
+  needsSection,
+  sectionLabels,
+} from "@/components/dashboard/section-chooser";
 import { KIND_LABEL } from "@/components/labels";
 import { accentFor } from "@/components/course-accents";
 import {
   formatDateShort,
   formatPercent,
-  formatTime,
   formatWeekRange,
   mondayOf,
   parseDate,
@@ -112,6 +118,12 @@ export function RoadmapPanel({
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState<string | null>(null);
+  /**
+   * A course whose section is already chosen, reopened to change the answer.
+   * A course that has never answered does not need this: its chooser is on the
+   * card from the start, because nothing of its schedule syncs until it does.
+   */
+  const [changingSection, setChangingSection] = useState<string | null>(null);
 
   /**
    * The editor can be opened from the heatmap, a whole panel away, so an
@@ -169,6 +181,12 @@ export function RoadmapPanel({
               typeof onCourseChanged === "function" &&
               typeof onEditCourse === "function";
             const canAdd = typeof onAssessmentAdded === "function";
+            const sections = sectionLabels(course);
+            const chosenSection = course.section?.trim() ?? null;
+            // Unanswered courses ask on sight; answered ones ask when asked.
+            const showChooser =
+              editable &&
+              (needsSection(course) || changingSection === course.id);
 
             return (
               <article
@@ -191,7 +209,8 @@ export function RoadmapPanel({
                     />
                   </div>
                 ) : (
-                <header className="flex flex-wrap items-start justify-between gap-3 bg-raised px-4 py-3">
+                <header className="bg-raised px-4 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="flex flex-wrap items-baseline gap-x-2 text-[1rem] leading-tight text-ink">
                       <span
@@ -212,6 +231,30 @@ export function RoadmapPanel({
                         .join(" · ")}
                     </p>
                     <MeetsLine course={course} />
+                    {/* Once answered, the answer stays visible — and editable,
+                        because the student who picked B in week one is the one
+                        who switches to C in week two. */}
+                    {editable && chosenSection && sections.length >= 2 ? (
+                      <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
+                        {/^section\b/i.test(chosenSection)
+                          ? chosenSection
+                          : `Section ${chosenSection}`}
+                        {" · "}
+                        <button
+                          type="button"
+                          aria-expanded={changingSection === course.id}
+                          aria-controls={`section-chooser-${course.id}`}
+                          onClick={() =>
+                            setChangingSection(
+                              changingSection === course.id ? null : course.id,
+                            )
+                          }
+                          className="rounded-sm font-medium text-muted underline decoration-line-strong underline-offset-2 transition-colors hover:text-ink"
+                        >
+                          Change section
+                        </button>
+                      </p>
+                    ) : null}
                     {/* Counts down as items are confirmed, then disappears. */}
                     {unreviewed > 0 ? (
                       <p className="mt-1.5">
@@ -259,6 +302,24 @@ export function RoadmapPanel({
                     {isCollapsed ? "Show" : "Hide"}
                   </button>
                   </div>
+                  </div>
+
+                  {showChooser ? (
+                    <div className="mt-3">
+                      <SectionChooser
+                        course={course}
+                        onChanged={(updated) => {
+                          onCourseChanged?.(updated);
+                          setChangingSection(null);
+                        }}
+                        onCancel={
+                          changingSection === course.id
+                            ? () => setChangingSection(null)
+                            : undefined
+                        }
+                      />
+                    </div>
+                  ) : null}
                 </header>
                 )}
 
@@ -589,22 +650,7 @@ function AddItemForm({
 /* Meeting pattern + the weeks it doesn't happen                              */
 /* -------------------------------------------------------------------------- */
 
-const DAY_LETTERS = ["Su", "M", "T", "W", "Th", "F", "Sa"];
 const MS_PER_DAY = 86_400_000;
-
-/** "MWF 10:00 AM–10:50 AM · Hayes Hall 210" */
-function formatMeeting(meeting: MeetingTime): string {
-  const days = [...(meeting.daysOfWeek ?? [])]
-    .sort((a, b) => a - b)
-    .map((day) => DAY_LETTERS[day] ?? "?")
-    .join("");
-  const start = formatTime(meeting.startTime);
-  const end = formatTime(meeting.endTime);
-  const span = start && end ? `${start}–${end}` : (start ?? end ?? "");
-  const when = [days, span].filter(Boolean).join(" ");
-  if (!when) return "";
-  return meeting.location ? `${when} · ${meeting.location}` : when;
-}
 
 /**
  * "Sep 7 (Labor Day)", "Nov 25–27 (Thanksgiving)", "after Dec 11".
@@ -643,12 +689,26 @@ function formatNoClass(period: NoClassPeriod, termEnd: string | null): string {
   return `${range}${suffix}`;
 }
 
-/** The course's rhythm in one line — when it meets, and when it doesn't. */
+/**
+ * The course's rhythm in one line — when it meets, and when it doesn't.
+ *
+ * Only this student's meetings: their own section plus whatever applies to
+ * everyone. Listing every section here is how the calendar bug read on the
+ * page, and a student who has not picked yet is asked rather than shown five
+ * schedules and left to work out which is theirs.
+ */
 function MeetsLine({ course }: { course: Course }) {
-  const meets = (course.meetingTimes ?? [])
-    .map(formatMeeting)
-    .filter(Boolean)
-    .join("; ");
+  const sections = sectionLabels(course);
+  const undecided = sections.length >= 2 && (course.section ?? null) === null;
+
+  const mine = meetingsForStudent(course);
+  const classes = mine.filter((meeting) => meeting.kind !== "office_hours");
+  const hours = mine.filter((meeting) => meeting.kind === "office_hours");
+
+  const meets = undecided
+    ? `${sections.length} sections — choose yours`
+    : classes.map(meetingSummaryWithKind).filter(Boolean).join("; ");
+  const officeHours = hours.map(meetingSummary).filter(Boolean).join("; ");
 
   const summaries = (course.noClass ?? [])
     .map((period) => formatNoClass(period, course.endDate))
@@ -662,17 +722,30 @@ function MeetsLine({ course }: { course: Course }) {
       ? ""
       : `No class: ${shown.join(", ")}${hidden > 0 ? `, +${hidden} more` : ""}`;
 
-  if (!meets && !noClass) return null;
+  if (!meets && !noClass && !officeHours) return null;
 
   return (
-    <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
-      {meets ? `Meets ${meets}` : null}
-      {meets && noClass ? " — " : null}
-      {noClass ? (
-        <span title={hidden > 0 ? `No class: ${summaries.join(", ")}` : undefined}>
-          {noClass}
-        </span>
+    <>
+      {meets || noClass ? (
+        <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
+          {meets ? (undecided ? meets : `Meets ${meets}`) : null}
+          {meets && noClass ? " — " : null}
+          {noClass ? (
+            <span
+              title={hidden > 0 ? `No class: ${summaries.join(", ")}` : undefined}
+            >
+              {noClass}
+            </span>
+          ) : null}
+        </p>
       ) : null}
-    </p>
+      {/* Quieter than the class line on purpose: office hours are an option,
+          not an obligation, and they are opt-in on the calendar too. */}
+      {officeHours ? (
+        <p className="mt-0.5 text-[0.75rem] leading-snug text-muted opacity-75">
+          Office hours {officeHours}
+        </p>
+      ) : null}
+    </>
   );
 }

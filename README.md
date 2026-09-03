@@ -14,7 +14,7 @@ every semester.
 2. **Upload a syllabus PDF** — AI extracts courses, assignments, exams, due dates, grading weights, and key policies.
 3. **Check what it found** — anything extracted with low confidence is flagged; one click confirms it, and every item can be edited, added, or deleted right in the list. Course details and term dates are editable too, and re-uploading a syllabus asks whether to replace the old one. Fixes flow into the plan and the next calendar or Notion sync.
 4. **Get a semester roadmap** — week-by-week workload with recommended study blocks.
-5. **Sync to Google Calendar** — deadlines, study sessions, and your class meetings land on a dedicated "Syllabus AI" calendar, not your primary one. Classes are recurring events that skip the holidays and breaks your syllabus names, and stop after the last day of classes.
+5. **Sync to Google Calendar** — deadlines, study sessions, and your class meetings land on a dedicated "Syllabus AI" calendar, not your primary one. Classes are recurring events that skip the holidays and breaks your syllabus names, and stop after the last day of classes. You choose what goes in — class meetings, recitations and labs, office hours, deadlines, study sessions — and a re-sync removes anything that no longer applies.
 6. **Or subscribe from any calendar** — a private feed URL for Apple Calendar, Outlook, or anything that takes a subscription.
 7. **Get a Notion page per class** — connect Notion and every upload also produces a finished class page (course info, grading, schedule, policies) plus Assignments and Study Sessions databases you can view as a calendar. Nobody builds a Notion setup by hand again.
 
@@ -134,6 +134,10 @@ Two design choices worth naming:
   neither dates nor a label, weeks are anchored to the first deadline.
 - The calendar feed URL is a secret: anyone holding it can read the feed. It
   is resettable from the dashboard, and the old link dies immediately.
+- A syllabus that lists several sections is treated as listing *all* of them:
+  the app asks which section you're in before adding any class meeting, and
+  never guesses. Office hours are extracted as office hours, not class, and
+  are off by default.
 - "No class" days come only from what the syllabus states. A syllabus that
   never mentions breaks gets a class event every week of the term.
 - Calendar events use each user's browser-reported timezone, captured on first

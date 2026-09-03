@@ -6,6 +6,7 @@ import { logApiError } from "@/lib/log";
 import { buildSemesterPlan } from "@/lib/plan";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { store } from "@/lib/store";
+import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
       studyBlocks: plan.studyBlocks,
       timeZone,
       term: plan.term ? { start: plan.term.start, end: plan.term.end } : null,
+      // The feed has no UI at fetch time, so the stored choice is the only
+      // way "no office hours, please" can reach it.
+      prefs: user.calendarPrefs ?? DEFAULT_CALENDAR_PREFS,
     });
     const body = renderIcs(events, { name: "Syllabus AI", timeZone });
 

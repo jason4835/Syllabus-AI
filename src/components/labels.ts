@@ -1,4 +1,4 @@
-import type { AssessmentKind } from "@/lib/types";
+import type { AssessmentKind, MeetingKind } from "@/lib/types";
 
 export const KIND_LABEL: Record<AssessmentKind, string> = {
   assignment: "Assignment",
@@ -28,4 +28,20 @@ export function intensityLabel(intensity: 0 | 1 | 2 | 3): string {
 
 export function intensityColor(intensity: 0 | 1 | 2 | 3): string {
   return `var(--color-load-${intensity})`;
+}
+
+/**
+ * Meeting kinds, written the way a student would say them. `office_hours` is
+ * never "class": what a row is called here is what ends up on the calendar.
+ */
+export const MEETING_KIND_LABEL: Record<MeetingKind, string> = {
+  lecture: "Class",
+  recitation: "Recitation",
+  lab: "Lab",
+  office_hours: "Office hours",
+  other: "Meeting",
+};
+
+export function meetingKindLabel(kind: MeetingKind): string {
+  return MEETING_KIND_LABEL[kind] ?? MEETING_KIND_LABEL.other;
 }

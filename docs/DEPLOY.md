@@ -552,6 +552,10 @@ Run this against the live URL, in order, before you send the link to anyone.
   show recurring class events for each meeting pattern, with no event on the
   holidays and breaks the syllabus names (Labor Day, Thanksgiving, after the
   last day of classes). A syllabus that mentions no breaks gets every week.
+- **Sections** — upload a syllabus that lists several sections (big intro
+  courses do). The upload result must ask which section you're in and add no
+  class meetings until you answer; after choosing, a sync writes exactly that
+  section's meetings and the "Removed" count clears anything stale.
 - **Calendar feed** — in the Sync panel, create the feed link, then subscribe
   from Apple Calendar or Outlook. Reset the link and confirm the old URL 404s.
 

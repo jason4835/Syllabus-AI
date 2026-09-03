@@ -32,16 +32,43 @@ import type {
   ParsedSyllabus,
   User,
 } from "@/lib/types";
-import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
+import type {
+  CalendarLink,
+  CalendarLinkQuery,
+  KeyedCalendarLink,
+  Store,
+  UserUpsert,
+} from "@/lib/store";
 import {
+  calendarLinkMatchesQuery,
   isFeedTokenShaped,
+  isLegacyCalendarLinkOf,
+  mergeCalendarPrefs,
   newCalendarFeedToken,
+  normalizeMeetingTimes,
   notionSessionLinkPrefix,
+  studySessionKeyPrefix,
 } from "@/lib/store";
 
+/**
+ * `key` is an assessment id, `sb_<assessmentId>_<n>` for a study session, or
+ * `mt_<courseId>_<n>` for a class series -- only the first is a row id.
+ *
+ * `userId` is nullable because rows written before links carried an owner have
+ * none; `normalizeCalendarLink` below is what keeps those readable.
+ */
 interface CalendarLinkRecord extends CalendarLink {
-  assessmentId: string;
+  key: string;
+  userId: string | null;
   updatedAt: string;
+}
+
+/** The pre-`key` shape, still on disk in any database written by an older build. */
+interface LegacyCalendarLinkRecord extends CalendarLink {
+  key?: string;
+  assessmentId?: string;
+  userId?: string | null;
+  updatedAt?: string;
 }
 
 interface Database {
@@ -98,17 +125,49 @@ function normalizeAssessment(row: Assessment): Assessment {
  * Same idea for courses: a row written before `noClass` existed has no such
  * key, and `undefined` would reach the calendar layer as "not an array" rather
  * than "this class has no breaks".
+ *
+ * `meetingTimes` gets the same treatment one level deeper, because the fields a
+ * meeting gained -- `kind`, `section`, `instructor` -- were added to rows that
+ * already existed. A stored meeting with no `kind` is a lecture in the only
+ * section, which is exactly what it meant when it was written.
  */
 function normalizeCourse(row: Course): Course {
-  return { ...row, noClass: Array.isArray(row.noClass) ? row.noClass : [] };
+  return {
+    ...row,
+    meetingTimes: normalizeMeetingTimes(row.meetingTimes),
+    section: row.section ?? null,
+    noClass: Array.isArray(row.noClass) ? row.noClass : [],
+  };
 }
 
-/** And for users: rows predating `timezone`/`calendarFeedToken` read back as null. */
+/**
+ * And for users: rows predating `timezone`/`calendarFeedToken` read back as
+ * null, and a partial or missing `calendarPrefs` is laid over the defaults so
+ * no caller ever reads `undefined` and takes it for "off".
+ */
 function normalizeUser(row: User): User {
   return {
     ...row,
     timezone: row.timezone ?? null,
     calendarFeedToken: row.calendarFeedToken ?? null,
+    calendarPrefs: mergeCalendarPrefs(row.calendarPrefs),
+  };
+}
+
+/**
+ * Links written before this table had a `key` or a `user_id` are still valid
+ * records of real Google events; the old `assessmentId` field IS the key.
+ * Dropping them would strand every event an earlier deploy created.
+ */
+function normalizeCalendarLink(row: LegacyCalendarLinkRecord): CalendarLinkRecord | null {
+  const key = row.key ?? row.assessmentId;
+  if (typeof key !== "string" || key.length === 0) return null;
+  return {
+    key,
+    userId: row.userId ?? null,
+    googleEventId: row.googleEventId,
+    calendarId: row.calendarId,
+    updatedAt: row.updatedAt ?? new Date(0).toISOString(),
   };
 }
 
@@ -143,7 +202,9 @@ async function readDatabase(): Promise<Database> {
         ? (shape.assessments as Assessment[]).map(normalizeAssessment)
         : [],
       calendarLinks: Array.isArray(shape.calendarLinks)
-        ? (shape.calendarLinks as CalendarLinkRecord[])
+        ? (shape.calendarLinks as LegacyCalendarLinkRecord[])
+            .map(normalizeCalendarLink)
+            .filter((l): l is CalendarLinkRecord => l !== null)
         : [],
       notionConnections: Array.isArray(shape.notionConnections)
         ? (shape.notionConnections as NotionConnection[])
@@ -235,6 +296,54 @@ function isLinkOrphanedByCourse(
 }
 
 /**
+ * Is this calendar link the user's?
+ *
+ * Owned rows answer for themselves. A row with no owner predates the column
+ * and is attributed by its key -- see `isLegacyCalendarLinkOf`. A row owned by
+ * somebody else is never theirs, whatever the key looks like.
+ */
+function calendarLinkBelongsTo(
+  link: CalendarLinkRecord,
+  userId: string,
+  courseIds: ReadonlySet<string>,
+  assessmentIds: ReadonlySet<string>,
+): boolean {
+  if (link.userId !== null) return link.userId === userId;
+  return isLegacyCalendarLinkOf(link.key, assessmentIds, courseIds);
+}
+
+/**
+ * Does this calendar link describe an event for a course that is going away?
+ *
+ * The mirror of `isLinkOrphanedByCourse` for Google events: the course's own
+ * class series (`mt_<courseId>_*`), its assessments' deadlines (keyed by id),
+ * and their study sessions (`sb_<assessmentId>_*`). Leaving any of them behind
+ * would point a later sync at an event for a class the student deleted.
+ */
+function isCalendarLinkOrphanedByCourse(
+  link: CalendarLinkRecord,
+  userId: string,
+  courseId: string,
+  assessmentIds: ReadonlySet<string>,
+): boolean {
+  if (link.userId !== null && link.userId !== userId) return false;
+  return isLegacyCalendarLinkOf(link.key, assessmentIds, new Set([courseId]));
+}
+
+/** The same question narrowed to one assessment: its own link and its sessions'. */
+function isCalendarLinkOrphanedByAssessment(
+  link: CalendarLinkRecord,
+  userId: string,
+  assessmentId: string,
+): boolean {
+  if (link.userId !== null && link.userId !== userId) return false;
+  return (
+    link.key === assessmentId ||
+    link.key.startsWith(studySessionKeyPrefix(assessmentId))
+  );
+}
+
+/**
  * How many rows still belong to `userId` -- the post-condition `deleteUser`
  * checks itself against.
  *
@@ -260,10 +369,37 @@ function userRowsRemaining(
     db.assessments.filter(
       (a) => courseIds.has(a.courseId) || assessmentIds.has(a.id),
     ).length +
-    db.calendarLinks.filter((l) => assessmentIds.has(l.assessmentId)).length +
+    db.calendarLinks.filter((l) => calendarLinkBelongsTo(l, userId, courseIds, assessmentIds))
+      .length +
     db.notionConnections.filter((c) => c.userId === userId).length +
     db.notionLinks.filter((l) => l.userId === userId).length
   );
+}
+
+/**
+ * Upsert by key, shared by both `setCalendarLink` overloads.
+ *
+ * `userId === undefined` means the caller does not know the owner, which is
+ * different from knowing there is none: the stored owner is kept, so an
+ * ownerless write over an owned link cannot orphan it.
+ */
+function writeCalendarLink(
+  db: Database,
+  key: string,
+  userId: string | undefined,
+  googleEventId: string,
+  calendarId: string,
+): void {
+  const index = db.calendarLinks.findIndex((l) => l.key === key);
+  const record: CalendarLinkRecord = {
+    key,
+    userId: userId ?? (index === -1 ? null : db.calendarLinks[index].userId),
+    googleEventId,
+    calendarId,
+    updatedAt: new Date().toISOString(),
+  };
+  if (index === -1) db.calendarLinks.push(record);
+  else db.calendarLinks[index] = record;
 }
 
 export function createLocalStore(): Store {
@@ -311,6 +447,12 @@ export function createLocalStore(): Store {
             u.calendarFeedToken !== undefined
               ? u.calendarFeedToken
               : (existing?.calendarFeedToken ?? null),
+          // And again for the sync preferences: they are set on a settings
+          // screen, so a sign-in that dropped them would silently re-enable
+          // whatever the user had turned off. A first create gets the defaults.
+          calendarPrefs: mergeCalendarPrefs(
+            u.calendarPrefs !== undefined ? u.calendarPrefs : existing?.calendarPrefs,
+          ),
           // First write wins: re-authenticating must not reset the join date.
           createdAt:
             existing?.createdAt ?? u.createdAt ?? new Date().toISOString(),
@@ -326,6 +468,25 @@ export function createLocalStore(): Store {
         const index = db.users.findIndex((existing) => existing.id === userId);
         if (index === -1) return null;
         const next: User = { ...db.users[index], timezone };
+        db.users[index] = next;
+        return clone(next);
+      });
+    },
+
+    async setCalendarPrefs(userId, patch) {
+      return mutate((db) => {
+        const index = db.users.findIndex((existing) => existing.id === userId);
+        if (index === -1) return null;
+        // Merged over what is stored, itself merged over the defaults: a caller
+        // that knows about one toggle cannot reset the rest, and a value
+        // written before a preference existed still reads back complete.
+        const next: User = {
+          ...db.users[index],
+          calendarPrefs: mergeCalendarPrefs({
+            ...mergeCalendarPrefs(db.users[index].calendarPrefs),
+            ...patch,
+          }),
+        };
         db.users[index] = next;
         return clone(next);
       });
@@ -392,8 +553,11 @@ export function createLocalStore(): Store {
         db.assessments = db.assessments.filter(
           (a) => !courseIds.has(a.courseId),
         );
+        // Owned links go by owner; links written before the column existed go
+        // by key. Both are needed for the delete to be total, and `deleteUser`
+        // checks itself on that below.
         db.calendarLinks = db.calendarLinks.filter(
-          (l) => !assessmentIds.has(l.assessmentId),
+          (l) => !calendarLinkBelongsTo(l, userId, courseIds, assessmentIds),
         );
         // Every Notion link carries its owner, session links included, so this
         // needs none of deleteCourse's prefix matching: the whole user goes,
@@ -450,7 +614,10 @@ export function createLocalStore(): Store {
           term: parsed.course.term,
           startDate: parsed.course.startDate,
           endDate: parsed.course.endDate,
-          meetingTimes: clone(parsed.course.meetingTimes ?? []),
+          meetingTimes: normalizeMeetingTimes(clone(parsed.course.meetingTimes ?? [])),
+          // Null from both parsers: which section is the student's is a fact
+          // about the student, and the upload flow has not asked yet.
+          section: parsed.course.section ?? null,
           noClass: clone(parsed.course.noClass ?? []),
           gradeWeights: clone(parsed.course.gradeWeights ?? []),
           policies: clone(parsed.course.policies ?? []),
@@ -496,6 +663,12 @@ export function createLocalStore(): Store {
         const next: Course = {
           ...current,
           ...patch,
+          // A whole-array replace, completed field by field: an edited meeting
+          // arriving without a `kind` must not be stored without one.
+          meetingTimes:
+            patch.meetingTimes !== undefined
+              ? normalizeMeetingTimes(patch.meetingTimes)
+              : current.meetingTimes,
           id: current.id,
           userId: current.userId,
           createdAt: current.createdAt,
@@ -519,8 +692,11 @@ export function createLocalStore(): Store {
           db.assessments.filter((a) => a.courseId === courseId).map((a) => a.id),
         );
         db.assessments = db.assessments.filter((a) => a.courseId !== courseId);
+        // The course's own class series (`mt_<courseId>_*`) as well as its
+        // assessments' events: a class meeting is not a row, so nothing else
+        // would ever find those links again.
         db.calendarLinks = db.calendarLinks.filter(
-          (l) => !orphanIds.has(l.assessmentId),
+          (l) => !isCalendarLinkOrphanedByCourse(l, userId, courseId, orphanIds),
         );
         // The Notion pages themselves are deliberately left in place (see
         // docs/NOTION.md); what goes is our pointer to them, so a course
@@ -602,8 +778,10 @@ export function createLocalStore(): Store {
         if (index === -1) return false;
 
         db.assessments.splice(index, 1);
+        // The deadline's own event and its study sessions' (`sb_<id>_*`),
+        // which have no row to be found by once this one is gone.
         db.calendarLinks = db.calendarLinks.filter(
-          (l) => l.assessmentId !== id,
+          (l) => !isCalendarLinkOrphanedByAssessment(l, userId, id),
         );
         // deleteCourse's cascade, narrowed to one item: the assessment's own
         // link by id, and its study sessions' links by the planner's prefix,
@@ -621,30 +799,57 @@ export function createLocalStore(): Store {
       });
     },
 
-    async getCalendarLink(assessmentId) {
+    async getCalendarLink(key) {
       return readOnly((db) => {
-        const found = db.calendarLinks.find(
-          (l) => l.assessmentId === assessmentId,
-        );
+        const found = db.calendarLinks.find((l) => l.key === key);
         return found
           ? { googleEventId: found.googleEventId, calendarId: found.calendarId }
           : null;
       });
     },
 
-    async setCalendarLink(assessmentId, googleEventId, calendarId) {
+    async setCalendarLink(key, googleEventId, calendarId) {
+      // No owner recorded, and an existing owner is preserved rather than
+      // cleared: this overload cannot know one, and blanking `userId` would
+      // make a link that was findable stop being findable.
       await mutate((db) => {
-        const record: CalendarLinkRecord = {
-          assessmentId,
-          googleEventId,
-          calendarId,
-          updatedAt: new Date().toISOString(),
-        };
-        const index = db.calendarLinks.findIndex(
-          (l) => l.assessmentId === assessmentId,
+        writeCalendarLink(db, key, undefined, googleEventId, calendarId);
+        return undefined;
+      });
+    },
+
+    async setCalendarLinkForUser(userId, key, googleEventId, calendarId) {
+      await mutate((db) => {
+        writeCalendarLink(db, key, userId, googleEventId, calendarId);
+        return undefined;
+      });
+    },
+
+    async listCalendarLinks(userId, opts?: CalendarLinkQuery) {
+      return readOnly((db) => {
+        // The id sets are only consulted for links that carry no owner, but
+        // they are cheap here and building them once keeps the predicate flat.
+        const courseIds = ownedCourseIds(db, userId);
+        const assessmentIds = new Set(
+          db.assessments.filter((a) => courseIds.has(a.courseId)).map((a) => a.id),
         );
-        if (index === -1) db.calendarLinks.push(record);
-        else db.calendarLinks[index] = record;
+        const out: KeyedCalendarLink[] = [];
+        for (const link of db.calendarLinks) {
+          if (!calendarLinkBelongsTo(link, userId, courseIds, assessmentIds)) continue;
+          if (!calendarLinkMatchesQuery(link.key, opts)) continue;
+          out.push({
+            key: link.key,
+            googleEventId: link.googleEventId,
+            calendarId: link.calendarId,
+          });
+        }
+        return out;
+      });
+    },
+
+    async deleteCalendarLink(key) {
+      await mutate((db) => {
+        db.calendarLinks = db.calendarLinks.filter((l) => l.key !== key);
         return undefined;
       });
     },

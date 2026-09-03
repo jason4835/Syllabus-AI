@@ -18,6 +18,7 @@
  */
 
 import type { Assessment, AssessmentKind, Course } from "@/lib/types";
+import type { MeetingKind, MeetingTime } from "@/lib/types";
 
 /**
  * A field-level rejection. Carries the sentence shown to the user, so a route's
@@ -60,6 +61,8 @@ export const COURSE_FIELD_KEYS = [
   "term",
   "startDate",
   "endDate",
+  "section",
+  "meetingTimes",
 ] as const;
 
 /* -------------------------------------------------------------------------- */
@@ -215,7 +218,7 @@ export function collectAssessmentFields(
 
 /** Exactly what `store.updateCourse` accepts. */
 export type CoursePatch = Partial<
-  Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate">
+  Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate" | "section" | "meetingTimes">
 >;
 
 /**
@@ -252,6 +255,8 @@ export function validateCoursePatch(
   if ("endDate" in body) {
     patch.endDate = validateDateField(body.endDate, "endDate");
   }
+  if ("section" in body) patch.section = validateSection(body.section);
+  if ("meetingTimes" in body) patch.meetingTimes = validateMeetingTimes(body.meetingTimes);
 
   if (Object.keys(patch).length === 0) throw new Invalid("nothing to change");
 
@@ -264,4 +269,55 @@ export function validateCoursePatch(
   }
 
   return patch;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Course section + meeting times                                             */
+/* ------------------------------------------------------------------------- */
+
+
+export const MEETING_KINDS: readonly MeetingKind[] = [
+  "lecture", "recitation", "lab", "office_hours", "other",
+];
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+
+export function validateSection(value: unknown): string | null {
+  return optionalText(value, "section", 40);
+}
+
+/**
+ * The whole array is replaced on edit, so every row is checked from scratch.
+ * Locations are kept verbatim -- the one thing this must never do is "fix" a
+ * room string the student typed to match what the syllabus said.
+ */
+export function validateMeetingTimes(value: unknown): MeetingTime[] {
+  if (!Array.isArray(value)) throw new Invalid("meetingTimes must be an array");
+  if (value.length > 20) throw new Invalid("meetingTimes: at most 20 meetings");
+  return value.map((row, i) => {
+    const at = `meetingTimes[${i}]`;
+    if (!row || typeof row !== "object") throw new Invalid(`${at} must be an object`);
+    const r = row as Record<string, unknown>;
+    const kind = (r.kind ?? "lecture") as MeetingKind;
+    if (!MEETING_KINDS.includes(kind)) throw new Invalid(`${at}.kind must be one of: ${MEETING_KINDS.join(", ")}`);
+    const days = r.daysOfWeek;
+    if (!Array.isArray(days) || days.length === 0) throw new Invalid(`${at}.daysOfWeek needs at least one day`);
+    const daysOfWeek = [...new Set(days.map((d) => Number(d)))].sort((a, b) => a - b);
+    if (daysOfWeek.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) throw new Invalid(`${at}.daysOfWeek must be 0-6`);
+    const startTime = typeof r.startTime === "string" ? r.startTime : "";
+    const endTime = typeof r.endTime === "string" ? r.endTime : "";
+    if (!TIME_RE.test(startTime)) throw new Invalid(`${at}.startTime must be HH:MM`);
+    if (!TIME_RE.test(endTime)) throw new Invalid(`${at}.endTime must be HH:MM`);
+    if (endTime <= startTime) throw new Invalid(`${at}: endTime must be after startTime`);
+    return {
+      kind,
+      section: optionalText(r.section, `${at}.section`, 40),
+      instructor: optionalText(r.instructor, `${at}.instructor`, 120),
+      daysOfWeek,
+      startTime,
+      endTime,
+      location: optionalText(r.location, `${at}.location`, 120),
+    };
+  });
 }

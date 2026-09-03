@@ -22,7 +22,14 @@
  *    cannot disagree about which Mondays a class meets.
  */
 
-import type { Assessment, Course, MeetingTime, StudyBlock } from "@/lib/types";
+import type {
+  Assessment,
+  CalendarPrefs,
+  Course,
+  MeetingKind,
+  MeetingTime,
+  StudyBlock,
+} from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Model                                                                       */
@@ -71,6 +78,14 @@ export interface BuildInput {
   timeZone: string;
   /** Resolved term window. Null means class meetings have nothing to anchor to. */
   term: { start: string; end: string } | null;
+  /**
+   * What the user wants on their calendar. Required, and deliberately not
+   * defaulted here: the planner is the one place that decides what exists, so a
+   * caller that forgets to pass prefs must fail to compile rather than quietly
+   * sync a category the student switched off. Pass `DEFAULT_CALENDAR_PREFS`
+   * when there is no user to ask.
+   */
+  prefs: CalendarPrefs;
 }
 
 /**
@@ -80,10 +95,24 @@ export interface BuildInput {
  */
 export interface CalendarPlan {
   events: CalendarEvent[];
-  /** Items with no placeable date: undated assessments, unanchorable meetings. */
+  /**
+   * Items with no placeable date: undated assessments, unanchorable meetings.
+   *
+   * Deliberately NOT incremented for anything a preference or a section choice
+   * filtered out. "Skipped" is shown to the user as work that went nowhere and
+   * may need their attention; an office-hours block they asked us not to sync
+   * went exactly where they wanted it.
+   */
   skipped: number;
   /** Planning-time problems, e.g. a malformed date. Never thrown. */
   errors: string[];
+  /**
+   * Courses whose syllabus lists several sections while `course.section` is
+   * still null. Their section-specific meetings are all withheld -- see
+   * `buildMeetingEvents` -- and the UI uses this to ask which one the student
+   * is in. Distinct, in the order the courses were given.
+   */
+  needsSection: string[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -308,28 +337,99 @@ function describeStudyBlock(b: StudyBlock): string {
   return ["Study session", "", b.rationale, "", PROVENANCE].join("\n");
 }
 
-function describeMeeting(course: Course): string {
+function describeMeeting(course: Course, meeting: MeetingTime): string {
   const lines: string[] = [];
   if (course.title) lines.push(course.title);
-  if (course.instructor) lines.push(`Instructor: ${course.instructor}`);
+  // The section label is the answer to "is this the one I am enrolled in?", so
+  // it goes in the body of every event that carries one -- a student looking at
+  // a Tuesday 10am block should not have to reopen the syllabus to check.
+  const section = meeting.section?.trim();
+  if (section) lines.push(`Section: ${section}`);
+  // The meeting's own instructor wins: office hours are frequently a TA's, and
+  // naming the professor there sends the student to the wrong door.
+  const instructor = meeting.instructor?.trim() || course.instructor;
+  if (instructor) lines.push(`Instructor: ${instructor}`);
   lines.push("", PROVENANCE);
   return lines.join("\n");
 }
 
+/** Unknown/missing kinds read as a plain class -- the pre-`kind` default. */
+function meetingKind(meeting: MeetingTime): MeetingKind {
+  switch (meeting.kind) {
+    case "lecture":
+    case "recitation":
+    case "lab":
+    case "office_hours":
+    case "other":
+      return meeting.kind;
+    default:
+      return "lecture";
+  }
+}
+
 /**
- * "MATH 221 class", or lab/recitation when the room says so.
+ * "MATH 221 class", "MATH 221 lab", "MATH 221 office hours - Prof. X".
  *
- * Deliberately conservative: a syllabus that does not distinguish its sections
- * gets the honest generic word rather than a guess a student would have to
- * correct on every one of forty-five occurrences.
+ * The word comes from `meeting.kind` and nothing else. It used to be sniffed
+ * out of the room string, which is how a professor's office hours ended up on
+ * ten students' calendars labelled "class": the location said "office", the
+ * sniffer had no pattern for it, and "class" was the fallback. The extractor
+ * knows what each meeting is; this only has to say it.
  */
 function meetingTitle(course: Course, meeting: MeetingTime): string {
-  const haystack = (meeting.location ?? "").toLowerCase();
-  let word = "class";
-  if (/\blabs?\b|\blaboratory\b/.test(haystack)) word = "lab";
-  else if (/\brecitation\b|\brecit\b|\bdiscussion\b/.test(haystack)) word = "recitation";
+  const kind = meetingKind(meeting);
+  let word: string;
+  switch (kind) {
+    case "recitation":
+      word = "recitation";
+      break;
+    case "lab":
+      word = "lab";
+      break;
+    case "office_hours":
+      word = "office hours";
+      break;
+    case "other":
+      word = "meeting";
+      break;
+    default:
+      word = "class";
+  }
+
   const code = course.code.trim();
-  return code ? `${code} ${word}` : word;
+  let title = code ? `${code} ${word}` : word;
+
+  // Whose office hours, when the syllabus says. A course with three TAs' hours
+  // otherwise produces three identically named events.
+  if (kind === "office_hours") {
+    const who = meeting.instructor?.trim();
+    if (who) title += ` · ${who}`;
+  }
+  return title;
+}
+
+/** Does the user want this kind of meeting on their calendar? */
+function meetingAllowedByPrefs(kind: MeetingKind, prefs: CalendarPrefs): boolean {
+  switch (kind) {
+    case "recitation":
+    case "lab":
+      return prefs.recitations;
+    case "office_hours":
+      return prefs.officeHours;
+    default:
+      // "lecture" and "other": anything the extractor could not classify is
+      // treated as the main class, because that is the one a student cannot
+      // afford to be missing from their calendar.
+      return prefs.classes;
+  }
+}
+
+/**
+ * A section label reduced to what two spellings of the same section share:
+ * case and surrounding/inner whitespace. "b ", "B" and " b" are one section.
+ */
+function normalizeSection(label: string): string {
+  return label.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -357,13 +457,80 @@ function inNoClassPeriod(date: string, course: Course): boolean {
   return false;
 }
 
+/**
+ * Which of a course's meetings belong on THIS student's calendar, paired with
+ * their original index in `course.meetingTimes` (the index the idempotency key
+ * is built from, so it must survive the filtering).
+ *
+ * Two independent filters, in this order:
+ *
+ *  1. **Kind vs preferences.** Office hours are opt-in; recitations and labs
+ *     travel together; lectures and unclassified meetings are "classes".
+ *
+ *  2. **Section gating**, the fix for the bug this module was rewritten for. A
+ *     big course's syllabus lists every section, and syncing all of them put
+ *     ten weekly series on one student's calendar. The rules:
+ *
+ *     - Meetings with `section: null` -- office hours, and every meeting of a
+ *       single-section course -- are NEVER gated. They apply to everyone.
+ *     - One distinct label or none: nothing to choose between, include all.
+ *       (Also the safe answer when a stale `course.section` names a section the
+ *       syllabus no longer lists: the student still gets the one real series.)
+ *     - Several labels and `course.section` chosen: only that section's
+ *       meetings. Matched exactly first, then case- and whitespace-insensitively,
+ *       so "b " off a form still finds "B".
+ *     - Several labels and no choice yet: NOTHING section-specific, and the
+ *       course is reported in `needsSection`. Guessing would put the student in
+ *       someone else's classroom at someone else's hour, and an empty calendar
+ *       asks a question a wrong calendar does not.
+ */
+function selectMeetings(
+  course: Course,
+  prefs: CalendarPrefs,
+  plan: CalendarPlan,
+): { meeting: MeetingTime; index: number }[] {
+  const all = course.meetingTimes ?? [];
+
+  const byPrefs = all
+    .map((meeting, index) => ({ meeting, index }))
+    .filter(({ meeting }) => meetingAllowedByPrefs(meetingKind(meeting), prefs));
+
+  // Labels are counted across EVERY meeting of the course, not just the ones
+  // preferences left standing: whether a syllabus lists several sections is a
+  // fact about the syllabus, and `needsSection` must not flicker when a student
+  // toggles office hours.
+  const labels = new Set<string>();
+  for (const m of all) {
+    const label = m.section?.trim();
+    if (label) labels.add(normalizeSection(label));
+  }
+  if (labels.size <= 1) return byPrefs;
+
+  const chosen = course.section?.trim();
+  if (!chosen) {
+    // Several sections, none chosen. Withhold the section-specific ones and say
+    // so; anything unsectioned still syncs.
+    if (!plan.needsSection.includes(course.id)) plan.needsSection.push(course.id);
+    return byPrefs.filter(({ meeting }) => !meeting.section?.trim());
+  }
+
+  const chosenNormalized = normalizeSection(chosen);
+  return byPrefs.filter(({ meeting }) => {
+    const label = meeting.section?.trim();
+    if (!label) return true; // applies to every section
+    if (meeting.section === course.section || label === chosen) return true;
+    return normalizeSection(label) === chosenNormalized;
+  });
+}
+
 function buildMeetingEvents(
   course: Course,
   term: { start: string; end: string } | null,
   timeZone: string,
+  prefs: CalendarPrefs,
   plan: CalendarPlan,
 ): void {
-  const meetings = course.meetingTimes ?? [];
+  const meetings = selectMeetings(course, prefs, plan);
   if (meetings.length === 0) return;
 
   if (term === null) {
@@ -378,7 +545,7 @@ function buildMeetingEvents(
     return;
   }
 
-  meetings.forEach((meeting, index) => {
+  meetings.forEach(({ meeting, index }) => {
     const days = normalizeDays(meeting.daysOfWeek ?? []);
     if (days.length === 0 || !ISO_TIME.test(meeting.startTime) || !ISO_TIME.test(meeting.endTime)) {
       plan.errors.push(
@@ -416,10 +583,15 @@ function buildMeetingEvents(
     }
 
     plan.events.push({
+      // `index` is the meeting's position in the UNFILTERED `course.meetingTimes`,
+      // so a key means the same thing whether or not preferences and the section
+      // choice let this meeting through on a given sync. It shifts when the
+      // array itself is edited -- the sync's reconciliation pass is what removes
+      // the events the old keys pointed at.
       key: `mt_${course.id}_${index}`,
       kind: "meeting",
       title: meetingTitle(course, meeting),
-      description: describeMeeting(course),
+      description: describeMeeting(course, meeting),
       location: meeting.location,
       allDay: false,
       start: `${first}T${meeting.startTime}`,
@@ -439,13 +611,19 @@ function buildMeetingEvents(
  *
  * Pure. Both the Google path and the ICS feed call this, so a dry run, a real
  * sync and a downloaded .ics can never disagree about what is on the calendar.
+ *
+ * `input.prefs` and the per-course section choice are applied HERE and nowhere
+ * else: a category the student switched off, or a section they are not in,
+ * simply produces no event, so every consumer -- Google, the feed, the dry-run
+ * counts, and the sync's own "what should no longer exist" diff -- agrees by
+ * construction rather than by each remembering to filter.
  */
 export function buildCalendarPlan(input: BuildInput): CalendarPlan {
-  const plan: CalendarPlan = { events: [], skipped: 0, errors: [] };
-  const { timeZone } = input;
+  const plan: CalendarPlan = { events: [], skipped: 0, errors: [], needsSection: [] };
+  const { timeZone, prefs } = input;
   const coursesById = new Map(input.courses.map((c) => [c.id, c]));
 
-  for (const a of input.assessments) {
+  for (const a of prefs.deadlines ? input.assessments : []) {
     const course = coursesById.get(a.courseId) ?? null;
     // Fall back to the bare title rather than printing a placeholder code: an
     // orphaned assessment is still more useful on the calendar than not.
@@ -511,7 +689,7 @@ export function buildCalendarPlan(input: BuildInput): CalendarPlan {
     });
   }
 
-  for (const b of input.studyBlocks) {
+  for (const b of prefs.studySessions ? input.studyBlocks : []) {
     const course = coursesById.get(b.courseId) ?? null;
     const start = normalizeLocalDateTime(b.start);
     const end = normalizeLocalDateTime(b.end);
@@ -537,7 +715,7 @@ export function buildCalendarPlan(input: BuildInput): CalendarPlan {
   }
 
   for (const course of input.courses) {
-    buildMeetingEvents(course, input.term, timeZone, plan);
+    buildMeetingEvents(course, input.term, timeZone, prefs, plan);
   }
 
   return plan;

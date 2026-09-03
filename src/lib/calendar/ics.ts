@@ -107,7 +107,17 @@ function foldLine(line: string): string[] {
 /* Rendering                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * VALARMs for an event, if it has any.
+ *
+ * Recurring class meetings and office hours carry no reminders by design (see
+ * `reminderMinutes` in the planner), and the `kind` guard makes that structural
+ * rather than incidental: a reminder that fires before every office hour of the
+ * semester is how a student mutes the whole feed, and office hours are the one
+ * meeting kind a well-meaning future edit is most likely to "helpfully" nudge.
+ */
 function alarms(event: CalendarEvent, lines: string[]): void {
+  if (event.kind === "meeting") return;
   for (const minutes of event.reminderMinutes) {
     if (!Number.isFinite(minutes) || minutes < 0) continue;
     lines.push("BEGIN:VALARM");

@@ -17,10 +17,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Assessment,
   AssessmentKind,
+  CalendarPrefs,
   Course,
   CoursePolicy,
   GradeWeight,
-  MeetingTime,
   NoClassPeriod,
   NotionConnection,
   NotionLink,
@@ -28,10 +28,20 @@ import type {
   ParsedSyllabus,
   User,
 } from "@/lib/types";
-import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
+import type {
+  CalendarLink,
+  CalendarLinkQuery,
+  KeyedCalendarLink,
+  Store,
+  UserUpsert,
+} from "@/lib/store";
 import {
+  calendarLinkMatchesQuery,
   isFeedTokenShaped,
+  isLegacyCalendarLinkOf,
+  mergeCalendarPrefs,
   newCalendarFeedToken,
+  normalizeMeetingTimes,
   notionSessionLinkPrefix,
 } from "@/lib/store";
 import { ASSESSMENT_KINDS } from "@/lib/validation";
@@ -48,6 +58,7 @@ interface UserRow {
   google_refresh_token: string | null;
   timezone: string | null;
   calendar_feed_token: string | null;
+  calendar_prefs: unknown;
   created_at: string;
 }
 
@@ -61,6 +72,7 @@ interface CourseRow {
   start_date: string | null;
   end_date: string | null;
   meeting_times: unknown;
+  section: string | null;
   no_class: unknown;
   grade_weights: unknown;
   policies: unknown;
@@ -81,8 +93,18 @@ interface AssessmentRow {
   notes: string | null;
 }
 
+/**
+ * `key` is an assessment id, `sb_<assessmentId>_<n>` for a study session, or
+ * `mt_<courseId>_<n>` for a class series. Only the first is a row id, which is
+ * why the column carries no foreign key and `user_id` has to be recorded
+ * instead -- there is nothing to join through for ownership.
+ *
+ * `user_id` is nullable: rows written before the column existed have none and
+ * are attributed by their key (`isLegacyCalendarLinkOf`).
+ */
 interface CalendarLinkRow {
-  assessment_id: string;
+  key: string;
+  user_id: string | null;
   google_event_id: string;
   calendar_id: string;
   updated_at: string;
@@ -186,6 +208,10 @@ function userToDomain(row: UserRow): User {
     // `calendar_feed_token` migration applied yet returns no such key, and
     // `undefined` would leave the field missing from the domain object.
     calendarFeedToken: row.calendar_feed_token ?? null,
+    // Laid over the defaults rather than read straight: the column defaults to
+    // `{}`, rows written before it existed have nothing, and a preference
+    // reading `undefined` would silently mean "do not sync that".
+    calendarPrefs: mergeCalendarPrefs(row.calendar_prefs),
     createdAt: row.created_at,
   };
 }
@@ -199,6 +225,7 @@ function userToRow(user: User): UserRow {
     google_refresh_token: user.googleRefreshToken,
     timezone: user.timezone,
     calendar_feed_token: user.calendarFeedToken,
+    calendar_prefs: user.calendarPrefs,
     created_at: user.createdAt,
   };
 }
@@ -213,7 +240,11 @@ function courseToDomain(row: CourseRow): Course {
     term: row.term,
     startDate: row.start_date,
     endDate: row.end_date,
-    meetingTimes: jsonArray<MeetingTime>(row.meeting_times),
+    // Completed field by field, not just shape-checked: a meeting stored
+    // before `kind`/`section`/`instructor` existed is a lecture in the only
+    // section, which is exactly what it meant when it was written.
+    meetingTimes: normalizeMeetingTimes(row.meeting_times),
+    section: row.section ?? null,
     // Defaults to [] through `jsonArray`, which is also the migration story: a
     // database without the `no_class` column reads back "this class has no
     // breaks" rather than `undefined`.
@@ -235,6 +266,7 @@ function courseToRow(course: Course): CourseRow {
     start_date: course.startDate,
     end_date: course.endDate,
     meeting_times: course.meetingTimes,
+    section: course.section,
     no_class: course.noClass,
     grade_weights: course.gradeWeights,
     policies: course.policies,
@@ -258,9 +290,18 @@ function coursePatchToRow(
   if (patch.term !== undefined) row.term = patch.term;
   if (patch.startDate !== undefined) row.start_date = patch.startDate;
   if (patch.endDate !== undefined) row.end_date = patch.endDate;
-  // The parser-owned columns (meeting_times, no_class, grade_weights,
-  // policies) are intentionally absent: nothing a person types should
-  // overwrite them.
+  // `section` and `meeting_times` ARE editable, unlike the rest of what the
+  // parser writes: a syllabus for a big course lists every section and the
+  // extractor keeps them all, so which one the student attends can only come
+  // from the student -- and a room the extractor misread has to be fixable.
+  // The array is replaced whole; normalising it here means an entry that
+  // arrives without a `kind` cannot be stored without one.
+  if (patch.section !== undefined) row.section = patch.section;
+  if (patch.meetingTimes !== undefined) {
+    row.meeting_times = normalizeMeetingTimes(patch.meetingTimes);
+  }
+  // The remaining parser-owned columns (no_class, grade_weights, policies) are
+  // intentionally absent: nothing a person types should overwrite them.
   return row;
 }
 
@@ -324,6 +365,14 @@ function assessmentPatchToRow(
 
 function calendarLinkToDomain(row: CalendarLinkRow): CalendarLink {
   return { googleEventId: row.google_event_id, calendarId: row.calendar_id };
+}
+
+function keyedCalendarLinkToDomain(row: CalendarLinkRow): KeyedCalendarLink {
+  return {
+    key: row.key,
+    googleEventId: row.google_event_id,
+    calendarId: row.calendar_id,
+  };
 }
 
 function notionConnectionToDomain(row: NotionConnectionRow): NotionConnection {
@@ -412,6 +461,91 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       .eq("user_id", userId);
     if (error) fail("listing course ids", error);
     return ((data ?? []) as { id: string }[]).map((r) => r.id);
+  }
+
+  async function assessmentIdsFor(courseIds: string[]): Promise<string[]> {
+    if (courseIds.length === 0) return [];
+    const { data, error } = await client
+      .from("assessments")
+      .select("id")
+      .in("course_id", courseIds);
+    if (error) fail("listing assessment ids", error);
+    return ((data ?? []) as { id: string }[]).map((r) => r.id);
+  }
+
+  /**
+   * The calendar links that could belong to `userId`: the ones tagged with
+   * their owner, plus the ones written before `user_id` existed.
+   *
+   * The untagged rows are read and attributed in JS rather than filtered in
+   * SQL, for the same reason `deleteNotionSessionLinks` does it that way: the
+   * attribution is a set of prefix tests, and hand-assembling an N-clause
+   * PostgREST `or=(key.like.*)` string is where one unescaped id silently
+   * widens the query. The untagged set is legacy and finite -- nothing writes
+   * to it any more -- so it does not grow with use.
+   */
+  async function candidateCalendarLinkRows(userId: string): Promise<{
+    owned: CalendarLinkRow[];
+    unowned: CalendarLinkRow[];
+  }> {
+    const { data: owned, error } = await client
+      .from("calendar_links")
+      .select("*")
+      .eq("user_id", userId);
+    if (error) fail("calendar links by owner", error);
+
+    const { data: unowned, error: unownedError } = await client
+      .from("calendar_links")
+      .select("*")
+      .is("user_id", null);
+    if (unownedError) fail("calendar links without an owner", unownedError);
+
+    return {
+      owned: (owned ?? []) as CalendarLinkRow[],
+      unowned: (unowned ?? []) as CalendarLinkRow[],
+    };
+  }
+
+  /** Every link that is this user's, however it came to be theirs. */
+  async function userCalendarLinkRows(userId: string): Promise<CalendarLinkRow[]> {
+    const courseIds = await courseIdsFor(userId);
+    const assessmentIds = new Set(await assessmentIdsFor(courseIds));
+    const courseIdSet = new Set(courseIds);
+    const { owned, unowned } = await candidateCalendarLinkRows(userId);
+    return [
+      ...owned,
+      ...unowned.filter((row) => isLegacyCalendarLinkOf(row.key, assessmentIds, courseIdSet)),
+    ];
+  }
+
+  /**
+   * Drops the calendar links a deleted course or assessment leaves behind.
+   *
+   * `calendar_links.key` has no foreign key -- it holds assessment ids,
+   * planner-minted session ids and generated class-series ids in one column --
+   * so nothing cascades from Postgres and the cleanup is explicit here, exactly
+   * as it is for `notion_links`. A link left behind points the next sync at a
+   * Google event for a class the student deleted.
+   *
+   * Scoped to links this user owns or that nobody owns: the id tests below are
+   * prefix matches, and they must never be able to reach into another account.
+   */
+  async function deleteCalendarLinksFor(
+    userId: string,
+    assessmentIds: string[],
+    courseIds: string[],
+  ): Promise<void> {
+    if (assessmentIds.length === 0 && courseIds.length === 0) return;
+    const assessmentIdSet = new Set(assessmentIds);
+    const courseIdSet = new Set(courseIds);
+    const { owned, unowned } = await candidateCalendarLinkRows(userId);
+    const keys = [...owned, ...unowned]
+      .map((row) => row.key)
+      .filter((key) => isLegacyCalendarLinkOf(key, assessmentIdSet, courseIdSet));
+    if (keys.length === 0) return;
+
+    const { error } = await client.from("calendar_links").delete().in("key", keys);
+    if (error) fail("deleting calendar links", error);
   }
 
   /** Returns the assessment's row only when `userId` owns its course. */
@@ -556,7 +690,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     async upsertUser(u: UserUpsert) {
       const { data: existing, error: readError } = await client
         .from("users")
-        .select("created_at, timezone, calendar_feed_token")
+        .select("created_at, timezone, calendar_feed_token, calendar_prefs")
         .eq("id", u.id)
         .maybeSingle();
       if (readError && readError.code !== NO_ROWS) fail("upsertUser read", readError);
@@ -568,6 +702,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
             created_at: string;
             timezone: string | null;
             calendar_feed_token: string | null;
+            calendar_prefs: unknown;
           }
         | null;
 
@@ -587,6 +722,13 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
           u.calendarFeedToken !== undefined
             ? u.calendarFeedToken
             : (stored?.calendar_feed_token ?? null),
+        // And again for the sync preferences: they are set on a settings
+        // screen this caller knows nothing about, so a sign-in that dropped
+        // them would silently re-enable whatever the user turned off. A first
+        // create with nothing stored gets `DEFAULT_CALENDAR_PREFS`.
+        calendarPrefs: mergeCalendarPrefs(
+          u.calendarPrefs !== undefined ? u.calendarPrefs : stored?.calendar_prefs,
+        ),
         // First write wins: signing in again must not reset the join date.
         createdAt: stored?.created_at ?? u.createdAt ?? new Date().toISOString(),
       };
@@ -608,6 +750,34 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .select("*")
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("setUserTimezone", error);
+      return data ? userToDomain(data as UserRow) : null;
+    },
+
+    async setCalendarPrefs(userId, patch) {
+      // Read-merge-write rather than a jsonb merge in SQL, so the result is
+      // laid over `DEFAULT_CALENDAR_PREFS` exactly once, in one place: a
+      // caller that knows about one toggle cannot reset the others, and a
+      // value stored before a preference existed still reads back complete.
+      const { data: existing, error } = await client
+        .from("users")
+        .select("calendar_prefs")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("setCalendarPrefs read", error);
+      if (!existing) return null;
+
+      const merged: CalendarPrefs = mergeCalendarPrefs({
+        ...mergeCalendarPrefs((existing as { calendar_prefs: unknown }).calendar_prefs),
+        ...patch,
+      });
+
+      const { data, error: writeError } = await client
+        .from("users")
+        .update({ calendar_prefs: merged })
+        .eq("id", userId)
+        .select("*")
+        .maybeSingle();
+      if (writeError && writeError.code !== NO_ROWS) fail("setCalendarPrefs", writeError);
       return data ? userToDomain(data as UserRow) : null;
     },
 
@@ -693,28 +863,43 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
      *   users
      *     <- courses.user_id              on delete cascade
      *          <- assessments.course_id        on delete cascade
-     *               <- calendar_links.assessment_id  on delete cascade
+     *     <- calendar_links.user_id       on delete cascade  (nullable!)
      *     <- notion_connections.user_id   on delete cascade
      *     <- notion_links.user_id         on delete cascade
      *
-     * So `delete from users where id = ?` really does reach all six tables:
-     * the user row, their courses, those courses' assessments, the calendar
-     * links keyed on those assessments, the Notion connection, and every
-     * Notion link the user owns. Nothing is left for this method to sweep up
-     * by hand, and adding a redundant pre-delete would only invent a window
-     * where a failure leaves the account partly erased.
+     * So `delete from users where id = ?` reaches the user row, their courses,
+     * those courses' assessments, the Notion connection, every Notion link
+     * they own, and every calendar link that RECORDS an owner.
      *
-     * `notion_links` is the one worth stating explicitly, because deleteCourse
-     * above *does* have to clear it manually: `entity_id` carries no foreign
-     * key (it mixes course, assessment and planner-minted session ids), so
-     * deleting a course cascades nothing there. Deleting the *user* is a
-     * different question -- `user_id` is denormalised onto every link row and
-     * does carry a cascade, so all three kinds go, session links included.
+     * The one gap is deliberate and is closed by hand first: `calendar_links`
+     * used to key on `assessments.id` and cascade from there, and it no longer
+     * can -- a key is now an assessment id, a `sb_<assessmentId>_<n>` study
+     * session or a `mt_<courseId>_<n>` class series, and only the first is a
+     * row. `user_id` replaced that cascade, but it is nullable, so rows written
+     * before it existed have none and nothing would ever collect them. They are
+     * attributed by key and deleted below, before the user row goes and takes
+     * the courses and assessments those keys are attributed against with it.
+     *
+     * `notion_links` is worth stating for the same reason: deleteCourse above
+     * *does* clear it manually, because `entity_id` carries no foreign key.
+     * Deleting the user is a different question -- `user_id` is denormalised
+     * onto every link row and does cascade, so all three kinds go.
      *
      * If a future table stores something per user, give it
      * `references public.users (id) on delete cascade` or delete it here.
      */
     async deleteUser(userId) {
+      // Before anything else, while the courses and assessments those legacy
+      // keys name are still there to attribute them against.
+      const linkKeys = (await userCalendarLinkRows(userId)).map((row) => row.key);
+      if (linkKeys.length > 0) {
+        const { error: linkError } = await client
+          .from("calendar_links")
+          .delete()
+          .in("key", linkKeys);
+        if (linkError) fail("deleteUser calendar links", linkError);
+      }
+
       // `.select("id")` is what makes "no such user" distinguishable from a
       // successful delete: PostgREST reports no row count otherwise.
       const { data, error } = await client
@@ -757,7 +942,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         term: parsed.course.term,
         startDate: parsed.course.startDate,
         endDate: parsed.course.endDate,
-        meetingTimes: parsed.course.meetingTimes,
+        meetingTimes: normalizeMeetingTimes(parsed.course.meetingTimes),
+        // Null from both parsers: which section is the student's is a fact
+        // about the student, and the upload flow has not asked yet.
+        section: parsed.course.section ?? null,
         noClass: parsed.course.noClass ?? [],
         gradeWeights: parsed.course.gradeWeights,
         policies: parsed.course.policies,
@@ -862,6 +1050,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       // Only after the delete succeeded: a caller who does not own the course
       // must not be able to clear anyone's links.
       await deleteNotionLinksForCourse(userId, courseId, assessmentIds);
+      // The course's own class series (`mt_<courseId>_*`) as well as its
+      // assessments' deadlines and study sessions. A class meeting is not a
+      // row, so nothing else would ever find those links again.
+      await deleteCalendarLinksFor(userId, assessmentIds, [courseId]);
       return true;
     },
 
@@ -945,36 +1137,66 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       if (error) fail("deleteAssessment", error);
       if (((data ?? []) as { id: string }[]).length === 0) return false;
 
-      // `calendar_links.assessment_id` has `on delete cascade` (schema.sql), so
-      // the link went with the row. `notion_links.entity_id` carries no foreign
-      // key -- it mixes course, assessment and planner-minted session ids in one
-      // column -- so nothing cascades there and both kinds are cleared by hand,
-      // only after the delete succeeded.
+      // Neither `calendar_links.key` nor `notion_links.entity_id` carries a
+      // foreign key -- each mixes assessment ids with planner-minted session
+      // ids (and, for calendar links, generated class-series ids) in one
+      // column -- so nothing cascades and both are cleared by hand, only after
+      // the delete succeeded.
       await deleteNotionLinksForAssessment(userId, id);
+      await deleteCalendarLinksFor(userId, [id], []);
       return true;
     },
 
-    async getCalendarLink(assessmentId) {
+    async getCalendarLink(key) {
       const { data, error } = await client
         .from("calendar_links")
         .select("*")
-        .eq("assessment_id", assessmentId)
+        .eq("key", key)
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("getCalendarLink", error);
       return data ? calendarLinkToDomain(data as CalendarLinkRow) : null;
     },
 
-    async setCalendarLink(assessmentId, googleEventId, calendarId) {
+    async setCalendarLink(key, googleEventId, calendarId) {
+      // No owner to record, and an existing one is left alone: this overload
+      // cannot know it, and writing null over a stored owner would make a link
+      // that `listCalendarLinks` could find stop being findable.
+      const { error } = await client.from("calendar_links").upsert(
+        {
+          key,
+          google_event_id: googleEventId,
+          calendar_id: calendarId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" },
+      );
+      if (error) fail("setCalendarLink", error);
+    },
+
+    async setCalendarLinkForUser(userId, key, googleEventId, calendarId) {
       const row: CalendarLinkRow = {
-        assessment_id: assessmentId,
+        key,
+        user_id: userId,
         google_event_id: googleEventId,
         calendar_id: calendarId,
         updated_at: new Date().toISOString(),
       };
       const { error } = await client
         .from("calendar_links")
-        .upsert(row, { onConflict: "assessment_id" });
-      if (error) fail("setCalendarLink", error);
+        .upsert(row, { onConflict: "key" });
+      if (error) fail("setCalendarLinkForUser", error);
+    },
+
+    async listCalendarLinks(userId, opts?: CalendarLinkQuery) {
+      const rows = await userCalendarLinkRows(userId);
+      return rows
+        .filter((row) => calendarLinkMatchesQuery(row.key, opts))
+        .map(keyedCalendarLinkToDomain);
+    },
+
+    async deleteCalendarLink(key) {
+      const { error } = await client.from("calendar_links").delete().eq("key", key);
+      if (error) fail("deleteCalendarLink", error);
     },
 
     async getNotionConnection(userId) {

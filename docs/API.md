@@ -11,6 +11,7 @@ Non-2xx responses still use this shape.
 | `/api/auth/logout` | POST | — | `{ ok: true }` |
 | `/api/me` | GET | — | `User \| null` |
 | `/api/me/timezone` | POST | `{ timezone: string }` (IANA zone) | `User` |
+| `/api/me/calendar-prefs` | PATCH | `Partial<CalendarPrefs>` | `CalendarPrefs` — what the Google sync and the feed include; persisted per user. Unknown keys **422**. |
 | `/api/me/feed` | GET | — | `{ url: string \| null; webcal: string \| null }` — the user's private calendar-feed URL as https and as webcal, or nulls if none yet |
 | `/api/me/feed` | POST | `{ reset?: true }` | `{ url: string; webcal: string }` — creates the feed token, or with `reset` replaces it (old URL stops working immediately) |
 | `/api/feed/[token].ics` | GET | — | `text/calendar` — **unauthenticated by design**; the token is the credential. Deadlines, study sessions, and class meetings for the whole term. 404 for an unknown token. Rate limited per token. |
@@ -18,13 +19,13 @@ Non-2xx responses still use this shape.
 | `/api/health` | GET | — | `{ status; version; commit; uptimeSeconds; time; capabilities; storage; warnings }` |
 | `/api/upload` | POST | `multipart/form-data`, field `file` (PDF); optional fields `replace` (course id) or `allowDuplicate` (`1`) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[]; replaced: string \| null }` — **409** `{ duplicateOf: { id; code; title; term } }` when the parsed course matches an existing one by code (case/space-insensitive) and term, unless `replace=<thatId>` (the old course and its assessments are deleted after the new one is saved; `replaced` carries the old id) or `allowDuplicate=1`. |
 | `/api/courses` | GET | — | `{ courses: Course[]; assessments: Assessment[] }` |
-| `/api/courses/[id]` | PATCH | `{ code?; title?; instructor?; term?; startDate?; endDate? }` | `Course` — edit course details, including the term window the heatmap numbers weeks from. Dates `YYYY-MM-DD` or null; `endDate` must not precede `startDate`; **422** names the field; **404** if not the caller's. |
+| `/api/courses/[id]` | PATCH | `{ code?; title?; instructor?; term?; startDate?; endDate?; section?: string \| null; meetingTimes?: MeetingTime[] }` | `Course` — edit course details, including the term window the heatmap numbers weeks from. Dates `YYYY-MM-DD` or null; `endDate` must not precede `startDate`; **422** names the field; **404** if not the caller's. |
 | `/api/courses/[id]` | DELETE | — | `{ deleted: true }` |
 | `/api/courses/[id]/assessments` | POST | `{ title; kind; dueDate?; dueTime?; weightPercent?; notes? }` | `Assessment` — add an item the extractor missed. Created with `confidence: 1` and `reviewedAt` set (a person typed it). Same field rules as PATCH assessments; `title` and `kind` required. |
 | `/api/assessments/[id]` | DELETE | — | `{ deleted: true }` — removes the item and its calendar/Notion links. **404** if not the caller's. |
 | `/api/assessments/[id]` | PATCH | `{ title?; kind?; dueDate?; dueTime?; weightPercent?; notes?; reviewed?: true }` | `Assessment` — confirm and edit share this route. Any accepted change (including `reviewed: true` alone) sets `reviewedAt`, which clears the review flag. **422** with a field-level `detail` on invalid input; **404** when the item is not the caller's. Dates `YYYY-MM-DD` or null, times `HH:MM` or null, weight 0–100 or null. |
 | `/api/plan` | GET | — | `SemesterPlan` |
-| `/api/sync` | POST | `{ courseId?: string }` | `CalendarSyncResult` |
+| `/api/sync` | POST | `{ courseId?: string }` | `CalendarSyncResult` — honours `calendarPrefs`; removes events whose source was deleted or deselected; `needsSection` lists courses that listed several sections with none chosen (their section-specific meetings are skipped, never guessed) |
 | `/api/chat` | POST | `{ message: string; history?: {role,content}[] }` | `{ reply: string }` |
 | `/api/notion/auth` | GET | — | redirect to Notion consent (not JSON) |
 | `/api/notion/callback` | GET | `code`, `state` | redirect to `/dashboard?notion=connected` (not JSON) |

@@ -342,6 +342,26 @@ export function DashboardShell() {
     setEditingCourseId(target.id);
   }, [courses]);
 
+  /**
+   * The sync result names courses whose section is still unanswered; the
+   * chooser for each is already on the roadmap. Focus moves with the scroll so
+   * a keyboard user lands on the radio group rather than at the top of a panel
+   * they were sent to for one specific question.
+   */
+  const onChooseSection = useCallback((courseId: string) => {
+    const chooser = document.getElementById(`section-chooser-${courseId}`);
+    const target = chooser ?? document.getElementById(`roadmap-card-${courseId}`);
+    if (!target) return;
+    // Focus first: focusing mid-flight cancels a smooth scroll in Chrome.
+    // The checked option when there is one: a radio group is entered at its
+    // current answer, not at the top of the list.
+    const radio =
+      chooser?.querySelector<HTMLInputElement>('input[type="radio"]:checked') ??
+      chooser?.querySelector<HTMLInputElement>('input[type="radio"]');
+    radio?.focus({ preventScroll: true });
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
   const onEditCourse = useCallback((courseId: string | null) => {
     setEditFocusField("code");
     setEditingCourseId(courseId);
@@ -460,12 +480,15 @@ export function DashboardShell() {
                 accent={nextAccent}
                 onUploaded={onUploaded}
                 onAssessmentChanged={onAssessmentChanged}
+                onCourseChanged={onCourseChanged}
                 onCourseReplaced={onCourseReplaced}
               />
               <SyncPanel
                 demoMode={demoMode}
                 googleReady={config?.googleReady ?? false}
                 hasCourses={courses.length > 0}
+                courses={courses}
+                onChooseSection={onChooseSection}
               />
               <div ref={notionRef}>
                 <NotionPanel

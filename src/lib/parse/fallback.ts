@@ -19,6 +19,7 @@ import type {
   AssessmentKind,
   CoursePolicy,
   GradeWeight,
+  MeetingKind,
   MeetingTime,
   NoClassPeriod,
   ParsedSyllabus,
@@ -168,19 +169,35 @@ function findTitle(lines: string[], code: string | null, codeLine: number): stri
   return code ?? "Untitled course";
 }
 
+/**
+ * A person's name with the contact noise stripped off.
+ *
+ * Shared by the course-level instructor and by the meeting scanner, which has
+ * to answer the same question about a "Teaching Assistant: ..." line and about
+ * an instructor column in a section table.
+ */
+function cleanPersonName(raw: string): string | null {
+  const name = collapse(
+    raw
+      .replace(/\([^)]*@[^)]*\)/g, "")
+      .replace(/[\w.+-]+@[\w.-]+\.\w+/g, "")
+      .replace(/^[\s,;|:.\-–—]+/, "")
+      .replace(/[\s,;|]+$/, ""),
+  );
+  if (name.length < 2 || name.length > 80) return null;
+  // "Instructor: TBA" names nobody, and putting "TBA" on an event as the person
+  // running it reads as a fact the syllabus never stated.
+  if (/^(?:tba|tbd|staff|n\/a|none)$/i.test(name)) return null;
+  return name;
+}
+
 function findInstructor(lines: string[]): string | null {
   const re = /^\s*(?:instructor|professor|lecturer|teacher|faculty|taught\s+by)s?\s*[:\-]\s*(.+)$/i;
   for (const line of lines) {
     const m = re.exec(line);
     if (!m) continue;
-    // Strip a trailing email or parenthetical contact so the name stands alone.
-    const name = collapse(
-      m[1]
-        .replace(/\([^)]*@[^)]*\)/g, "")
-        .replace(/[\w.+-]+@[\w.-]+\.\w+/g, "")
-        .replace(/[,;|]\s*$/, ""),
-    );
-    if (name.length >= 2 && name.length <= 80) return name;
+    const name = cleanPersonName(m[1]);
+    if (name) return name;
   }
   return null;
 }
@@ -229,45 +246,466 @@ function findTermRange(
 // Meeting times
 // ---------------------------------------------------------------------------
 
-function findMeetingTimes(lines: string[]): MeetingTime[] {
-  const out: MeetingTime[] = [];
-  const seen = new Set<string>();
+/**
+ * What a labelled line is, most specific first.
+ *
+ * Office hours come first because they are the pattern most likely to be
+ * mistaken for a class: same days, same times, same rooms. They are no longer
+ * discarded -- a student wants them on the calendar -- but they must carry the
+ * `office_hours` kind, because everything downstream (titles, defaults, the
+ * user's sync preferences) keys off it and "MATH 221 class" at the professor's
+ * door twice a week is a wrong fact, not a cosmetic one.
+ */
+const MEETING_KIND_RULES: Array<{ re: RegExp; kind: MeetingKind }> = [
+  { re: /\b(?:office|student|drop-?in)\s+hours?\b/i, kind: "office_hours" },
+  // "OH" only where it is used as a label; the word boundary and the colon keep
+  // it away from ordinary prose.
+  { re: /\bOH\b\s*[:\-]/, kind: "office_hours" },
+  {
+    re: /\b(?:recitation|discussion|section\s+meetings?|problem\s+sessions?|tutorial|workshop)\b/i,
+    kind: "recitation",
+  },
+  { re: /\b(?:lab|laboratory)\b/i, kind: "lab" },
+  { re: /\b(?:lecture|classes?|meets|meetings?|seminar|studio)\b/i, kind: "lecture" },
+];
 
-  for (const raw of lines) {
-    // Office hours are the single biggest false positive here: same shape, and
-    // putting them on a student's class schedule would be actively wrong.
-    if (/\boffice\s+hours?\b|\bby\s+appointment\b/i.test(raw)) continue;
-    if (!/\b(?:lecture|lectures|class|classes|meets|meeting|recitation|discussion|seminar|studio|lab|laboratory)\b/i.test(raw)) {
+function classifyMeetingLabel(text: string): MeetingKind | null {
+  for (const rule of MEETING_KIND_RULES) {
+    if (rule.re.test(text)) return rule.kind;
+  }
+  return null;
+}
+
+/**
+ * A leading label, e.g. "Lecture:", "Section 002:", "Office hours:".
+ *
+ * Stripping it matters beyond tidiness: the compact day-code scanner reads the
+ * letters T, U and R out of the word "LECTURE" if the label is left in place.
+ * Digits are allowed in the label so "Section 002:" is recognised as one.
+ *
+ * The colon must be followed by whitespace. Without that requirement the
+ * pattern swallows the front of any line up to the colon inside a time --
+ * "Section 001  MWF 9:00-9:50" would be read as a label of "Section 001  MWF 9"
+ * and the meeting would be lost.
+ */
+const MEETING_LABEL_RE = /^\s*([A-Za-z][A-Za-z0-9 .()\/&'#-]{0,34}):(?=\s|$)\s*/;
+
+/**
+ * A section label written the way registrars write them: a keyword, a
+ * separator, and a short code -- "Section A", "Sec. 01", "LEC 1", "Lab 003".
+ *
+ * The separator is REQUIRED. Without it the pattern happily reads "Lecture" as
+ * the keyword "Lec" plus the label "ture", and every single-section syllabus
+ * would start claiming it has a section called "Lecture".
+ */
+const SECTION_LABEL_RE =
+  /^[\s\-*•|]*((?:section|sect|sec|lecture|lec|recitation|rec|discussion|disc|lab|seminar|group)s?\.?[\s#]+[A-Za-z0-9][A-Za-z0-9-]{0,5})\b/i;
+
+/**
+ * A bare section code in the first column of a table -- "001", "A", "L2".
+ *
+ * Only ever applied to a delimited row, where the surrounding columns say what
+ * the cell is. On a prose line it would match far too much.
+ */
+const BARE_SECTION_RE = /^(?:\d{2,3}[A-Z]?|[A-Z]\d{0,2}|[A-Z]{1,3}\s?\d{1,3})$/;
+
+/** Lines that introduce a person, so the office hours under them can say whose. */
+const PERSON_LINE_RE =
+  /^\s*(?:(?:course|teaching|graduate|lab|head|lead|primary)\s+)?(?:instructors?|professors?|prof|lecturers?|teachers?|faculty|assistants?|tas?|tutors?|preceptors?|graders?)(?:\s+of\s+record)?\s*\d?\s*[:\-]\s*(\S.*)$/i;
+
+/**
+ * How far below a "Teaching Assistant: ..." line their office hours may sit.
+ *
+ * Contact blocks put the name, the email, the office and the hours within a few
+ * lines of each other. Beyond that the association is a guess, and attributing
+ * one person's hours to another is worse than leaving the field null.
+ */
+const PERSON_CONTEXT_LINES = 6;
+
+/** A time range, scanned globally so one line can carry several. */
+const TIME_RANGE_G =
+  /(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?\s*m\.?)?)\s*(?:-|to|until)\s*(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?\s*m\.?)?)/gi;
+
+/** Spelled-out weekdays, used to find where one meeting's text starts. */
+const DAY_WORD_RE =
+  /\b(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday)?\b/i;
+
+/** The compact registrar codes: "MWF", "TR", "TTh". Upper case only, by design. */
+const DAY_CODE_RE = /\b[MTWRFSUH]{1,7}\b/;
+
+/** A run that is nothing but day tokens -- what a bare "MWF 10:00-10:50" line starts with. */
+const PURE_DAYS_RE =
+  /^(?:[MTWRFSUH]{1,7}|(?:(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday)?[\s,\/&+-]*)+)$/i;
+
+/** Where a meeting's day expression begins inside a fragment, or -1. */
+function dayTokenStart(text: string): number {
+  const word = DAY_WORD_RE.exec(text);
+  if (word) return word.index;
+  const code = DAY_CODE_RE.exec(text);
+  return code ? code.index : -1;
+}
+
+/** Building words: a room is never a person, however name-shaped it reads. */
+const PLACE_WORD_RE =
+  /\b(?:hall|room|rm|bldg|building|center|centre|library|annex|tower|auditorium|theater|theatre|campus|floor|suite|online|zoom|remote)\b/i;
+
+function looksLikeRoom(text: string): boolean {
+  const t = collapse(text);
+  if (t.length === 0 || t.length > 48) return false;
+  if (/@/.test(t)) return false;
+  if (/\b[ap]\.?\s?m\.?\b/i.test(t)) return false;
+  // A date is not a room. "Aug 24" in a schedule row would otherwise become one.
+  if (findDateSpans(t).length > 0) return false;
+  if (/^(?:tba|tbd|online|remote|zoom|virtual)\b/i.test(t)) return true;
+  return /\d/.test(t);
+}
+
+function looksLikePerson(text: string): boolean {
+  const t = collapse(text);
+  if (t.length < 3 || t.length > 60) return false;
+  if (/\d/.test(t)) return false;
+  if (!/^[A-Z]/.test(t)) return false;
+  if (!/^[A-Za-z.'\- ]+$/.test(t)) return false;
+  if (PLACE_WORD_RE.test(t)) return false;
+  if (classifyMeetingLabel(t)) return false;
+  // Two tokens minimum. A single capitalised word is as likely to be a column
+  // heading or a stray fragment as it is to be somebody's name.
+  return t.split(" ").length >= 2;
+}
+
+/** "Prof. Chen", "Dr. Elena Vasquez" -- a name wearing its title. */
+function titledPerson(text: string): string | null {
+  const m = /\b((?:Prof|Professor|Dr|Mr|Ms|Mrs|Mx)\.?\s+[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2})/.exec(
+    text,
+  );
+  return m ? collapse(m[1]) : null;
+}
+
+/**
+ * A person named on the line itself.
+ *
+ * `allowBare` is off for a label ("Office hours" is two capitalised words and
+ * would sail through `looksLikePerson`) and on for the fragment before a day
+ * code, which is where "Dr. Chen, MW 1:00-2:00" puts the name.
+ */
+function findInlinePerson(text: string, allowBare: boolean): string | null {
+  const titled = titledPerson(text);
+  if (titled) return titled;
+
+  for (const m of text.matchAll(/\(([^)]{2,60})\)/g)) {
+    const inner = collapse(m[1]);
+    const innerTitled = titledPerson(inner);
+    if (innerTitled) return innerTitled;
+    if (looksLikePerson(inner)) return inner;
+  }
+
+  if (!allowBare) return null;
+  const bare = cleanPersonName(text.replace(/\([^)]*\)/g, ""));
+  return bare && looksLikePerson(bare) ? bare : null;
+}
+
+/**
+ * The room and the person a meeting's trailing text names.
+ *
+ * Split on the separators a syllabus actually uses -- commas, semicolons,
+ * pipes, and column padding -- then decide part by part. Picking the room by
+ * shape rather than by position is what keeps "…, 2MTC 907, Prof. Chen" from
+ * filing the instructor as the location.
+ */
+function readTrailingDetails(tail: string): { location: string | null; instructor: string | null } {
+  const cleaned = tail.replace(/^\s*[ap]\.?\s*m\.?\b/i, "");
+  const parts = cleaned
+    .split(/\s{2,}|[,;|]/)
+    .map((p) => collapse(p.replace(/^(?:in|at|room|rm\.?)\s+/i, "")))
+    .filter((p) => p.length > 0);
+
+  let location: string | null = null;
+  let instructor: string | null = null;
+  for (const part of parts) {
+    if (!location && looksLikeRoom(part)) {
+      location = part;
+      continue;
+    }
+    if (!instructor) {
+      const person = titledPerson(part) ?? (looksLikePerson(part) ? part : null);
+      if (person) instructor = person;
+    }
+  }
+  return { location, instructor };
+}
+
+/** One meeting pattern read off a line, before section labels are finalised. */
+interface RawMeeting {
+  kind: MeetingKind;
+  section: string | null;
+  instructor: string | null;
+  daysOfWeek: number[];
+  startTime: string;
+  endTime: string;
+  location: string | null;
+}
+
+/**
+ * Every `<days> <time range> [room] [person]` pattern on one line.
+ *
+ * A line routinely carries more than one: "Office hours: Tuesday 2:00-3:30 PM,
+ * Thursday 11:00 AM-12:30 PM" is two meetings, and reading only the first is
+ * how half a professor's availability used to vanish. Each pattern's room is
+ * taken from the text between IT and the next pattern's days, so a location can
+ * never be borrowed from a neighbouring meeting.
+ */
+function scanMeetingPatterns(body: string): Array<{
+  daysOfWeek: number[];
+  startTime: string;
+  endTime: string;
+  location: string | null;
+  instructor: string | null;
+}> {
+  // Dash normalisation is 1:1, so every index below still refers to `body`.
+  const text = body.replace(/[‐-―−]/g, "-");
+  const matches = [...text.matchAll(TIME_RANGE_G)];
+  if (matches.length === 0) return [];
+
+  const out: Array<{
+    daysOfWeek: number[];
+    startTime: string;
+    endTime: string;
+    location: string | null;
+    instructor: string | null;
+  }> = [];
+
+  for (let i = 0; i < matches.length; i += 1) {
+    const match = matches[i];
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const previousEnd = i === 0 ? 0 : (matches[i - 1].index ?? 0) + matches[i - 1][0].length;
+
+    const lead = text.slice(previousEnd, start);
+    const daysOfWeek = parseDaysOfWeek(lead);
+    if (daysOfWeek.length === 0) continue;
+
+    const range = parseTimeRange(match[0]);
+    if (!range) continue;
+
+    // The tail stops where the NEXT meeting's days begin, so this meeting can
+    // only ever be given a room the syllabus wrote beside it.
+    let tail: string;
+    if (i + 1 < matches.length) {
+      const nextLead = text.slice(end, matches[i + 1].index ?? end);
+      const cut = dayTokenStart(nextLead);
+      tail = cut === -1 ? nextLead : nextLead.slice(0, cut);
+    } else {
+      tail = text.slice(end);
+    }
+
+    const details = readTrailingDetails(tail);
+    const leadStart = dayTokenStart(lead);
+    const leadPerson =
+      leadStart > 0 ? findInlinePerson(lead.slice(0, leadStart), true) : null;
+
+    out.push({
+      daysOfWeek,
+      startTime: range.start,
+      endTime: range.end,
+      location: details.location,
+      instructor: details.instructor ?? leadPerson,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Reads a delimited section row: `Section A | MW | 8:00-9:50 | 2MTC 907 | Chen`.
+ *
+ * Column by column rather than by scanning the joined row, because the days,
+ * the room and the instructor each sit in a cell of their own and the section
+ * cell must be kept away from `parseDaysOfWeek` -- "Section A" tokenises to
+ * S and T, which would put the class on Saturday.
+ */
+function readSectionRow(
+  cells: string[],
+  section: string | null,
+): Omit<RawMeeting, "kind" | "section"> | null {
+  const sectionIndex = section === null ? -1 : 0;
+
+  let timeIndex = -1;
+  for (let i = 0; i < cells.length; i += 1) {
+    if (i === sectionIndex) continue;
+    if (!/\d\s*:\s*\d{2}|\d\s*[ap]\.?\s*m\.?/i.test(cells[i])) continue;
+    if (parseTimeRange(cells[i])) {
+      timeIndex = i;
+      break;
+    }
+  }
+  if (timeIndex === -1) return null;
+  const range = parseTimeRange(cells[timeIndex]);
+  if (!range) return null;
+
+  // Days may share the time cell ("MW 8:00-9:50") or have one of their own.
+  const firstTimeAt = cells[timeIndex].search(/\d/);
+  let daysOfWeek =
+    firstTimeAt > 0 ? parseDaysOfWeek(cells[timeIndex].slice(0, firstTimeAt)) : [];
+  for (let i = timeIndex - 1; i >= 0 && daysOfWeek.length === 0; i -= 1) {
+    if (i === sectionIndex) continue;
+    daysOfWeek = parseDaysOfWeek(cells[i]);
+  }
+  if (daysOfWeek.length === 0) return null;
+
+  const details = readTrailingDetails(cells.slice(timeIndex + 1).join(" | "));
+  return {
+    daysOfWeek,
+    startTime: range.start,
+    endTime: range.end,
+    location: details.location,
+    instructor: details.instructor,
+  };
+}
+
+/**
+ * Every recurring meeting the syllabus states -- classes, recitations, labs AND
+ * office hours, each carrying the kind, section and person it was written with.
+ *
+ * The bug this shape exists to prevent: a large course's syllabus lists EVERY
+ * section ("MW 8:00-9:50 2MTC 907", "TR 10:00-11:50 6MTC 674", ...), and a
+ * parser that flattens them into one list tells the calendar the student
+ * attends all of them. Each section is emitted separately, labelled with the
+ * syllabus's own wording, and which one is the student's is a question only the
+ * student can answer -- see `Course.section`.
+ */
+function findMeetingTimes(lines: string[]): MeetingTime[] {
+  // Who was most recently introduced, so an "Office hours:" line a couple of
+  // lines below "Teaching Assistant: Marcus Owusu" can say whose hours they are.
+  const personAt: Array<string | null> = [];
+  let recent: { name: string; line: number } | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = PERSON_LINE_RE.exec(lines[i]);
+    if (m) {
+      const name = cleanPersonName(m[1]);
+      if (name) recent = { name, line: i };
+    }
+    personAt.push(
+      recent && i - recent.line <= PERSON_CONTEXT_LINES ? recent.name : null,
+    );
+  }
+
+  const raw: RawMeeting[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim().length === 0) continue;
+
+    const cells = segments(line);
+    const isRow = cells.length >= 3;
+
+    // --- section label -----------------------------------------------------
+    let section: string | null = null;
+    let labelText = "";
+    let body = line;
+
+    if (isRow) {
+      const rowMatch = SECTION_LABEL_RE.exec(cells[0]);
+      if (rowMatch) section = collapse(rowMatch[1]);
+      else if (BARE_SECTION_RE.test(collapse(cells[0]))) section = collapse(cells[0]);
+      labelText = cells[0];
+    } else {
+      const labelMatch = MEETING_LABEL_RE.exec(line);
+      // "Monday, Wednesday: 10:00-10:50" leads with its days, not with a label;
+      // stripping them would throw the meeting away.
+      const labelled = labelMatch !== null && !PURE_DAYS_RE.test(collapse(labelMatch[1]));
+      if (labelMatch && labelled) {
+        labelText = labelMatch[1];
+        body = line.slice(labelMatch[0].length);
+      }
+      const sectionMatch = SECTION_LABEL_RE.exec(labelText || line);
+      if (sectionMatch) {
+        section = collapse(sectionMatch[1]);
+        // Keep the label out of the day scanner: "Section A" tokenises to S+T.
+        if (!labelled) body = line.slice(sectionMatch[0].length);
+      }
+    }
+
+    // --- is this a meeting line at all? ------------------------------------
+    const kindFromLabel = classifyMeetingLabel(labelText) ?? classifyMeetingLabel(line);
+    const bare =
+      !isRow &&
+      line.length <= 80 &&
+      findDateSpans(line).length === 0 &&
+      PURE_DAYS_RE.test(collapse(body.slice(0, Math.max(0, body.search(/\d/)))));
+    if (!kindFromLabel && section === null && !bare) continue;
+
+    // A bare "MWF 10:00-10:50" line is the lecture: it is what a syllabus
+    // writes when the course has exactly one meeting worth naming.
+    const kind: MeetingKind = kindFromLabel ?? "lecture";
+
+    // Office hours belong to a person, never to a section: a big course runs
+    // one set of hours for everyone enrolled.
+    const sectionForKind = kind === "office_hours" ? null : section;
+
+    const contextPerson =
+      kind === "office_hours" ||
+      /\b(?:TA|T\.A\.|teaching\s+assistant|tutors?|preceptors?|graders?)\b/i.test(labelText)
+        ? personAt[i]
+        : null;
+    const labelPerson = findInlinePerson(labelText, false);
+
+    if (isRow) {
+      const rowMeeting = readSectionRow(cells, section);
+      if (!rowMeeting) continue;
+      raw.push({
+        ...rowMeeting,
+        kind,
+        section: sectionForKind,
+        instructor: rowMeeting.instructor ?? labelPerson ?? contextPerson,
+      });
       continue;
     }
 
-    // Drop a leading "Lecture:" label -- otherwise the compact day-code scanner
-    // reads the letters T, U and R out of the word "LECTURE".
-    const body = raw.replace(/^\s*[A-Za-z][A-Za-z \/&'-]{0,30}:\s*/, "");
+    for (const pattern of scanMeetingPatterns(body)) {
+      raw.push({
+        kind,
+        section: sectionForKind,
+        daysOfWeek: pattern.daysOfWeek,
+        startTime: pattern.startTime,
+        endTime: pattern.endTime,
+        location: pattern.location,
+        instructor: pattern.instructor ?? labelPerson ?? contextPerson,
+      });
+    }
+  }
 
-    const range = parseTimeRange(body);
-    if (!range) continue;
+  // A label is only meaningful when there is something to choose between. One
+  // section is just "the class", and labelling it would make the calendar sync
+  // wait forever for a choice the student does not have to make.
+  const labels = new Set(raw.map((m) => m.section).filter((s): s is string => s !== null));
+  const keepSections = labels.size > 1;
 
-    const firstTimeAt = body.search(/\d{1,2}\s*:\s*\d{2}/);
-    if (firstTimeAt <= 0) continue;
-    const days = parseDaysOfWeek(body.slice(0, firstTimeAt));
-    if (days.length === 0) continue;
-
-    const after = body.slice(firstTimeAt);
-    const locationMatch = /(?:,|\bin\b|\broom\b|\brm\.?\b|\bat\b)\s*([A-Z][A-Za-z.'-]*(?:\s+[A-Za-z0-9.'-]+){0,4})\s*$/.exec(
-      after,
-    );
-    const location = locationMatch ? collapse(locationMatch[1]) : null;
-
-    const key = `${days.join(",")}|${range.start}|${range.end}`;
+  const out: MeetingTime[] = [];
+  const seen = new Set<string>();
+  for (const m of raw) {
+    const section = keepSections ? m.section : null;
+    // Section is part of the identity: two sections of a big course can share a
+    // day and time in different rooms, and folding them together is exactly the
+    // collapse this parser exists to avoid.
+    const key = [
+      m.kind,
+      section ?? "",
+      m.daysOfWeek.join(","),
+      m.startTime,
+      m.endTime,
+      m.location ?? "",
+      m.instructor ?? "",
+    ].join("|");
     if (seen.has(key)) continue;
     seen.add(key);
-
     out.push({
-      daysOfWeek: days,
-      startTime: range.start,
-      endTime: range.end,
-      location: location && location.length >= 2 ? location : null,
+      kind: m.kind,
+      section,
+      instructor: m.instructor ?? null,
+      daysOfWeek: m.daysOfWeek,
+      startTime: m.startTime,
+      endTime: m.endTime,
+      location: m.location && m.location.length >= 2 ? m.location : null,
     });
   }
   return out;
@@ -1001,8 +1439,17 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
     }
   }
 
-  if (meetingTimes.length === 0) {
+  // Office hours are meetings now, so "we found something" is no longer the
+  // same question as "we found the class".
+  if (!meetingTimes.some((m) => m.kind !== "office_hours")) {
     warnings.push("No class meeting time was recognized.");
+  }
+
+  const sections = [...new Set(meetingTimes.map((m) => m.section).filter((s) => s !== null))];
+  if (sections.length > 1) {
+    warnings.push(
+      `This syllabus lists ${sections.length} sections (${sections.slice(0, 4).join(", ")}${sections.length > 4 ? ", ..." : ""}). All of them were kept -- choose yours before syncing, so only your own meetings reach your calendar.`,
+    );
   }
 
   return {
@@ -1014,6 +1461,9 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
       startDate: termRange.explicit ? termRange.start : null,
       endDate: termRange.explicit ? termRange.end : null,
       meetingTimes,
+      // Which section is the student's is a fact about the student, not about
+      // the document. The parser never guesses it; the UI asks.
+      section: null,
       // Empty is a real answer: it means the syllabus never said the class
       // skips a day, not that we failed to look.
       noClass,

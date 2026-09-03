@@ -15,7 +15,7 @@ import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
-import type { NoClassPeriod, ParsedSyllabus } from "../types";
+import type { MeetingKind, MeetingTime, NoClassPeriod, ParsedSyllabus } from "../types";
 import { addDays, normalizeDate, parseTime, termWindowFromLabel, type DateContext } from "./dates";
 import { mergeNoClassPeriods } from "./fallback";
 
@@ -72,7 +72,39 @@ const GradeWeightSchema = z.object({
   weightPercent: z.number(),
 });
 
+/**
+ * What a recurring meeting IS. Mirrors `MeetingKind` in src/lib/types.ts.
+ *
+ * Office hours are a kind of meeting rather than something to be filtered out:
+ * a student wants them, but everything downstream (event titles, the user's
+ * per-kind sync preferences) has to be able to tell them apart from a class.
+ */
+const MeetingKindSchema = z.enum([
+  "lecture",
+  "recitation",
+  "lab",
+  "office_hours",
+  "other",
+]);
+
+/** Runtime copy of the same union, for coercing a value that arrives off-schema. */
+const MEETING_KINDS: readonly string[] = [
+  "lecture",
+  "recitation",
+  "lab",
+  "office_hours",
+  "other",
+];
+
 const MeetingTimeSchema = z.object({
+  kind: MeetingKindSchema,
+  /**
+   * The section label verbatim, when the syllabus lists more than one section.
+   * Null on a single-section syllabus and on office hours.
+   */
+  section: z.string().nullable(),
+  /** Who runs this meeting, when stated -- office hours especially. */
+  instructor: z.string().nullable(),
   daysOfWeek: z.array(z.number()),
   startTime: z.string(),
   endTime: z.string(),
@@ -140,7 +172,11 @@ RULES
 
 6. CONFIDENCE is your honest 0..1 belief that the item's title, kind and date are all correct. Use the full range. An item read straight from an explicit deadline table with a four-digit year is ~0.95. An item whose date you resolved from "Week 7" is ~0.6. An item you are unsure is even graded is ~0.35. Do not default everything to 0.9.
 
-7. MEETING TIMES are the recurring class/lecture/recitation meetings only. Office hours are NOT meeting times. daysOfWeek uses 0 = Sunday through 6 = Saturday.
+7. MEETING TIMES are every recurring meeting the syllabus states. daysOfWeek uses 0 = Sunday through 6 = Saturday; startTime and endTime are 24-hour HH:MM.
+   - KIND. Every meeting gets one: "lecture" for a lecture, a class, a "Meets ..." line, or a bare "MWF 10:00-10:50" line; "recitation" for a recitation, discussion, section meeting, problem session or tutorial; "lab" for a lab or laboratory; "office_hours" for office hours, "OH", or student hours; "other" for anything recurring that fits none of these. Getting this wrong is not cosmetic: it decides the event's title and whether the student's preferences put it on the calendar at all, and "MATH 221 class" at the professor's door is a wrong fact.
+   - OFFICE HOURS ARE MEETING TIMES. Extract them explicitly, with kind "office_hours", instructor set to whose hours they are, location set to where they are held, and section null. If the syllabus lists hours for several people -- the instructor and one or more TAs -- emit ONE entry per person per pattern. "and by appointment" is not a meeting; do not emit anything for it.
+   - SECTIONS. A syllabus that lists several sections lists them ALL; the student attends ONE. Emit each with its own \`section\` label; do not guess which is theirs. When the document has a section table or repeated lines like "Section A / Sec. 01 / LEC 1 / 001 ... days times room [instructor]", emit one meeting per section per pattern, with \`section\` set to the label EXACTLY as the syllabus writes it and \`instructor\` set when that row names one. Never collapse several sections into one entry, never pick one, and never merge their days or rooms. A syllabus with a single section leaves \`section\` null.
+   - LOCATION is the room or building string stated for THAT meeting, copied verbatim ("2MTC 907", "Hayes Hall 210"). Never carry a location over from a different line or a different section, never expand an abbreviation, never turn it into an address. Null when that meeting states none.
 
 8. course.startDate and course.endDate are the term bounds, ISO, and only when the syllabus states or clearly implies them. Otherwise null.
 
@@ -283,16 +319,50 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
     .map((w) => ({ category: collapse(w.category), weightPercent: Number(w.weightPercent) }))
     .filter((w) => w.category.length > 0 && Number.isFinite(w.weightPercent) && w.weightPercent > 0);
 
-  const meetingTimes = raw.course.meetingTimes
-    .map((m) => ({
-      daysOfWeek: [...new Set(m.daysOfWeek.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort(
-        (a, b) => a - b,
-      ),
-      startTime: parseTime(m.startTime) ?? "",
-      endTime: parseTime(m.endTime) ?? "",
-      location: trimOrNull(m.location, 120),
-    }))
-    .filter((m) => m.daysOfWeek.length > 0 && m.startTime !== "" && m.endTime !== "");
+  // Meetings are re-checked field by field, and the new ones matter as much as
+  // the times: a meeting with no `kind` would default to nothing downstream,
+  // and a section label that went missing turns "one of four sections" back
+  // into "the class", which is the whole bug this shape exists to prevent.
+  const seenMeeting = new Set<string>();
+  const meetingTimes: MeetingTime[] = [];
+  for (const m of raw.course.meetingTimes ?? []) {
+    const daysOfWeek = [
+      ...new Set((m.daysOfWeek ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)),
+    ].sort((a, b) => a - b);
+    const startTime = parseTime(m.startTime) ?? "";
+    const endTime = parseTime(m.endTime) ?? "";
+    if (daysOfWeek.length === 0 || startTime === "" || endTime === "") continue;
+
+    // "lecture" is the honest default for a meeting the model did not label:
+    // it is what an unlabelled "MWF 10:00-10:50" line means, and it is the one
+    // kind the student is certainly expected to attend.
+    const kind: MeetingKind =
+      typeof m.kind === "string" && MEETING_KINDS.includes(m.kind)
+        ? (m.kind as MeetingKind)
+        : "lecture";
+    // Office hours serve everyone enrolled, so a section label on them is a
+    // model slip rather than a fact about the document.
+    const section = kind === "office_hours" ? null : trimOrNull(m.section, 60);
+    const instructor = trimOrNull(m.instructor, 120);
+    const location = trimOrNull(m.location, 120);
+
+    // Section and location are part of the identity. Two sections of a big
+    // course share a day and a time in different rooms, and a key without them
+    // would fold them into one -- exactly the collapse this file now guards.
+    const key = [
+      kind,
+      section ?? "",
+      instructor ?? "",
+      daysOfWeek.join(","),
+      startTime,
+      endTime,
+      location ?? "",
+    ].join("|");
+    if (seenMeeting.has(key)) continue;
+    seenMeeting.add(key);
+
+    meetingTimes.push({ kind, section, instructor, daysOfWeek, startTime, endTime, location });
+  }
 
   const policies = raw.course.policies
     .map((p) => ({
@@ -311,6 +381,11 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
       startDate,
       endDate,
       meetingTimes,
+      // Never asked of the model, for the same reason `reviewedAt` is not:
+      // which section the student is in is a fact about the student, not about
+      // the document. A syllabus listing four sections gives the model no way
+      // to know, and a guess puts them in someone else's classroom.
+      section: null,
       // Overlaps folded together, so the same recess stated in the header and
       // again in the week row is one period rather than two.
       noClass: mergeNoClassPeriods(noClass),
@@ -365,8 +440,11 @@ function mergeChunks(parts: ModelOutput[]): ModelOutput {
     merged.course.startDate = merged.course.startDate ?? c.startDate;
     merged.course.endDate = merged.course.endDate ?? c.endDate;
 
+    // Kind, section and room are part of the key: two sections of a big course
+    // meet at the same time in different rooms, and a day/time key would drop
+    // every section after the first as a duplicate of it.
     for (const m of c.meetingTimes) {
-      const key = `${m.daysOfWeek.join(",")}|${m.startTime}|${m.endTime}`;
+      const key = `${m.kind}|${m.section ?? ""}|${m.instructor ?? ""}|${m.daysOfWeek.join(",")}|${m.startTime}|${m.endTime}|${m.location ?? ""}`;
       if (seenMeeting.has(key)) continue;
       seenMeeting.add(key);
       merged.course.meetingTimes.push(m);

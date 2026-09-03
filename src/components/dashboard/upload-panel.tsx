@@ -11,6 +11,10 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorState, Note } from "@/components/ui/states";
 import { AlertIcon, CheckIcon, FileIcon, UploadIcon } from "@/components/icons";
 import { AssessmentRow } from "@/components/dashboard/assessment-row";
+import {
+  SectionChooser,
+  needsSection,
+} from "@/components/dashboard/section-chooser";
 import { formatPercent, pluralize } from "@/components/format";
 
 export interface UploadResult {
@@ -77,6 +81,7 @@ export function UploadPanel({
   accent,
   onUploaded,
   onAssessmentChanged,
+  onCourseChanged,
   onCourseReplaced,
 }: {
   demoMode: boolean;
@@ -85,6 +90,13 @@ export function UploadPanel({
   onUploaded: (result: UploadResult) => void;
   /** Hand a confirmed or edited item back to the shell. */
   onAssessmentChanged?: (updated: Assessment) => void;
+  /**
+   * A course edited from inside this card — picking a section, so far. The
+   * card holds its own copy of the course, so it updates here as well as in
+   * the shell; otherwise the question would still be on screen after it was
+   * answered.
+   */
+  onCourseChanged?: (updated: Course) => void;
   /**
    * A replace swaps one course for another: the shell has to drop the old one
    * and its assessments, which a plain "uploaded" would not tell it to do.
@@ -113,6 +125,18 @@ export function UploadPanel({
       onAssessmentChanged?.(updated);
     },
     [onAssessmentChanged],
+  );
+
+  const onCourseSaved = useCallback(
+    (updated: Course) => {
+      setPhase((current) =>
+        current.kind === "done" && current.result.course.id === updated.id
+          ? { kind: "done", result: { ...current.result, course: updated } }
+          : current,
+      );
+      onCourseChanged?.(updated);
+    },
+    [onCourseChanged],
   );
   const [dragging, setDragging] = useState(false);
 
@@ -204,6 +228,7 @@ export function UploadPanel({
           result={phase.result}
           accent={accent}
           onChanged={onAssessmentChanged ? onRowChanged : undefined}
+          onCourseChanged={onCourseChanged ? onCourseSaved : undefined}
         />
       ) : (
         <div className="space-y-3">
@@ -375,10 +400,12 @@ function ExtractionResult({
   result,
   accent,
   onChanged,
+  onCourseChanged,
 }: {
   result: UploadResult;
   accent: string;
   onChanged?: (updated: Assessment) => void;
+  onCourseChanged?: (updated: Course) => void;
 }) {
   const { course, assessments, warnings, notion } = result;
   const flagged = assessments.filter(needsReview);
@@ -438,6 +465,15 @@ function ExtractionResult({
           <p className="mt-3 text-[0.75rem] leading-relaxed text-muted">
             Uploaded — Notion page couldn&rsquo;t be created: {notion.error}
           </p>
+        ) : null}
+
+        {/* Asked here, at the moment the syllabus is read, rather than left
+            for the student to discover on a calendar full of other people's
+            classes. */}
+        {onCourseChanged && needsSection(course) ? (
+          <div className="mt-3.5">
+            <SectionChooser course={course} onChanged={onCourseChanged} />
+          </div>
         ) : null}
       </div>
 
