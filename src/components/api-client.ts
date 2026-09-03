@@ -95,9 +95,28 @@ export function apiPatch<T>(path: string, body: unknown): Promise<ApiResult<T>> 
   );
 }
 
+/** Same envelope as the rest — a DELETE that 404s still degrades to `ok: false`. */
+export function apiDelete<T>(path: string, body?: unknown): Promise<ApiResult<T>> {
+  return envelope<T>(
+    fetch(path, {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
+}
+
 export interface UploadHandlers {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
+  /**
+   * Extra multipart fields sent alongside the file — `replace=<courseId>` and
+   * `allowDuplicate=1`, the two answers to the upload route's 409.
+   */
+  fields?: Record<string, string>;
 }
 
 /**
@@ -112,6 +131,9 @@ export function apiUpload<T>(
   return new Promise((resolve) => {
     const form = new FormData();
     form.append("file", file);
+    for (const [name, value] of Object.entries(handlers.fields ?? {})) {
+      form.append(name, value);
+    }
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", path);

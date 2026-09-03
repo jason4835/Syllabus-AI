@@ -32,6 +32,7 @@ export function HeatmapPanel({
   assessments,
   accents,
   onRetry,
+  onSetTermDates,
 }: {
   loading: boolean;
   error?: { error: string; detail?: string };
@@ -46,6 +47,11 @@ export function HeatmapPanel({
   assessments: Assessment[];
   accents: Record<string, string>;
   onRetry: () => void;
+  /**
+   * Offered only when the term window is a guess: the fix for "October 5th
+   * isn't week 1" is the course's own dates, so the subtitle links to them.
+   */
+  onSetTermDates?: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -75,6 +81,23 @@ export function HeatmapPanel({
     .map((course) => course.term)
     .find((label): label is string => Boolean(label && label.trim()));
   const subtitle = describeTerm(term, weeks, termLabel);
+  // A stated window is already right; only a guess is worth interrupting.
+  const offerTermDates =
+    typeof onSetTermDates === "function" &&
+    (term?.source === "inferred" || term?.source === "deadlines");
+
+  const setDatesLink = offerTermDates ? (
+    <>
+      {" · "}
+      <button
+        type="button"
+        onClick={onSetTermDates}
+        className="rounded-sm font-medium text-accent underline decoration-accent-line underline-offset-2 transition-colors hover:text-ink"
+      >
+        Set term dates
+      </button>
+    </>
+  ) : null;
 
   return (
     <Panel
@@ -86,10 +109,16 @@ export function HeatmapPanel({
           subtitle.uncertain ? (
             <span className="flex items-start gap-1.5">
               <InfoIcon className="mt-0.5 shrink-0" width={13} height={13} />
-              <span>{subtitle.text}</span>
+              <span>
+                {subtitle.text}
+                {setDatesLink}
+              </span>
             </span>
           ) : (
-            subtitle.text
+            <span>
+              {subtitle.text}
+              {setDatesLink}
+            </span>
           )
         ) : weeks.length > 0 ? (
           `${pluralize(weeks.length, "week")} of the semester, scored by estimated hours.`

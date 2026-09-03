@@ -92,14 +92,51 @@ export interface Store {
     userId: string,
     parsed: ParsedSyllabus,
   ): Promise<{ course: Course; assessments: Assessment[] }>;
+  /**
+   * Edits the details a person can correct after an upload. Scoped by owner
+   * like its neighbours: null when the course is not this user's, which is
+   * indistinguishable from "no such course" on purpose.
+   *
+   * The patch is deliberately narrow. `meetingTimes`, `gradeWeights` and
+   * `policies` come from the parser and `createdAt`/`userId` are identity, so
+   * none of them are reachable from an API body.
+   */
+  updateCourse(
+    userId: string,
+    id: string,
+    patch: Partial<
+      Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate">
+    >,
+  ): Promise<Course | null>;
   deleteCourse(userId: string, courseId: string): Promise<boolean>;
 
   listAssessments(userId: string): Promise<Assessment[]>;
+  /**
+   * Adds one item the extractor missed. Null when the course is not this
+   * user's -- ownership is inherited through the course, so it is checked
+   * before anything is written rather than after.
+   */
+  createAssessment(
+    userId: string,
+    courseId: string,
+    assessment: Omit<Assessment, "id" | "courseId">,
+  ): Promise<Assessment | null>;
   updateAssessment(
     userId: string,
     id: string,
     patch: Partial<Assessment>,
   ): Promise<Assessment | null>;
+  /**
+   * Removes one assessment and everything keyed on it: its calendar link, its
+   * own Notion link, and the Notion links for the study sessions the planner
+   * minted from it (`sb_<id>_*` -- see `notionSessionLinkPrefix`).
+   *
+   * The same cascade `deleteCourse` performs, narrowed to one row. Leaving a
+   * session link behind would point a later sync at a page describing work for
+   * a deadline that no longer exists. False when there was nothing to delete,
+   * including when the item belongs to someone else.
+   */
+  deleteAssessment(userId: string, id: string): Promise<boolean>;
 
   getCalendarLink(assessmentId: string): Promise<CalendarLink | null>;
   setCalendarLink(
@@ -167,10 +204,14 @@ export const store: Store = {
   listCourses: (userId) => getStore().listCourses(userId),
   getCourse: (id) => getStore().getCourse(id),
   createCourse: (userId, parsed) => getStore().createCourse(userId, parsed),
+  updateCourse: (userId, id, patch) => getStore().updateCourse(userId, id, patch),
   deleteCourse: (userId, courseId) => getStore().deleteCourse(userId, courseId),
   listAssessments: (userId) => getStore().listAssessments(userId),
+  createAssessment: (userId, courseId, assessment) =>
+    getStore().createAssessment(userId, courseId, assessment),
   updateAssessment: (userId, id, patch) =>
     getStore().updateAssessment(userId, id, patch),
+  deleteAssessment: (userId, id) => getStore().deleteAssessment(userId, id),
   getCalendarLink: (assessmentId) => getStore().getCalendarLink(assessmentId),
   setCalendarLink: (assessmentId, googleEventId, calendarId) =>
     getStore().setCalendarLink(assessmentId, googleEventId, calendarId),

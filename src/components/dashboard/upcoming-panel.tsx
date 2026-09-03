@@ -17,6 +17,7 @@ export function UpcomingPanel({
   accents,
   onRetry,
   onAssessmentChanged,
+  onAssessmentDeleted,
 }: {
   loading: boolean;
   error?: { error: string; detail?: string };
@@ -26,6 +27,8 @@ export function UpcomingPanel({
   onRetry: () => void;
   /** Hand a confirmed or edited item back to the shell. */
   onAssessmentChanged?: (updated: Assessment) => void;
+  /** Remove a deleted item from the shell's state. */
+  onAssessmentDeleted?: (id: string) => void;
 }) {
   const byId = new Map(courses.map((course) => [course.id, course]));
 
@@ -77,6 +80,7 @@ export function UpcomingPanel({
                 color={accentFor(accents, assessment.courseId)}
                 showConfidence
                 onChanged={onAssessmentChanged}
+                onDeleted={onAssessmentDeleted}
               />
             ))}
           </ul>

@@ -62,8 +62,19 @@ export function DashboardShell() {
   const notionRef = useRef<HTMLDivElement>(null);
   const notionInFlight = useRef<Promise<void> | null>(null);
   const [pendingNotionScroll, setPendingNotionScroll] = useState(false);
+  const [notionJustConnected, setNotionJustConnected] = useState(false);
 
   const accountRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Which course the roadmap has open in its editor, and where the cursor
+   * lands. It lives here because the heatmap opens it too: "Set term dates" is
+   * a link in one panel that has to open a form in another.
+   */
+  const [editingCourseId, setEditingCourseId] = useState<string | null>(null);
+  const [editFocusField, setEditFocusField] = useState<"code" | "startDate">(
+    "code",
+  );
 
   /**
    * "Account" in the header menu is a jump, not a route -- the panel is already
@@ -164,6 +175,9 @@ export function DashboardShell() {
 
     void loadNotion();
     setPendingNotionScroll(true);
+    // The panel backfills courses that are not in Notion yet, but only on this
+    // arrival -- a plain reload of the dashboard must not start a sync.
+    setNotionJustConnected(true);
 
     params.delete("notion");
     const query = params.toString();
@@ -259,6 +273,80 @@ export function DashboardShell() {
     [loadPlan],
   );
 
+  /**
+   * A saved course comes back final. The plan is refetched because the term
+   * window is what the heatmap numbers its weeks from -- new dates, new week 1.
+   */
+  const onCourseChanged = useCallback(
+    (updated: Course) => {
+      setCourses((current) =>
+        current.map((course) => (course.id === updated.id ? updated : course)),
+      );
+      void loadPlan();
+    },
+    [loadPlan],
+  );
+
+  const onAssessmentAdded = useCallback(
+    (added: Assessment) => {
+      setAssessments((current) =>
+        current.some((item) => item.id === added.id)
+          ? current
+          : [...current, added],
+      );
+      void loadPlan();
+    },
+    [loadPlan],
+  );
+
+  const onAssessmentDeleted = useCallback(
+    (id: string) => {
+      setAssessments((current) => current.filter((item) => item.id !== id));
+      void loadPlan();
+    },
+    [loadPlan],
+  );
+
+  /**
+   * A replace is a swap, not an addition: the old course and everything that
+   * hung off it are gone on the server, so they go from the page in the same
+   * update rather than lingering until the refetch lands.
+   */
+  const onCourseReplaced = useCallback(
+    (oldCourseId: string, result: UploadResult) => {
+      setCourses((current) => [
+        ...current.filter((course) => course.id !== oldCourseId),
+        ...(current.some((course) => course.id === result.course.id)
+          ? []
+          : [result.course]),
+      ]);
+      setAssessments((current) => {
+        const kept = current.filter((item) => item.courseId !== oldCourseId);
+        const known = new Set(kept.map((item) => item.id));
+        return [...kept, ...result.assessments.filter((item) => !known.has(item.id))];
+      });
+      if (editingCourseId === oldCourseId) setEditingCourseId(null);
+      refreshAll();
+    },
+    [refreshAll, editingCourseId],
+  );
+
+  /**
+   * The heatmap does not know which course to blame for a guessed term window,
+   * and with one course there is no question: send them to the first one.
+   */
+  const onSetTermDates = useCallback(() => {
+    const target = courses[0];
+    if (!target) return;
+    setEditFocusField("startDate");
+    setEditingCourseId(target.id);
+  }, [courses]);
+
+  const onEditCourse = useCallback((courseId: string | null) => {
+    setEditFocusField("code");
+    setEditingCourseId(courseId);
+  }, []);
+
   const demoMode = config?.demoMode ?? false;
   const weeks = plan?.weeks ?? [];
 
@@ -333,6 +421,7 @@ export function DashboardShell() {
             assessments={assessments}
             accents={accents}
             onRetry={() => void loadPlan()}
+            onSetTermDates={courses.length > 0 ? onSetTermDates : undefined}
           />
 
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] lg:items-start">
@@ -344,6 +433,7 @@ export function DashboardShell() {
                 assessments={assessments}
                 accents={accents}
                 onAssessmentChanged={onAssessmentChanged}
+                onAssessmentDeleted={onAssessmentDeleted}
                 onRetry={() => void loadCourses()}
               />
               <RoadmapPanel
@@ -353,6 +443,12 @@ export function DashboardShell() {
                 assessments={assessments}
                 accents={accents}
                 onAssessmentChanged={onAssessmentChanged}
+                onAssessmentAdded={onAssessmentAdded}
+                onAssessmentDeleted={onAssessmentDeleted}
+                onCourseChanged={onCourseChanged}
+                editingCourseId={editingCourseId}
+                editFocusField={editFocusField}
+                onEditCourse={onEditCourse}
                 coursePages={notionStatus?.coursePages ?? {}}
                 onRetry={() => void loadCourses()}
               />
@@ -364,6 +460,7 @@ export function DashboardShell() {
                 accent={nextAccent}
                 onUploaded={onUploaded}
                 onAssessmentChanged={onAssessmentChanged}
+                onCourseReplaced={onCourseReplaced}
               />
               <SyncPanel
                 demoMode={demoMode}
@@ -376,6 +473,8 @@ export function DashboardShell() {
                   loading={notionLoading}
                   error={notionError}
                   hasCourses={courses.length > 0}
+                  courses={courses}
+                  justConnected={notionJustConnected}
                   onStatus={setNotionStatus}
                   onReload={() => void loadNotion()}
                 />

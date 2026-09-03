@@ -12,7 +12,7 @@ every semester.
 
 1. **Sign in with Google** — one consent screen covers identity and calendar write access.
 2. **Upload a syllabus PDF** — AI extracts courses, assignments, exams, due dates, grading weights, and key policies.
-3. **Check what it found** — anything extracted with low confidence is flagged; one click confirms it, and every item can be edited (title, type, date, time, weight) right in the list. Fixes flow into the plan and the next calendar or Notion sync.
+3. **Check what it found** — anything extracted with low confidence is flagged; one click confirms it, and every item can be edited, added, or deleted right in the list. Course details and term dates are editable too, and re-uploading a syllabus asks whether to replace the old one. Fixes flow into the plan and the next calendar or Notion sync.
 4. **Get a semester roadmap** — week-by-week workload with recommended study blocks.
 5. **Sync to Google Calendar** — deadlines and study sessions land on a dedicated "Syllabus AI" calendar, not your primary one.
 6. **Get a Notion page per class** — connect Notion and every upload also produces a finished class page (course info, grading, schedule, policies) plus Assignments and Study Sessions databases you can view as a calendar. Nobody builds a Notion setup by hand again.

@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import type { Assessment, AssessmentKind } from "@/lib/types";
 import { needsReview } from "@/lib/types";
-import { apiPatch } from "@/components/api-client";
+import { apiDelete, apiPatch } from "@/components/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button, Spinner } from "@/components/ui/button";
 import { AlertIcon, CheckIcon } from "@/components/icons";
@@ -13,9 +13,14 @@ import { KIND_LABEL, isHighStakes, kindLabel } from "@/components/labels";
 
 const KINDS = Object.keys(KIND_LABEL) as AssessmentKind[];
 
-const INPUT =
+/**
+ * The dashboard has three inline forms now -- this row, the course editor and
+ * the roadmap's add-item form. They share one control and one label so an
+ * inline form always looks like the same thing wherever it opens.
+ */
+export const FORM_INPUT =
   "w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[0.875rem] text-ink placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-60";
-const LABEL = "block text-[0.75rem] font-medium text-muted";
+export const FORM_LABEL = "block text-[0.75rem] font-medium text-muted";
 
 /** Exactly the fields `PATCH /api/assessments/[id]` accepts from the editor. */
 interface AssessmentPatch {
@@ -105,6 +110,13 @@ export interface AssessmentRowProps {
    * result somewhere, the controls would lie.
    */
   onChanged?: (updated: Assessment) => void;
+  /**
+   * Removal lives inside the editor, not on the row: deleting is rare next to
+   * fixing, and a delete button sitting under every item is a hazard. Offered
+   * only when someone is listening -- otherwise the row would vanish from the
+   * server and stay on the screen.
+   */
+  onDeleted?: (id: string) => void;
 }
 
 export function AssessmentRow({
@@ -114,13 +126,15 @@ export function AssessmentRow({
   showRelative = true,
   showConfidence = false,
   onChanged,
+  onDeleted,
 }: AssessmentRowProps) {
   const fieldId = useId();
   const sourceId = `${fieldId}-source`;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => toDraft(assessment));
-  const [pending, setPending] = useState<"confirm" | "save" | null>(null);
+  const [pending, setPending] = useState<"confirm" | "save" | "delete" | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
   /**
@@ -148,12 +162,14 @@ export function AssessmentRow({
   function openEditor() {
     setDraft(toDraft(assessment));
     setError(null);
+    setConfirmingDelete(false);
     setEditing(true);
   }
 
   function closeEditor() {
     setEditing(false);
     setError(null);
+    setConfirmingDelete(false);
   }
 
   function patch(field: keyof Draft, value: string) {
@@ -196,9 +212,30 @@ export function AssessmentRow({
     if (await send(built.patch, "save")) closeEditor();
   }
 
+  async function remove() {
+    setPending("delete");
+    setError(null);
+    const result = await apiDelete<{ deleted: boolean }>(
+      `/api/assessments/${assessment.id}`,
+    );
+    setPending(null);
+    if (!result.ok) {
+      setError(result.detail ?? result.error);
+      setConfirmingDelete(false);
+      return;
+    }
+    // The row is about to be unmounted by its owner; no local state to settle.
+    onDeleted?.(assessment.id);
+  }
+
   function onFormKeyDown(event: KeyboardEvent<HTMLFormElement>) {
     if (event.key !== "Escape") return;
     event.stopPropagation();
+    // One Escape backs out of the delete question, the next closes the editor.
+    if (confirmingDelete) {
+      setConfirmingDelete(false);
+      return;
+    }
     closeEditor();
   }
 
@@ -218,7 +255,7 @@ export function AssessmentRow({
           </p>
 
           <div className="mt-2 grid gap-3 sm:grid-cols-2">
-            <Field
+            <FormField
               label="Title"
               htmlFor={`${fieldId}-title`}
               className="sm:col-span-2"
@@ -231,11 +268,11 @@ export function AssessmentRow({
                 value={draft.title}
                 disabled={pending !== null}
                 onChange={(event) => patch("title", event.target.value)}
-                className={INPUT}
+                className={FORM_INPUT}
               />
-            </Field>
+            </FormField>
 
-            <Field label="Type" htmlFor={`${fieldId}-kind`}>
+            <FormField label="Type" htmlFor={`${fieldId}-kind`}>
               <select
                 id={`${fieldId}-kind`}
                 value={draft.kind}
@@ -243,7 +280,7 @@ export function AssessmentRow({
                 onChange={(event) =>
                   patch("kind", event.target.value as AssessmentKind)
                 }
-                className={INPUT}
+                className={FORM_INPUT}
               >
                 {KINDS.map((kind) => (
                   <option key={kind} value={kind}>
@@ -251,9 +288,9 @@ export function AssessmentRow({
                   </option>
                 ))}
               </select>
-            </Field>
+            </FormField>
 
-            <Field
+            <FormField
               label="Due date"
               htmlFor={`${fieldId}-date`}
               onClear={draft.dueDate ? () => patch("dueDate", "") : undefined}
@@ -265,11 +302,11 @@ export function AssessmentRow({
                 value={draft.dueDate}
                 disabled={pending !== null}
                 onChange={(event) => patch("dueDate", event.target.value)}
-                className={INPUT}
+                className={FORM_INPUT}
               />
-            </Field>
+            </FormField>
 
-            <Field
+            <FormField
               label="Due time"
               htmlFor={`${fieldId}-time`}
               onClear={draft.dueTime ? () => patch("dueTime", "") : undefined}
@@ -281,11 +318,11 @@ export function AssessmentRow({
                 value={draft.dueTime}
                 disabled={pending !== null}
                 onChange={(event) => patch("dueTime", event.target.value)}
-                className={INPUT}
+                className={FORM_INPUT}
               />
-            </Field>
+            </FormField>
 
-            <Field
+            <FormField
               label="Weight (% of grade)"
               htmlFor={`${fieldId}-weight`}
               onClear={
@@ -304,11 +341,11 @@ export function AssessmentRow({
                 value={draft.weightPercent}
                 disabled={pending !== null}
                 onChange={(event) => patch("weightPercent", event.target.value)}
-                className={INPUT}
+                className={FORM_INPUT}
               />
-            </Field>
+            </FormField>
 
-            <Field
+            <FormField
               label="Notes"
               htmlFor={`${fieldId}-notes`}
               className="sm:col-span-2"
@@ -319,9 +356,9 @@ export function AssessmentRow({
                 value={draft.notes}
                 disabled={pending !== null}
                 onChange={(event) => patch("notes", event.target.value)}
-                className={`${INPUT} resize-y`}
+                className={`${FORM_INPUT} resize-y`}
               />
-            </Field>
+            </FormField>
           </div>
 
           {error ? (
@@ -352,6 +389,51 @@ export function AssessmentRow({
               Cancel
             </Button>
             <span className="text-[0.6875rem] text-muted">Esc to cancel</span>
+
+            {onDeleted ? (
+              <span className="ml-auto flex flex-wrap items-center gap-2">
+                {confirmingDelete ? (
+                  <>
+                    <span className="text-[0.75rem] font-medium text-danger">
+                      Delete this item?
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={pending !== null}
+                      onClick={() => void remove()}
+                      className="border-danger-line text-danger hover:bg-danger-soft"
+                    >
+                      {pending === "delete" ? (
+                        <Spinner label="Deleting" />
+                      ) : null}
+                      Delete
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={pending !== null}
+                      onClick={() => setConfirmingDelete(false)}
+                    >
+                      Keep it
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={pending !== null}
+                    onClick={() => setConfirmingDelete(true)}
+                    className="border-danger-line text-danger hover:bg-danger-soft"
+                  >
+                    Delete
+                  </Button>
+                )}
+              </span>
+            ) : null}
           </div>
         </form>
       </li>
@@ -509,7 +591,7 @@ export function AssessmentRow({
 }
 
 /** Label + optional inline clear, so every control is named and nullable. */
-function Field({
+export function FormField({
   label,
   htmlFor,
   className,
@@ -527,7 +609,7 @@ function Field({
   return (
     <div className={className}>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <label htmlFor={htmlFor} className={LABEL}>
+        <label htmlFor={htmlFor} className={FORM_LABEL}>
           {label}
         </label>
         {onClear ? (

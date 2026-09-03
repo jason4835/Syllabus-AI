@@ -13,9 +13,12 @@ Non-2xx responses still use this shape.
 | `/api/me/timezone` | POST | `{ timezone: string }` (IANA zone) | `User` |
 | `/api/me` | DELETE | `{ confirm: "DELETE"; removeGoogleCalendar?: boolean }` | `{ deleted: true; googleCalendarRemoved: boolean }` — erases the account and every course, assessment, link and connection; clears the session. Notion pages are never touched. **400** unless `confirm` is exactly `"DELETE"`; **403** for the shared demo account. |
 | `/api/health` | GET | — | `{ status; version; commit; uptimeSeconds; time; capabilities; storage; warnings }` |
-| `/api/upload` | POST | `multipart/form-data`, field `file` (PDF) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[] }` |
+| `/api/upload` | POST | `multipart/form-data`, field `file` (PDF); optional fields `replace` (course id) or `allowDuplicate` (`1`) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[]; replaced: string \| null }` — **409** `{ duplicateOf: { id; code; title; term } }` when the parsed course matches an existing one by code (case/space-insensitive) and term, unless `replace=<thatId>` (the old course and its assessments are deleted after the new one is saved; `replaced` carries the old id) or `allowDuplicate=1`. |
 | `/api/courses` | GET | — | `{ courses: Course[]; assessments: Assessment[] }` |
+| `/api/courses/[id]` | PATCH | `{ code?; title?; instructor?; term?; startDate?; endDate? }` | `Course` — edit course details, including the term window the heatmap numbers weeks from. Dates `YYYY-MM-DD` or null; `endDate` must not precede `startDate`; **422** names the field; **404** if not the caller's. |
 | `/api/courses/[id]` | DELETE | — | `{ deleted: true }` |
+| `/api/courses/[id]/assessments` | POST | `{ title; kind; dueDate?; dueTime?; weightPercent?; notes? }` | `Assessment` — add an item the extractor missed. Created with `confidence: 1` and `reviewedAt` set (a person typed it). Same field rules as PATCH assessments; `title` and `kind` required. |
+| `/api/assessments/[id]` | DELETE | — | `{ deleted: true }` — removes the item and its calendar/Notion links. **404** if not the caller's. |
 | `/api/assessments/[id]` | PATCH | `{ title?; kind?; dueDate?; dueTime?; weightPercent?; notes?; reviewed?: true }` | `Assessment` — confirm and edit share this route. Any accepted change (including `reviewed: true` alone) sets `reviewedAt`, which clears the review flag. **422** with a field-level `detail` on invalid input; **404** when the item is not the caller's. Dates `YYYY-MM-DD` or null, times `HH:MM` or null, weight 0–100 or null. |
 | `/api/plan` | GET | — | `SemesterPlan` |
 | `/api/sync` | POST | `{ courseId?: string }` | `CalendarSyncResult` |

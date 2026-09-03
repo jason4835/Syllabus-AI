@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
@@ -28,10 +30,18 @@ export async function POST(req: Request) {
 
 
   let file: File | null = null;
+  // Both duplicate answers ride on the same multipart body as the file: the
+  // client re-posts the identical form with one extra field, so nothing here
+  // has to hold the parsed syllabus between two requests.
+  let replaceId: string | null = null;
+  let allowDuplicate = false;
   try {
     const form = await req.formData();
     const field = form.get("file");
     if (field instanceof File) file = field;
+    const replace = form.get("replace");
+    if (typeof replace === "string" && replace.trim()) replaceId = replace.trim();
+    allowDuplicate = form.get("allowDuplicate") === "1";
   } catch {
     return fail("Could not read the upload.", 400);
   }
@@ -51,13 +61,86 @@ export async function POST(req: Request) {
     // The grading table and the schedule are extracted separately; join them
     // before persisting so the workload model sees real weights.
     const parsed = attachWeights(await parseSyllabus(buf, name));
+
+    // Duplicate check BEFORE the write: the common way to end up with two
+    // copies of one class is uploading the same PDF twice (a failed-looking
+    // request that actually succeeded, a re-download of the same file), and a
+    // second copy is worse than a blocked upload -- it doubles every deadline
+    // in the heatmap and the plan, and nothing on screen says which is which.
+    const existing = (await store.listCourses(userId)).find(
+      (c) =>
+        normalizeCode(c.code) === normalizeCode(parsed.course.code) &&
+        normalizeTerm(c.term) === normalizeTerm(parsed.course.term),
+    );
+
+    if (existing && !replaceId && !allowDuplicate) {
+      // The one response in the app that carries a field outside the envelope:
+      // the client needs the existing course to offer "replace it" or "keep
+      // both", and `detail` is a string. `ok`/`error` keep their usual meaning,
+      // so a client that ignores `duplicateOf` still shows a sane message.
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: `You already have ${existing.code} for this term.`,
+          duplicateOf: {
+            id: existing.id,
+            code: existing.code,
+            title: existing.title,
+            term: existing.term,
+          },
+        },
+        { status: 409 },
+      );
+    }
+
+    // `replace` only means anything for the course this upload actually
+    // collides with. A mismatched id is a stale or hand-made request, and
+    // deleting whatever it happens to name would be catastrophic.
+    const replacing = existing && replaceId === existing.id ? existing.id : null;
+    if (replaceId && !replacing) {
+      return fail("That course is not the one this upload duplicates.", 409);
+    }
+
     const { course, assessments } = await store.createCourse(userId, parsed);
+    // Deleted only after the new course is safely stored: the reverse order
+    // would lose the old syllabus if the write failed.
+    if (replacing) await store.deleteCourse(userId, replacing);
+
     const notion = await createNotionPage(userId, course, assessments);
-    return ok({ courseId: course.id, course, assessments, warnings: parsed.warnings, notion });
+    return ok({
+      courseId: course.id,
+      course,
+      assessments,
+      warnings: parsed.warnings,
+      replaced: replacing,
+      notion,
+    });
   } catch (err) {
     logApiError("upload.failed", err, { userId, filename: name, bytes: file.size });
     return fail("Could not read that syllabus.", 422, messageOf(err));
   }
+}
+
+/**
+ * "MATH 221", "math221" and " MATH  221 " are one course code.
+ *
+ * Whitespace goes entirely rather than collapsing to a single space: the same
+ * class arrives as "MATH 221" from one syllabus and "MATH221" from the next,
+ * and a duplicate check that misses that is a duplicate check that never fires.
+ */
+function normalizeCode(code: string): string {
+  return code.replace(/\s+/g, "").toUpperCase();
+}
+
+/**
+ * Terms are compared loosely (case and surrounding space) but not restructured:
+ * "Fall 2026" and "Spring 2026" are different semesters of the same course and
+ * must both be allowed to exist. Two nulls match -- an unstated term is not a
+ * different term, and treating null as unique would let the same syllabus be
+ * uploaded any number of times whenever the parser failed to find a term.
+ */
+function normalizeTerm(term: string | null): string {
+  return (term ?? "").trim().toLowerCase();
 }
 
 type UploadNotion = { pageUrl: string | null; hubUrl: string | null; error: string | null } | null;

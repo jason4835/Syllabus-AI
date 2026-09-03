@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { SVGProps } from "react";
-import type { NotionSyncResult } from "@/lib/types";
+import type { Course, NotionSyncResult } from "@/lib/types";
 import { apiPost } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, LinkButton, Spinner } from "@/components/ui/button";
@@ -46,7 +46,8 @@ type SyncResponse = NotionSyncResult & { dryRun: boolean };
 type Action =
   | { kind: "idle" }
   | { kind: "building"; pageId: string }
-  | { kind: "syncing" }
+  /** `auto` marks the one sync the panel starts by itself, so it can say so. */
+  | { kind: "syncing"; auto?: boolean }
   | { kind: "disconnecting" }
   | { kind: "synced"; result: SyncResponse }
   | { kind: "error"; error: string; detail?: string };
@@ -56,6 +57,8 @@ export function NotionPanel({
   loading,
   error,
   hasCourses,
+  courses,
+  justConnected = false,
   onStatus,
   onReload,
 }: {
@@ -63,6 +66,14 @@ export function NotionPanel({
   loading: boolean;
   error?: { error: string; detail?: string };
   hasCourses: boolean;
+  /** Needed whole, not just counted: the nudge names how many are missing. */
+  courses: Course[];
+  /**
+   * True on the `?notion=connected` return, which the shell detects. Connecting
+   * and then having to find a Sync button is a step the user did not ask for,
+   * so that one arrival backfills by itself.
+   */
+  justConnected?: boolean;
   /** `POST /api/notion/parent` answers with a fresh status -- adopt it. */
   onStatus: (status: NotionStatus) => void;
   onReload: () => void;
@@ -82,12 +93,19 @@ export function NotionPanel({
     return () => window.clearInterval(timer);
   }, [cooldownUntil]);
 
+  const failedRef = useRef<(result: { error: string; detail?: string }) => void>(
+    () => {},
+  );
+
   const cooldownLeft =
     cooldownUntil === null ? 0 : Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
   const busy =
     action.kind === "building" ||
     action.kind === "syncing" ||
     action.kind === "disconnecting";
+
+  const onReloadRef = useRef(onReload);
+  onReloadRef.current = onReload;
 
   function failed(result: { error: string; detail?: string }) {
     setAction({ kind: "error", error: result.error, detail: result.detail });
@@ -100,17 +118,21 @@ export function NotionPanel({
       setCooldownUntil(Date.now() + seconds * 1000);
     }
   }
+  failedRef.current = failed;
 
-  async function sync() {
-    setAction({ kind: "syncing" });
-    const result = await apiPost<SyncResponse>("/api/notion/sync", {});
-    if (!result.ok) {
-      failed(result);
-      return;
-    }
-    setAction({ kind: "synced", result: result.data });
-    onReload();
-  }
+  const sync = useCallback(
+    async (auto = false) => {
+      setAction({ kind: "syncing", auto });
+      const result = await apiPost<SyncResponse>("/api/notion/sync", {});
+      if (!result.ok) {
+        failedRef.current(result);
+        return;
+      }
+      setAction({ kind: "synced", result: result.data });
+      onReloadRef.current();
+    },
+    [],
+  );
 
   async function chooseParent(pageId: string) {
     setAction({ kind: "building", pageId });
@@ -141,6 +163,23 @@ export function NotionPanel({
   const revoked = status?.status === "revoked";
   const needsParent = (status?.needsParent ?? false) || status?.status === "needs_parent";
   const connected = (status?.connected ?? false) && !revoked && !needsParent;
+
+  // A course with no page in `coursePages` has never reached Notion. That is
+  // the whole definition of "behind", and both the auto-backfill and the
+  // standing nudge below are read off it.
+  const pages = status?.coursePages;
+  const missing = courses.filter((course) => !pages?.[course.id]).length;
+
+  // Ref, not state: the arrival must backfill exactly once, and StrictMode
+  // runs this effect twice.
+  const backfilled = useRef(false);
+
+  useEffect(() => {
+    if (backfilled.current) return;
+    if (!justConnected || !connected || missing === 0) return;
+    backfilled.current = true;
+    void sync(true);
+  }, [justConnected, connected, missing, sync]);
 
   return (
     <Panel
@@ -188,6 +227,24 @@ export function NotionPanel({
               connection, or an unconfigured server where it is a dry run. */}
           {connected || !configured ? (
             <>
+              {/* Persistent, not a one-off toast: courses uploaded after a
+                  sync would otherwise sit outside Notion with nothing saying
+                  so. It disappears the moment every course has a page. */}
+              {connected && missing > 0 && action.kind !== "syncing" ? (
+                <Note tone="warn">
+                  {pluralize(missing, "course")}{" "}
+                  {missing === 1 ? "isn’t" : "aren’t"} in Notion yet —{" "}
+                  <button
+                    type="button"
+                    onClick={() => void sync()}
+                    disabled={busy || cooldownLeft > 0}
+                    className="rounded-sm font-medium text-accent underline decoration-accent-line underline-offset-2 transition-colors hover:text-ink disabled:no-underline disabled:opacity-55"
+                  >
+                    Sync now
+                  </button>
+                </Note>
+              ) : null}
+
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   onClick={() => void sync()}
@@ -196,7 +253,9 @@ export function NotionPanel({
                   {action.kind === "syncing" ? (
                     <>
                       <Spinner label="Syncing to Notion" />
-                      Syncing…
+                      {action.auto
+                        ? `Syncing your ${pluralize(missing, "course")} to Notion…`
+                        : "Syncing…"}
                     </>
                   ) : (
                     <>

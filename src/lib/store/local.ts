@@ -409,6 +409,31 @@ export function createLocalStore(): Store {
       });
     },
 
+    async updateCourse(userId, id, patch) {
+      return mutate((db) => {
+        const index = db.courses.findIndex(
+          (c) => c.id === id && c.userId === userId,
+        );
+        // Missing and not-yours are indistinguishable, exactly as in
+        // deleteCourse: a wrong userId must not confirm that an id exists.
+        if (index === -1) return null;
+
+        const current = db.courses[index];
+        // id, userId and createdAt are identity, not data. Spreading the patch
+        // over them and then restoring them keeps a stray key in the patch
+        // object from re-parenting a course.
+        const next: Course = {
+          ...current,
+          ...patch,
+          id: current.id,
+          userId: current.userId,
+          createdAt: current.createdAt,
+        };
+        db.courses[index] = next;
+        return clone(next);
+      });
+    },
+
     async deleteCourse(userId, courseId) {
       return mutate((db) => {
         const index = db.courses.findIndex(
@@ -446,6 +471,34 @@ export function createLocalStore(): Store {
       });
     },
 
+    async createAssessment(userId, courseId, assessment) {
+      return mutate((db) => {
+        // Ownership is proven against the course, since that is where an
+        // assessment's owner lives. Checked before the push, so a stranger's
+        // course id writes nothing.
+        const owns = db.courses.some(
+          (c) => c.id === courseId && c.userId === userId,
+        );
+        if (!owns) return null;
+
+        const next: Assessment = {
+          id: randomUUID(),
+          courseId,
+          title: assessment.title,
+          kind: assessment.kind,
+          dueDate: assessment.dueDate,
+          dueTime: assessment.dueTime,
+          weightPercent: assessment.weightPercent,
+          sourceText: assessment.sourceText,
+          confidence: assessment.confidence,
+          reviewedAt: assessment.reviewedAt,
+          notes: assessment.notes,
+        };
+        db.assessments.push(next);
+        return clone(next);
+      });
+    },
+
     async updateAssessment(userId, id, patch) {
       return mutate((db) => {
         const owned = ownedCourseIds(db, userId);
@@ -465,6 +518,35 @@ export function createLocalStore(): Store {
         };
         db.assessments[index] = next;
         return clone(next);
+      });
+    },
+
+    async deleteAssessment(userId, id) {
+      return mutate((db) => {
+        const owned = ownedCourseIds(db, userId);
+        const index = db.assessments.findIndex(
+          (a) => a.id === id && owned.has(a.courseId),
+        );
+        // Same silence as deleteCourse: not-yours reads as not-there.
+        if (index === -1) return false;
+
+        db.assessments.splice(index, 1);
+        db.calendarLinks = db.calendarLinks.filter(
+          (l) => l.assessmentId !== id,
+        );
+        // deleteCourse's cascade, narrowed to one item: the assessment's own
+        // link by id, and its study sessions' links by the planner's prefix,
+        // since generated sessions have no row to join against. Scoped to the
+        // owner because that prefix test is not an id match. The Notion pages
+        // themselves stay put (docs/NOTION.md) -- what goes is our pointer.
+        const sessionPrefix = notionSessionLinkPrefix(id);
+        db.notionLinks = db.notionLinks.filter((l) => {
+          if (l.userId !== userId) return true;
+          if (l.kind === "assessment") return l.entityId !== id;
+          if (l.kind === "session") return !l.entityId.startsWith(sessionPrefix);
+          return true;
+        });
+        return true;
       });
     },
 

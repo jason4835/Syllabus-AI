@@ -19,6 +19,11 @@ export interface UploadResult {
   assessments: Assessment[];
   warnings: string[];
   /**
+   * The id of the course this upload replaced, when it was sent with
+   * `replace=<id>`. Absent from an older server, which only ever added.
+   */
+  replaced?: string | null;
+  /**
    * Present only when Notion is connected. Optional rather than `| null`
    * because an older server (or one whose Notion routes are not deployed) just
    * omits the field, and the upload is still a success either way.
@@ -30,18 +35,49 @@ export interface UploadResult {
   } | null;
 }
 
+/** What the 409 says we already have. */
+export interface DuplicateCourse {
+  id: string;
+  code: string;
+  title: string;
+  term: string | null;
+}
+
 type Phase =
   | { kind: "idle" }
   | { kind: "uploading"; fileName: string; percent: number }
   | { kind: "parsing"; fileName: string }
   | { kind: "done"; result: UploadResult }
+  /** The file is held here, so answering the question never means re-picking it. */
+  | { kind: "duplicate"; file: File; duplicate: DuplicateCourse }
   | { kind: "error"; error: string; detail?: string };
+
+/**
+ * The upload route answers a duplicate with a 409 carrying `duplicateOf`. The
+ * shared client hands back the envelope, not the status, so the field itself is
+ * the signal -- and it is read defensively, because a server that has not
+ * shipped this yet simply will not send it.
+ */
+function readDuplicate(result: unknown): DuplicateCourse | null {
+  if (typeof result !== "object" || result === null) return null;
+  const value = (result as { duplicateOf?: unknown }).duplicateOf;
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || record.id.length === 0) return null;
+  return {
+    id: record.id,
+    code: typeof record.code === "string" ? record.code : "this course",
+    title: typeof record.title === "string" ? record.title : "",
+    term: typeof record.term === "string" ? record.term : null,
+  };
+}
 
 export function UploadPanel({
   demoMode,
   accent,
   onUploaded,
   onAssessmentChanged,
+  onCourseReplaced,
 }: {
   demoMode: boolean;
   /** Accent the newly added course will carry elsewhere in the dashboard. */
@@ -49,6 +85,11 @@ export function UploadPanel({
   onUploaded: (result: UploadResult) => void;
   /** Hand a confirmed or edited item back to the shell. */
   onAssessmentChanged?: (updated: Assessment) => void;
+  /**
+   * A replace swaps one course for another: the shell has to drop the old one
+   * and its assessments, which a plain "uploaded" would not tell it to do.
+   */
+  onCourseReplaced?: (oldCourseId: string, result: UploadResult) => void;
 }) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -78,7 +119,7 @@ export function UploadPanel({
   const busy = phase.kind === "uploading" || phase.kind === "parsing";
 
   const send = useCallback(
-    async (file: File) => {
+    async (file: File, fields?: Record<string, string>) => {
       if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
         setPhase({
           kind: "error",
@@ -91,6 +132,7 @@ export function UploadPanel({
       setPhase({ kind: "uploading", fileName: file.name, percent: 0 });
 
       const result = await apiUpload<UploadResult>("/api/upload", file, {
+        fields,
         onProgress: (percent) => {
           setPhase((current) =>
             current.kind === "uploading"
@@ -108,13 +150,23 @@ export function UploadPanel({
       });
 
       if (!result.ok) {
+        const duplicate = readDuplicate(result);
+        if (duplicate) {
+          setPhase({ kind: "duplicate", file, duplicate });
+          return;
+        }
         setPhase({ kind: "error", error: result.error, detail: result.detail });
         return;
       }
       setPhase({ kind: "done", result: result.data });
-      onUploaded(result.data);
+
+      // `replaced` comes from the server; the id we sent is the fallback for a
+      // server that performs the swap without reporting it.
+      const replacedId = result.data.replaced ?? fields?.replace ?? null;
+      if (replacedId && onCourseReplaced) onCourseReplaced(replacedId, result.data);
+      else onUploaded(result.data);
     },
-    [onUploaded],
+    [onUploaded, onCourseReplaced],
   );
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -239,6 +291,18 @@ export function UploadPanel({
             )}
           </div>
 
+          {phase.kind === "duplicate" ? (
+            <DuplicateChoice
+              duplicate={phase.duplicate}
+              fileName={phase.file.name}
+              onReplace={() =>
+                void send(phase.file, { replace: phase.duplicate.id })
+              }
+              onKeepBoth={() => void send(phase.file, { allowDuplicate: "1" })}
+              onCancel={() => setPhase({ kind: "idle" })}
+            />
+          ) : null}
+
           {phase.kind === "error" ? (
             <ErrorState
               error={phase.error}
@@ -249,6 +313,61 @@ export function UploadPanel({
         </div>
       )}
     </Panel>
+  );
+}
+
+/**
+ * A duplicate is a question, not a failure: the parse worked, and both answers
+ * are reasonable (a re-upload of a corrected syllabus, or two real sections).
+ * The file stays in the phase, so answering costs one click and not a trip back
+ * to the file picker.
+ */
+function DuplicateChoice({
+  duplicate,
+  fileName,
+  onReplace,
+  onKeepBoth,
+  onCancel,
+}: {
+  duplicate: DuplicateCourse;
+  fileName: string;
+  onReplace: () => void;
+  onKeepBoth: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="rise rounded-lg border border-warn-line bg-warn-soft p-4"
+    >
+      <p className="flex items-start gap-2 text-[0.875rem] leading-relaxed font-medium text-ink">
+        <span className="mt-0.5 shrink-0 text-warn">
+          <AlertIcon width={15} height={15} />
+        </span>
+        <span>
+          You already have{" "}
+          <span className="font-mono text-[0.8125rem]">{duplicate.code}</span>
+          {duplicate.term ? ` (${duplicate.term})` : ""} — Replace it, or keep
+          both?
+        </span>
+      </p>
+      <p className="mt-1.5 pl-7 text-[0.75rem] leading-relaxed text-ink-soft">
+        Replacing deletes the old course and its items, then saves{" "}
+        <span className="break-all">{fileName}</span> in its place. Keeping both
+        leaves the existing course untouched.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2 pl-7">
+        <Button size="sm" onClick={onReplace}>
+          Replace it
+        </Button>
+        <Button size="sm" variant="secondary" onClick={onKeepBoth}>
+          Keep both
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 

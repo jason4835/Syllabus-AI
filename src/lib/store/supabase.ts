@@ -29,6 +29,7 @@ import type {
 } from "@/lib/types";
 import type { CalendarLink, Store, UserUpsert } from "@/lib/store";
 import { notionSessionLinkPrefix } from "@/lib/store";
+import { ASSESSMENT_KINDS } from "@/lib/validation";
 
 // -- Row shapes -------------------------------------------------------------
 // Hand-written rather than generated so the mapping stays visible at review
@@ -107,21 +108,13 @@ interface NotionLinkRow {
 /**
  * The `AssessmentKind` union as runtime data.
  *
- * Exported because it is the only such list in the codebase and a second copy
- * is how the API and the database drift apart: the check constraint in
- * supabase/schema.sql, the coercion below and `PATCH /api/assessments/[id]`'s
- * validation all have to name the same eight strings, so they all read this.
+ * Re-exported from `@/lib/validation`, which now owns the one copy: the check
+ * constraint in supabase/schema.sql, the coercion below and the assessment
+ * routes' validation all have to name the same eight strings, and a second
+ * literal is how the API and the database drift apart. The name stays exported
+ * here so existing importers do not have to care where it moved.
  */
-export const ASSESSMENT_KINDS: readonly AssessmentKind[] = [
-  "assignment",
-  "exam",
-  "quiz",
-  "project",
-  "reading",
-  "lab",
-  "presentation",
-  "other",
-];
+export { ASSESSMENT_KINDS };
 
 // -- Coercion helpers -------------------------------------------------------
 
@@ -230,6 +223,27 @@ function courseToRow(course: Course): CourseRow {
     policies: course.policies,
     created_at: course.createdAt,
   };
+}
+
+/**
+ * Partial patch -> partial row, explicit key by key. Only keys actually present
+ * are emitted, so an absent field means "leave alone" rather than "set to
+ * null". `id`, `user_id` and `created_at` are never emitted: they are identity,
+ * and re-assigning `user_id` would be an ownership escape.
+ */
+function coursePatchToRow(
+  patch: Partial<Course>,
+): Partial<Omit<CourseRow, "id" | "user_id" | "created_at">> {
+  const row: Partial<Omit<CourseRow, "id" | "user_id" | "created_at">> = {};
+  if (patch.code !== undefined) row.code = patch.code;
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.instructor !== undefined) row.instructor = patch.instructor;
+  if (patch.term !== undefined) row.term = patch.term;
+  if (patch.startDate !== undefined) row.start_date = patch.startDate;
+  if (patch.endDate !== undefined) row.end_date = patch.endDate;
+  // The parser-owned columns (meeting_times, grade_weights, policies) are
+  // intentionally absent: nothing a person types should overwrite them.
+  return row;
 }
 
 function assessmentToDomain(row: AssessmentRow): Assessment {
@@ -441,16 +455,33 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       fail("deleteCourse notion assessment links", assessmentError);
     }
 
-    // Session links can only be matched by prefix. Reading this user's session
-    // links and filtering in JS beats hand-assembling an N-clause PostgREST
-    // `or=(entity_id.like.*)` string, where one unescaped id would silently
-    // widen the delete.
+    await deleteNotionSessionLinks(userId, assessmentIds);
+  }
+
+  /**
+   * Drops the Notion links for study sessions belonging to `assessmentIds`.
+   *
+   * Session links can only be matched by prefix: the planner mints sessions as
+   * `sb_<assessmentId>_<n>` and never stores them, so there is no row to join
+   * against. Reading this user's session links and filtering in JS beats
+   * hand-assembling an N-clause PostgREST `or=(entity_id.like.*)` string, where
+   * one unescaped id would silently widen the delete.
+   *
+   * Shared by the course and single-assessment cascades so the two cannot
+   * drift apart from each other or from the planner.
+   */
+  async function deleteNotionSessionLinks(
+    userId: string,
+    assessmentIds: string[],
+  ): Promise<void> {
+    if (assessmentIds.length === 0) return;
+
     const { data, error } = await client
       .from("notion_links")
       .select("entity_id")
       .eq("user_id", userId)
       .eq("kind", "session");
-    if (error) fail("deleteCourse notion session links", error);
+    if (error) fail("notion session links", error);
 
     const prefixes = assessmentIds.map(notionSessionLinkPrefix);
     const orphaned = ((data ?? []) as { entity_id: string }[])
@@ -464,7 +495,23 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       .eq("user_id", userId)
       .eq("kind", "session")
       .in("entity_id", orphaned);
-    if (sessionError) fail("deleteCourse notion session links", sessionError);
+    if (sessionError) fail("notion session links", sessionError);
+  }
+
+  /** The single-assessment half of `deleteNotionLinksForCourse`. */
+  async function deleteNotionLinksForAssessment(
+    userId: string,
+    assessmentId: string,
+  ): Promise<void> {
+    const { error } = await client
+      .from("notion_links")
+      .delete()
+      .eq("user_id", userId)
+      .eq("kind", "assessment")
+      .eq("entity_id", assessmentId);
+    if (error) fail("deleteAssessment notion assessment link", error);
+
+    await deleteNotionSessionLinks(userId, [assessmentId]);
   }
 
   return {
@@ -656,6 +703,33 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       };
     },
 
+    async updateCourse(userId, id, patch) {
+      const rowPatch = coursePatchToRow(patch);
+      if (Object.keys(rowPatch).length === 0) {
+        // Nothing to write, but the caller still needs the ownership answer.
+        const { data, error } = await client
+          .from("courses")
+          .select("*")
+          .eq("id", id)
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (error && error.code !== NO_ROWS) fail("updateCourse read", error);
+        return data ? courseToDomain(data as CourseRow) : null;
+      }
+
+      // The user_id predicate IS the ownership check: another user's id matches
+      // no rows, so the update is a no-op that reports "not found".
+      const { data, error } = await client
+        .from("courses")
+        .update(rowPatch)
+        .eq("id", id)
+        .eq("user_id", userId)
+        .select("*")
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("updateCourse", error);
+      return data ? courseToDomain(data as CourseRow) : null;
+    },
+
     async deleteCourse(userId, courseId) {
       // Read the assessment ids BEFORE the delete: `on delete cascade` takes
       // the assessment rows with the course, and the Notion links keyed on them
@@ -699,6 +773,43 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return ((data ?? []) as AssessmentRow[]).map(assessmentToDomain);
     },
 
+    async createAssessment(userId, courseId, assessment) {
+      // Ownership lives on the course, so it is proven before the insert --
+      // there is no transaction to roll back afterwards.
+      const { data: course, error: courseError } = await client
+        .from("courses")
+        .select("id")
+        .eq("id", courseId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (courseError && courseError.code !== NO_ROWS) {
+        fail("createAssessment ownership", courseError);
+      }
+      if (!course) return null;
+
+      const row: Assessment = {
+        id: randomUUID(),
+        courseId,
+        title: assessment.title,
+        kind: assessment.kind,
+        dueDate: assessment.dueDate,
+        dueTime: assessment.dueTime,
+        weightPercent: assessment.weightPercent,
+        sourceText: assessment.sourceText,
+        confidence: assessment.confidence,
+        reviewedAt: assessment.reviewedAt,
+        notes: assessment.notes,
+      };
+
+      const { data, error } = await client
+        .from("assessments")
+        .insert(assessmentToRow(row))
+        .select("*")
+        .single();
+      if (error) fail("createAssessment", error);
+      return assessmentToDomain(data as AssessmentRow);
+    },
+
     async updateAssessment(userId, id, patch) {
       const owned = await ownedAssessment(userId, id);
       if (!owned) return null;
@@ -714,6 +825,28 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .single();
       if (error) fail("updateAssessment", error);
       return assessmentToDomain(data as AssessmentRow);
+    },
+
+    async deleteAssessment(userId, id) {
+      const owned = await ownedAssessment(userId, id);
+      // Not-yours and not-there are the same answer, as everywhere else.
+      if (!owned) return false;
+
+      const { data, error } = await client
+        .from("assessments")
+        .delete()
+        .eq("id", id)
+        .select("id");
+      if (error) fail("deleteAssessment", error);
+      if (((data ?? []) as { id: string }[]).length === 0) return false;
+
+      // `calendar_links.assessment_id` has `on delete cascade` (schema.sql), so
+      // the link went with the row. `notion_links.entity_id` carries no foreign
+      // key -- it mixes course, assessment and planner-minted session ids in one
+      // column -- so nothing cascades there and both kinds are cleared by hand,
+      // only after the delete succeeded.
+      await deleteNotionLinksForAssessment(userId, id);
+      return true;
     },
 
     async getCalendarLink(assessmentId) {
