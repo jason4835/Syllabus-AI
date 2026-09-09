@@ -247,3 +247,63 @@
   );
   background-size: 5px 5px;
 }
+
+/* ---------------------------------------------------------------------------
+   Legal pages
+   Plain long-form prose for /privacy and /terms. Scoped to `.legal` so it
+   cannot leak into the app's own dense layouts.
+--------------------------------------------------------------------------- */
+
+.legal {
+  color: var(--color-ink-soft);
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.legal h2 {
+  margin-top: 2.25rem;
+  margin-bottom: 0.75rem;
+  font-family: var(--font-serif, ui-serif, Georgia, serif);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.legal p,
+.legal ul {
+  margin-bottom: 1rem;
+}
+
+.legal ul {
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+
+.legal li {
+  margin-bottom: 0.5rem;
+}
+
+.legal strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.legal a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal a:hover {
+  color: var(--color-accent-hover);
+}
+
+.legal code {
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+  background: var(--color-sunken);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}

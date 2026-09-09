@@ -5,11 +5,11 @@ import "./globals.css";
 /**
  * Absolute base for OG/Twitter image URLs. Unfurlers (iMessage, Slack, X,
  * LinkedIn, Discord) drop relative `og:image` values, so this has to resolve —
- * `APP_URL` when the host sets it, the Railway origin otherwise.
+ * `APP_URL` when the host sets it, the production domain otherwise.
  */
 const metadataBase = new URL(
   (process.env.APP_URL ?? "").trim().replace(/\/+$/, "") ||
-    "https://syllabus-ai-production.up.railway.app",
+    "https://syllabuscenter.com",
 );
 
 const DESCRIPTION =

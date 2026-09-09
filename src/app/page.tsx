@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { HeroPreview } from "@/components/landing/hero-preview";
+import { SiteFooter } from "@/components/site-footer";
 import { LinkButton } from "@/components/ui/button";
 import {
   ArrowRightIcon,
@@ -228,50 +229,7 @@ export default function LandingPage() {
         </section>
       </main>
 
-      <footer className="border-t border-line bg-paper">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <Logo />
-            <div>
-              <p className="font-serif text-[0.9375rem] font-semibold text-ink">
-                Syllabus AI
-              </p>
-              <p className="text-[0.75rem] text-muted">
-                A study system that keeps up with the semester.
-              </p>
-            </div>
-          </div>
-          <nav aria-label="Footer" className="flex flex-wrap gap-x-6 gap-y-2 text-[0.8125rem] text-muted">
-            <a href="/dashboard" className="rounded-sm hover:text-ink">
-              Dashboard
-            </a>
-            <a href="#how-it-works" className="rounded-sm hover:text-ink">
-              How it works
-            </a>
-            <a href="#why" className="rounded-sm hover:text-ink">
-              Why it holds up
-            </a>
-            {/*
-              AGPL-3.0 section 13: anyone interacting with a hosted instance
-              must be able to get the source. This link is how that obligation
-              is met, so keep it reachable on any deployment.
-            */}
-            <a
-              href="https://github.com/jason4835/Syllabus-AI"
-              className="rounded-sm hover:text-ink"
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              Source
-            </a>
-          </nav>
-          <p className="text-[0.75rem] text-muted">
-            Built for students who feel behind by week three.
-            <br />
-            &copy; 2026 Jason Paz &middot; AGPL-3.0
-          </p>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }
