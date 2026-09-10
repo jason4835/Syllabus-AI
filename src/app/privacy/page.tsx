@@ -4,7 +4,7 @@ import { LegalPage } from "@/components/legal-page";
 export const metadata: Metadata = {
   title: "Privacy Policy",
   description:
-    "What Syllabus AI collects, what it sends to Google, OpenAI and Notion, how long it keeps anything, and how to delete all of it.",
+    "What Syllabus Center collects, what it sends to Google, OpenAI and Notion, how long it keeps anything, and how to delete all of it.",
 };
 
 const CONTACT = "jaappaz7@gmail.com";
@@ -13,7 +13,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage title="Privacy Policy" updated="September 9, 2026">
       <p>
-        Syllabus AI (&ldquo;the app&rdquo;), operated at syllabuscenter.com, turns
+        Syllabus Center (&ldquo;the app&rdquo;), operated at syllabuscenter.com, turns
         syllabus PDFs into a semester plan and puts it on your calendar. This
         policy describes exactly what it collects, who it sends data to, and how
         to get rid of all of it. It is written to be read, not to be survived.
@@ -76,7 +76,7 @@ export default function PrivacyPage() {
       </p>
       <p>
         The calendar scope is used for one purpose: creating and maintaining a
-        dedicated secondary calendar named &ldquo;Syllabus AI&rdquo; in your
+        dedicated secondary calendar named &ldquo;Syllabus Center&rdquo; in your
         account, and the deadlines, study sessions and class meetings inside it.
         The app writes only to that calendar. It never modifies your primary
         calendar or any other calendar, and it never deletes a calendar unless
@@ -84,7 +84,7 @@ export default function PrivacyPage() {
       </p>
       <p>
         <strong>
-          Syllabus AI&rsquo;s use and transfer of information received from
+          Syllabus Center&rsquo;s use and transfer of information received from
           Google APIs to any other app will adhere to the{" "}
           <a
             href="https://developers.google.com/terms/api-services-user-data-policy"
@@ -146,7 +146,7 @@ export default function PrivacyPage() {
       <p>
         Two deliberate exceptions: the app <strong>never</strong> deletes pages in
         your Notion workspace, because those are your notes; and it removes the
-        &ldquo;Syllabus AI&rdquo; Google calendar only if you tick that box while
+        &ldquo;Syllabus Center&rdquo; Google calendar only if you tick that box while
         deleting. You can also download everything the app holds about you as
         JSON from the same panel, or disconnect Google or Notion individually
         without deleting your account. Revoking access from{" "}

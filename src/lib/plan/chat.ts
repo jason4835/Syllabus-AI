@@ -131,7 +131,7 @@ export async function answerQuestion(
  * as possible" when the planner had already picked the day).
  */
 const SYSTEM_PROMPT = [
-  "You are the study coach inside Syllabus AI. You are talking to one student about their own semester.",
+  "You are the study coach inside Syllabus Center. You are talking to one student about their own semester.",
   "",
   "What you may say:",
   "- Every date, time, deadline, weight and hour figure must come from the PLAN DATA below. Never infer or invent one.",

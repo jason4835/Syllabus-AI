@@ -1,4 +1,4 @@
-# Syllabus AI
+# Syllabus Center
 
 **Upload your syllabus. Let AI organize your semester in 60 seconds.**
 
@@ -14,7 +14,7 @@ every semester.
 2. **Upload a syllabus PDF** — AI extracts courses, assignments, exams, due dates, grading weights, and key policies.
 3. **Check what it found** — anything extracted with low confidence is flagged; one click confirms it, and every item can be edited, added, or deleted right in the list. Course details and term dates are editable too, and re-uploading a syllabus asks whether to replace the old one. Fixes flow into the plan and the next calendar or Notion sync.
 4. **Get a semester roadmap** — week-by-week workload with recommended study blocks.
-5. **Sync to Google Calendar** — deadlines, study sessions, and your class meetings land on a dedicated "Syllabus AI" calendar, not your primary one. Classes are recurring events that skip the holidays and breaks your syllabus names, and stop after the last day of classes. Exams and quizzes are placed at their stated time for their stated length; assignments get a block ending at the deadline. You choose what goes in — class meetings, recitations and labs, office hours, deadlines, study sessions — and a re-sync removes anything that no longer applies.
+5. **Sync to Google Calendar** — deadlines, study sessions, and your class meetings land on a dedicated "Syllabus Center" calendar, not your primary one. Classes are recurring events that skip the holidays and breaks your syllabus names, and stop after the last day of classes. Exams and quizzes are placed at their stated time for their stated length; assignments get a block ending at the deadline. You choose what goes in — class meetings, recitations and labs, office hours, deadlines, study sessions — and a re-sync removes anything that no longer applies.
 6. **Or subscribe from any calendar** — a private feed URL for Apple Calendar, Outlook, or anything that takes a subscription.
 7. **Get a Notion page per class** — connect Notion and every upload also produces a finished class page (course info, grading, schedule, policies) plus Assignments and Study Sessions databases you can view as a calendar. Nobody builds a Notion setup by hand again.
 
@@ -128,7 +128,7 @@ Two design choices worth naming:
   real spend ceiling is the hard limit you set on your OpenAI account.
 - Account deletion is total and immediate (courses, deadlines, plan, calendar
   and Notion links, the account itself). It never deletes Notion pages, and
-  removes the Google "Syllabus AI" calendar only if the user ticks that box.
+  removes the Google "Syllabus Center" calendar only if the user ticks that box.
 - When a syllabus states no term dates, week numbering is *inferred* from its
   term label ("Fall 2026" → late August start) and the heatmap says so. With
   neither dates nor a label, weeks are anchored to the first deadline.

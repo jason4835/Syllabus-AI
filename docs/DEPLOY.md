@@ -1,4 +1,4 @@
-# Deploying Syllabus AI
+# Deploying Syllabus Center
 
 A checklist for the first real deploy — the one where other people sign in with
 their own Google accounts and upload their own syllabi.
@@ -264,7 +264,7 @@ https://www.googleapis.com/auth/calendar
 ```
 
 That last one is full read-write Calendar access — the code takes it rather than
-`calendar.events` because creating the dedicated "Syllabus AI" calendar requires
+`calendar.events` because creating the dedicated "Syllabus Center" calendar requires
 it. Google classes it as a **sensitive scope**, which is what puts the app under
 the verification regime.
 
@@ -503,7 +503,7 @@ Run this against the live URL, in order, before you send the link to anyone.
    `created` > 0 and an empty `errors` array.
 
 8. **Check the calendar — and check the times.** In Google Calendar, a new
-   calendar named **Syllabus AI** should have appeared in the left sidebar, with
+   calendar named **Syllabus Center** should have appeared in the left sidebar, with
    your deadlines and study blocks in it. Your primary calendar must be
    untouched.
 
@@ -548,7 +548,7 @@ Run this against the live URL, in order, before you send the link to anyone.
 
 ### Also worth checking once
 
-- **Class meetings** — after a Google sync, the "Syllabus AI" calendar should
+- **Class meetings** — after a Google sync, the "Syllabus Center" calendar should
   show recurring class events for each meeting pattern, with no event on the
   holidays and breaks the syllabus names (Labor Day, Thanksgiving, after the
   last day of classes). A syllabus that mentions no breaks gets every week.
@@ -566,7 +566,7 @@ Run this against the live URL, in order, before you send the link to anyone.
 
 Paste this, edited for your voice:
 
-> **Syllabus AI — please break it**
+> **Syllabus Center — please break it**
 >
 > Upload a course syllabus (PDF) and it pulls out your assignments, exams, due
 > dates and grading weights, builds a week-by-week workload view, and can push
@@ -574,14 +574,14 @@ Paste this, edited for your voice:
 >
 > **It will ask for Google access, including Calendar.** It needs Calendar
 > permission to create events — that's the whole feature. It creates a **separate
-> calendar called "Syllabus AI"** and writes only there. It never touches your
+> calendar called "Syllabus Center"** and writes only there. It never touches your
 > primary calendar, and you can hide or delete the whole calendar in one click if
 > you hate it.
 >
 > **You will see a scary "Google hasn't verified this app" warning.** That is
 > expected. It's not a scam and it's not a virus — it means I haven't finished
 > Google's app-verification process yet, which takes weeks and isn't worth it for
-> a test. Click **Advanced**, then **Go to Syllabus AI (unsafe)**. If you're not
+> a test. Click **Advanced**, then **Go to Syllabus Center (unsafe)**. If you're not
 > comfortable with that, no hard feelings, don't.
 >
 > Two other things: I have to add your Google address to a list before you can
@@ -627,7 +627,7 @@ limits** in `README.md`.
   instance count, and are not shared between environments. They are not a spend
   ceiling. The OpenAI dashboard cap is. Step 5.
 - **The global backstop is shared.** If one tester exhausts the 1000/day OpenAI
-  budget, everyone else gets "Syllabus AI has reached its shared daily usage
+  budget, everyone else gets "Syllabus Center has reached its shared daily usage
   cap" until it resets.
 
 **Sync**
@@ -641,7 +641,7 @@ limits** in `README.md`.
   in the `skipped` count and stay in the dashboard for manual dating.
 - **Deleting a course does not remove its Google events.** The cascade cleans up
   assessments and calendar links in the database; the events already on the
-  user's calendar stay until they delete the "Syllabus AI" calendar themselves.
+  user's calendar stay until they delete the "Syllabus Center" calendar themselves.
 
 **Accounts and data**
 
@@ -650,7 +650,7 @@ limits** in `README.md`.
   Rotating `SESSION_SECRET` is the only mass logout available.
 - Account deletion and data export live in the dashboard's Account panel.
   Deletion is total on our side; it never touches Notion pages and removes
-  the Google "Syllabus AI" calendar only when the user asks.
+  the Google "Syllabus Center" calendar only when the user asks.
 - **Google refresh tokens are stored in plaintext** in
   `users.google_refresh_token`. The column is never selected into anything
   client-facing and access tokens are never persisted, so a leaked row expires

@@ -16,7 +16,7 @@ build a self-contained hub underneath it:
 
 ```
 <page the user shared>
-└── 📚 Syllabus AI                       hub page, created once
+└── 📚 Syllabus Center                       hub page, created once
     ├── Courses          (database)     one row per class — the "class page"
     ├── Assignments      (database)     one row per deadline, related to Courses
     └── Study Sessions   (database)     one row per planned block, related to both
@@ -40,7 +40,7 @@ The body is the deliverable — what the student would otherwise spend an evenin
 making:
 
 ```
-💡 Synced from Syllabus AI on Sep 2. Properties stay current on re-sync;
+💡 Synced from Syllabus Center on Sep 2. Properties stay current on re-sync;
    everything below the divider is yours and is never touched.
 
 ## Course info
@@ -87,7 +87,7 @@ it. Status ("Done") lives in exactly one place — the Assignments row.
 | Term | rich_text | `Fall 2026` |
 | Dates | date (range) | term start → end |
 | Meets | rich_text | `MWF 10:00–10:50 · Hayes 210` |
-| Syllabus AI ID | rich_text | our course id — recovery key if links are lost |
+| Syllabus Center ID | rich_text | our course id — recovery key if links are lost |
 
 **Assignments**
 
@@ -101,7 +101,7 @@ it. Status ("Done") lives in exactly one place — the Assignments row.
 | Status | select | Not started · In progress · Done — set to "Not started" on create |
 | Est. hours | number | the planner's estimate, so the row explains its own cost |
 | Needs review | checkbox | true when extraction confidence < 0.6 |
-| Syllabus AI ID | rich_text | |
+| Syllabus Center ID | rich_text | |
 
 **Study Sessions**
 
@@ -113,7 +113,7 @@ it. Status ("Done") lives in exactly one place — the Assignments row.
 | When | date (start + end datetime) | |
 | Why | rich_text | the planner's rationale, verbatim |
 | Done | checkbox | |
-| Syllabus AI ID | rich_text | |
+| Syllabus Center ID | rich_text | |
 
 ### The calendar
 
@@ -255,7 +255,7 @@ success and a quiet, non-blocking note if Notion failed.
 - **Create Calendar views** — API limitation; one click for the user.
 - **Two-way sync.** Marking something Done in Notion does not flow back. The
   app is the source of truth for dates; Notion is the source of truth for
-  status. Pulling status back is the obvious next step and the `Syllabus AI ID`
+  status. Pulling status back is the obvious next step and the `Syllabus Center ID`
   property on every row is what makes it possible.
 - **Delete the class page when a course is deleted here.** Disconnecting leaves
   Notion entirely untouched, and deleting a course leaves its class page where

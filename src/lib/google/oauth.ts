@@ -21,7 +21,7 @@ export type GoogleOAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 /**
  * `openid`/`email`/`profile` identify the student; `calendar` is the
  * read-write scope -- `calendar.events` alone would not let us create the
- * dedicated "Syllabus AI" calendar.
+ * dedicated "Syllabus Center" calendar.
  */
 const SCOPES = [
   "openid",

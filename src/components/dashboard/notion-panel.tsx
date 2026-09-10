@@ -28,7 +28,7 @@ export interface NotionStatus {
   connected: boolean;
   status: "connected" | "needs_parent" | "revoked" | null;
   workspaceName: string | null;
-  /** The "Syllabus AI" hub page, once built. */
+  /** The "Syllabus Center" hub page, once built. */
   hubUrl: string | null;
   needsParent: boolean;
   /** Pages the user shared during consent, when more than one came back. */
@@ -346,7 +346,7 @@ function ConnectState() {
     <div className="space-y-3">
       <p className="text-[0.875rem] leading-relaxed text-ink-soft">
         Connect Notion and you&rsquo;ll pick one page in your workspace for the
-        Syllabus AI hub to live under — a page per course, every deadline and
+        Syllabus Center hub to live under — a page per course, every deadline and
         every study session, built underneath it.
       </p>
       {/* A redirect, not a fetch: this has to be a real navigation. */}
@@ -425,7 +425,7 @@ function ParentPicker({
           Notion is connected, but no page was shared with the integration —
           every page we create needs a parent. In Notion, open the page the hub
           should live under, hit <strong>Share</strong>, and invite the{" "}
-          <strong>Syllabus AI</strong> integration. Then check again.
+          <strong>Syllabus Center</strong> integration. Then check again.
         </Note>
         <Button variant="secondary" onClick={onRecheck}>
           Check again
@@ -438,7 +438,7 @@ function ParentPicker({
     <div className="space-y-3">
       <fieldset disabled={building} className="min-w-0">
         <legend className="mb-2 text-[0.875rem] leading-relaxed text-ink-soft">
-          Pick the page the Syllabus AI hub should live under.
+          Pick the page the Syllabus Center hub should live under.
         </legend>
         <ul className="space-y-2">
           {candidates.map((candidate) => (

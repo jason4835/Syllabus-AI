@@ -4,7 +4,7 @@
  * Two design decisions drive this file:
  *
  * 1. We never write to the user's primary calendar. Everything lands in a
- *    dedicated secondary calendar named "Syllabus AI", so a student can hide
+ *    dedicated secondary calendar named "Syllabus Center", so a student can hide
  *    or delete the whole thing in one click without collateral damage.
  *
  * 2. Sync is idempotent. Every event we create is recorded in the store
@@ -60,8 +60,30 @@ import type {
   StudyBlock,
 } from "@/lib/types";
 
-/** Summary we look the dedicated calendar up by, and create it with. */
-const CALENDAR_NAME = "Syllabus AI";
+/** Summary we create the dedicated calendar with, and show the student. */
+const CALENDAR_NAME = "Syllabus Center";
+
+/**
+ * Every summary this app has ever created a calendar under, current one first.
+ *
+ * The calendar is found by its name rather than by a stored id (see
+ * `findSyllabusCalendar`), which means renaming the product renames nothing on
+ * its own: a student who synced under an older name owns a calendar full of our
+ * events that a search for the new name can never match. That miss would not
+ * fail loudly -- `resolveCalendarId` would simply create a second calendar and
+ * write the entire semester into it again, leaving the first one duplicated on
+ * screen and orphaned beyond the reach of even account deletion.
+ *
+ * So a name we have used is never removed from this list. The one that is found
+ * gets renamed in place on the next sync, and a student who never syncs again
+ * keeps a calendar we can still recognise and still delete.
+ */
+const OWNED_CALENDAR_NAMES: readonly string[] = [CALENDAR_NAME, "Syllabus AI"];
+
+/** Is this calendar one of ours, under any name we have shipped? */
+function isOwnedCalendarName(summary: string | null | undefined): boolean {
+  return typeof summary === "string" && OWNED_CALENDAR_NAMES.includes(summary);
+}
 
 /**
  * Placeholder returned by a dry run. It is deliberately not a real calendar
@@ -438,11 +460,13 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The user's "Syllabus AI" calendar list entry, or null if they have none.
+ * The user's Syllabus Center calendar list entry, or null if they have none.
  *
  * We match on summary rather than storing the id because the user may delete
  * the calendar between syncs; looking it up every time means the next sync
- * quietly recreates it instead of failing.
+ * quietly recreates it instead of failing. Any name we have shipped counts, and
+ * the current name wins when a student somehow holds both -- see
+ * `OWNED_CALENDAR_NAMES`.
  *
  * Split out of `resolveCalendarId` so account deletion can ask the same
  * question without the create-on-miss half -- `deleteSyllabusCalendar` must
@@ -456,32 +480,59 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
 async function findSyllabusCalendar(
   api: calendar_v3.Calendar,
 ): Promise<calendar_v3.Schema$CalendarListEntry | null> {
+  let legacy: calendar_v3.Schema$CalendarListEntry | null = null;
   let pageToken: string | undefined;
   do {
     const list = await withRetry(() =>
       api.calendarList.list({ maxResults: 250, pageToken, showHidden: true }),
     );
     for (const entry of list.data.items ?? []) {
-      if (entry.summary === CALENDAR_NAME && entry.id) return entry;
+      if (!entry.id || !isOwnedCalendarName(entry.summary)) continue;
+      // The current name is the answer the moment it appears. An older one is
+      // remembered but not returned yet: a student who has both should have
+      // their events written to the calendar this build creates, not the one a
+      // previous build left behind.
+      if (entry.summary === CALENDAR_NAME) return entry;
+      legacy ??= entry;
     }
     pageToken = list.data.nextPageToken ?? undefined;
   } while (pageToken);
-  return null;
+  return legacy;
 }
 
-/** Finds the "Syllabus AI" calendar, creating it on first sync. */
+/** Finds the Syllabus Center calendar, creating it on first sync. */
 async function resolveCalendarId(
   api: calendar_v3.Calendar,
   timeZone: string,
 ): Promise<string> {
   const existing = await findSyllabusCalendar(api);
-  if (existing?.id) return existing.id;
+  if (existing?.id) {
+    // Found under a name we no longer use: rename it in place rather than
+    // stranding a semester of events in a calendar called something else.
+    // Best effort on purpose -- a student whose rename fails still gets their
+    // sync, into the same calendar as always, and the next sync tries again.
+    if (existing.summary !== CALENDAR_NAME) {
+      try {
+        await withRetry(() =>
+          api.calendars.patch({
+            calendarId: existing.id as string,
+            requestBody: { summary: CALENDAR_NAME },
+          }),
+        );
+      } catch {
+        // Deliberately swallowed: the calendar is still ours and still
+        // findable, because the old name stays in `OWNED_CALENDAR_NAMES`.
+      }
+    }
+    return existing.id;
+  }
 
   const created = await withRetry(() =>
     api.calendars.insert({
       requestBody: {
         summary: CALENDAR_NAME,
-        description: "Deadlines and study blocks synced from your syllabi by Syllabus AI.",
+        description:
+          "Deadlines and study blocks synced from your syllabi by Syllabus Center.",
         // A sensible default for the calendar itself. Events carry their own
         // zone regardless, so this is presentation, not correctness.
         timeZone,
@@ -489,7 +540,11 @@ async function resolveCalendarId(
     }),
   );
   const id = created.data.id;
-  if (!id) throw new Error('Google created the "Syllabus AI" calendar but returned no id.');
+  if (!id) {
+    throw new Error(
+      `Google created the "${CALENDAR_NAME}" calendar but returned no id.`,
+    );
+  }
   return id;
 }
 
@@ -499,7 +554,7 @@ async function resolveCalendarId(
 
 /**
  * Pushes assessments, study blocks and class meetings to the user's
- * "Syllabus AI" calendar, and removes the ones that should no longer be there.
+ * Syllabus Center calendar, and removes the ones that should no longer be there.
  *
  * The sync is a RECONCILIATION, not an append. It used to only ever insert and
  * patch, which meant nothing the app had put on a calendar could ever be taken
@@ -840,7 +895,7 @@ export async function deleteCalendarEvents(
 }
 
 /**
- * Removes the user's "Syllabus AI" calendar from their Google account. Returns
+ * Removes the user's Syllabus Center calendar from their Google account. Returns
  * false when there was none to remove.
  *
  * This is the ONLY destructive call this app makes against someone's Google
@@ -878,11 +933,13 @@ export async function deleteSyllabusCalendar(userId: string): Promise<boolean> {
       `Refusing to delete the primary Google calendar: the "${CALENDAR_NAME}" lookup returned it.`,
     );
   }
-  // Only a calendar carrying our exact name is ours to destroy. Anything else
-  // is a calendar the user made, or one we mis-identified.
-  if (entry.summary !== CALENDAR_NAME) {
+  // Only a calendar carrying one of our own names is ours to destroy. Anything
+  // else is a calendar the user made, or one we mis-identified. Older names
+  // count: a student who never re-synced after the rename still has a calendar
+  // we made, and "delete my data" has to be able to reach it.
+  if (!isOwnedCalendarName(entry.summary)) {
     throw new Error(
-      `Refusing to delete Google calendar "${entry.summary ?? "(unnamed)"}": only "${CALENDAR_NAME}" is ours to remove.`,
+      `Refusing to delete Google calendar "${entry.summary ?? "(unnamed)"}": only ${OWNED_CALENDAR_NAMES.map((n) => `"${n}"`).join(" or ")} is ours to remove.`,
     );
   }
 

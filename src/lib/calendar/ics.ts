@@ -24,7 +24,17 @@
 
 import { type CalendarEvent, addDays, expandAll, toUtc } from "@/lib/calendar/events";
 
-const PRODID = "-//Syllabus AI//Calendar Feed//EN";
+const PRODID = "-//Syllabus Center//Calendar Feed//EN";
+/**
+ * Half of every event's UID, and therefore frozen at the app's original name.
+ *
+ * Calendar clients match events across feed refreshes by UID: it is the only
+ * thing telling Google or Apple that the row it fetched today is the same
+ * meeting it already has. Changing this string would change every UID at once,
+ * and every subscribed calendar would drop the entire term and re-add it --
+ * silently losing anything a student had personally moved, coloured or set a
+ * reminder on. A brand is worth less than that, so this one stays.
+ */
 const UID_DOMAIN = "syllabus-ai";
 const CRLF = "\r\n";
 

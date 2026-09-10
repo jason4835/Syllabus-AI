@@ -46,7 +46,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
       // way "no office hours, please" can reach it.
       prefs: user.calendarPrefs ?? DEFAULT_CALENDAR_PREFS,
     });
-    const body = renderIcs(events, { name: "Syllabus AI", timeZone });
+    const body = renderIcs(events, { name: "Syllabus Center", timeZone });
 
     return new NextResponse(body, {
       status: 200,

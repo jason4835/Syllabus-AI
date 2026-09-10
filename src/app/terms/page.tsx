@@ -4,7 +4,7 @@ import { LegalPage } from "@/components/legal-page";
 export const metadata: Metadata = {
   title: "Terms of Service",
   description:
-    "The terms for using Syllabus AI: what it does, what it does not promise, and what you are responsible for.",
+    "The terms for using Syllabus Center: what it does, what it does not promise, and what you are responsible for.",
 };
 
 const CONTACT = "jaappaz7@gmail.com";
@@ -13,7 +13,7 @@ export default function TermsPage() {
   return (
     <LegalPage title="Terms of Service" updated="September 9, 2026">
       <p>
-        These terms cover your use of Syllabus AI (&ldquo;the app&rdquo;),
+        These terms cover your use of Syllabus Center (&ldquo;the app&rdquo;),
         operated at syllabuscenter.com. Using the app means you accept them.
       </p>
 
@@ -96,7 +96,7 @@ export default function TermsPage() {
 
       <h2>The software itself</h2>
       <p>
-        Syllabus AI is open source under the GNU Affero General Public License
+        Syllabus Center is open source under the GNU Affero General Public License
         v3.0. These terms cover the hosted service; the{" "}
         <a
           href="https://github.com/jason4835/Syllabus-AI"

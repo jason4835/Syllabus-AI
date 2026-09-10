@@ -367,9 +367,9 @@ const MESSAGES: Record<string, (wait: string) => string> = {
   "feed:token:burst": (wait) =>
     `This calendar feed is being fetched too often. Try again ${wait}.`,
   "global:openai:burst": (wait) =>
-    `Syllabus AI is handling a lot of requests right now. Try again ${wait}.`,
+    `Syllabus Center is handling a lot of requests right now. Try again ${wait}.`,
   "global:openai:daily": (wait) =>
-    `Syllabus AI has reached its shared daily usage cap. It resets ${wait}.`,
+    `Syllabus Center has reached its shared daily usage cap. It resets ${wait}.`,
 };
 
 /**

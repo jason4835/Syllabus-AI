@@ -13,26 +13,26 @@ const metadataBase = new URL(
 );
 
 const DESCRIPTION =
-  "Upload your syllabus PDFs. Syllabus AI extracts every assignment, exam and grading weight, builds a semester roadmap with a workload heatmap, and syncs it to your Google Calendar.";
+  "Upload your syllabus PDFs. Syllabus Center extracts every assignment, exam and grading weight, builds a semester roadmap with a workload heatmap, and syncs it to your Google Calendar.";
 
 export const metadata: Metadata = {
   metadataBase,
   title: {
-    default: "Syllabus AI — organize your semester in 60 seconds",
-    template: "%s · Syllabus AI",
+    default: "Syllabus Center — organize your semester in 60 seconds",
+    template: "%s · Syllabus Center",
   },
   description: DESCRIPTION,
-  applicationName: "Syllabus AI",
+  applicationName: "Syllabus Center",
   openGraph: {
-    title: "Syllabus AI — organize your semester in 60 seconds",
+    title: "Syllabus Center — organize your semester in 60 seconds",
     description: DESCRIPTION,
-    siteName: "Syllabus AI",
+    siteName: "Syllabus Center",
     type: "website",
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Syllabus AI — organize your semester in 60 seconds",
+    title: "Syllabus Center — organize your semester in 60 seconds",
     description: DESCRIPTION,
   },
   // Icons come from the `icon.svg` / `apple-icon.tsx` file conventions.

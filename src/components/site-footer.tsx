@@ -15,7 +15,8 @@ export function SiteFooter({ variant = "landing" }: { variant?: "landing" | "pla
           <Logo />
           <div>
             <p className="font-serif text-[0.9375rem] font-semibold text-ink">
-              Syllabus AI
+              Syllabus{" "}
+              <span className="font-normal text-ink-soft">Center</span>
             </p>
             <p className="text-[0.75rem] text-muted">
               A study system that keeps up with the semester.

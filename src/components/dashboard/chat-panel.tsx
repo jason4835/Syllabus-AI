@@ -160,7 +160,7 @@ export function ChatPanel({ openaiReady }: { openaiReady: boolean }) {
                     }`}
                   >
                     <span className="sr-only">
-                      {message.role === "user" ? "You said: " : "Syllabus AI replied: "}
+                      {message.role === "user" ? "You said: " : "Syllabus Center replied: "}
                     </span>
                     {message.content}
                   </div>

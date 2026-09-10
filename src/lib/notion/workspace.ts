@@ -48,11 +48,16 @@ import type { NotionConnection } from "@/lib/types";
 
 /**
  * The hub's icon and title render together in Notion's sidebar as
- * "📚 Syllabus AI" -- the emoji is an icon, not part of the title text, so the
- * title stays searchable and copy-pastable.
+ * "📚 Syllabus Center" -- the emoji is an icon, not part of the title text, so
+ * the title stays searchable and copy-pastable.
+ *
+ * Safe to rename for the same reason `ASSIGNMENTS_DB_TITLE` was: the hub is
+ * found by stored id (`pages.retrieve`), never by title, and the title is only
+ * ever written at creation. An existing workspace keeps the name Notion already
+ * shows and loses nothing; new ones get this one.
  */
 const HUB_ICON = "\u{1F4DA}";
-export const HUB_TITLE = "Syllabus AI";
+export const HUB_TITLE = "Syllabus Center";
 
 export const COURSES_DB_TITLE = "Courses";
 /**
@@ -76,11 +81,28 @@ type DatabaseProperties = NonNullable<
   NonNullable<CreateDatabaseParameters["initial_data_source"]>["properties"]
 >;
 
-/** Every row in every database carries this, so links can be rebuilt from Notion. */
+/**
+ * Every row in every database carries this, so links can be rebuilt from Notion.
+ *
+ * The one name in this file that deliberately did NOT follow the product's
+ * rename to Syllabus Center. Unlike the titles above, this string is a write
+ * key: every row this app creates or updates sets a property *by this name*,
+ * and a database's schema is only ever applied at creation -- `ensureWorkspace`
+ * verifies an existing data source with a retrieve and never updates its
+ * properties. So renaming it here would leave every workspace built before the
+ * rename with a column called "Syllabus AI ID" while the code wrote
+ * "Syllabus Center ID", and Notion rejects a write naming a property that does
+ * not exist. Every sync for every existing user would fail.
+ *
+ * It is an internal key the student is told not to edit, so the stale brand
+ * costs a column heading and buys a working integration. Changing it means
+ * reading each data source's actual schema and writing whichever name it has --
+ * a real migration, not a rename.
+ */
 const SYLLABUS_ID_PROPERTY: DatabaseProperties = {
   "Syllabus AI ID": {
     rich_text: {},
-    description: "Syllabus AI's own id for this item. Do not edit.",
+    description: "Syllabus Center's own id for this item. Do not edit.",
   },
 };
 
@@ -295,7 +317,9 @@ export async function ensureWorkspace(conn: NotionConnection): Promise<NotionCon
   }
 
   const hubPageId = next.hubPageId;
-  if (!hubPageId) throw new Error("Notion created the Syllabus AI hub page but returned no id.");
+  if (!hubPageId) {
+    throw new Error(`Notion created the ${HUB_TITLE} hub page but returned no id.`);
+  }
 
   /* --- Courses --- */
   let coursesOk = false;

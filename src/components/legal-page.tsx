@@ -23,7 +23,7 @@ export function LegalPage({
           <a href="/" className="flex items-center gap-2.5 rounded-sm">
             <Logo />
             <span className="font-serif text-[1.0625rem] font-semibold text-ink">
-              Syllabus AI
+              Syllabus Center
             </span>
           </a>
         </div>

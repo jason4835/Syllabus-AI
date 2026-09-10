@@ -1,5 +1,5 @@
 /**
- * Structured logging for Syllabus AI.
+ * Structured logging for Syllabus Center.
  *
  * Routes answer failures with a polite `ApiResult` and then forget them. That
  * is fine for the student and useless for whoever has to fix it, so every

@@ -163,7 +163,7 @@ export function AccountPanel({
 
     const me = meResult.ok ? meResult.data : null;
     const payload = {
-      app: "Syllabus AI",
+      app: "Syllabus Center",
       exportedAt: new Date().toISOString(),
       profile: me ? redactUser(me) : null,
       courses: coursesResult.ok ? coursesResult.data.courses : null,
@@ -211,7 +211,7 @@ export function AccountPanel({
       id="account"
       title="Account"
       icon={<PersonIcon width={17} height={17} />}
-      description="What Syllabus AI knows about you, how to take a copy, and how to erase it."
+      description="What Syllabus Center knows about you, how to take a copy, and how to erase it."
     >
       {loading && !user ? (
         <LoadingRegion label="Loading your account">
@@ -279,7 +279,7 @@ export function AccountPanel({
 
           <Section title="Your data">
             <p className="text-[0.875rem] leading-relaxed text-ink-soft">
-              Syllabus AI stores your courses, the deadlines it extracted from
+              Syllabus Center stores your courses, the deadlines it extracted from
               each syllabus, the study plan built from them, and the links to
               the calendar events and Notion pages it created for you.
             </p>
@@ -351,7 +351,7 @@ export function AccountPanel({
                   This deletes your account and everything in it: every course,
                   every deadline extracted from your syllabi, your semester
                   plan, and the links to the calendar events and Notion pages
-                  Syllabus AI created. <strong>It cannot be undone.</strong>
+                  Syllabus Center created. <strong>It cannot be undone.</strong>
                 </p>
                 <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
                   Your Notion pages are never touched — they stay in your
@@ -366,7 +366,7 @@ export function AccountPanel({
                     disabled={deleting}
                     className="mt-0.5 h-4 w-4 shrink-0 accent-[color:var(--color-accent)]"
                   />
-                  Also remove the Syllabus AI calendar from Google
+                  Also remove the Syllabus Center calendar from Google
                 </label>
 
                 <div>

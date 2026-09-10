@@ -373,7 +373,7 @@ async function runOp(
     if (!client) return;
     const dataSourceId = dataSourceFor(conn, op.kind);
     if (!dataSourceId) {
-      throw new Error("the Syllabus AI workspace is not built yet");
+      throw new Error("the Syllabus Center workspace is not built yet");
     }
     const page = await client.pages.create({
       // 2025-09-03: rows are created against a data source, not a database.

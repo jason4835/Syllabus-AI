@@ -18,7 +18,7 @@ export async function GET() {
 export interface AccountDeletion {
   deleted: true;
   /**
-   * Whether the "Syllabus AI" calendar was actually removed from Google.
+   * Whether the "Syllabus Center" calendar was actually removed from Google.
    * False is a normal answer -- not asked for, no Google grant, nothing there,
    * or Google refused. The account is gone either way.
    */
@@ -29,7 +29,7 @@ export interface AccountDeletion {
  * Erases the account: every course, assessment, calendar link, Notion link and
  * the Notion connection, then the user row, then the session cookie.
  *
- * Optionally removes the "Syllabus AI" calendar from the user's Google account
+ * Optionally removes the "Syllabus Center" calendar from the user's Google account
  * first. Notion pages are never touched -- they are the student's own notes by
  * the time we would be deleting them (docs/NOTION.md).
  *

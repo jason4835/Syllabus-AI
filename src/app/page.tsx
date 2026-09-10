@@ -14,7 +14,7 @@ import {
 } from "@/components/icons";
 
 export const metadata: Metadata = {
-  title: "Syllabus AI — organize your semester in 60 seconds",
+  title: "Syllabus Center — organize your semester in 60 seconds",
 };
 
 const STEPS = [
@@ -66,7 +66,10 @@ export default function LandingPage() {
             className="flex items-center gap-2.5 rounded-md font-serif text-[1.0625rem] font-semibold tracking-tight text-ink"
           >
             <Logo />
-            Syllabus AI
+            <span>
+              Syllabus{" "}
+              <span className="font-normal text-ink-soft">Center</span>
+            </span>
           </a>
           <nav aria-label="Primary" className="flex items-center gap-1.5 sm:gap-2">
             <LinkButton href="/dashboard" variant="ghost" size="sm">

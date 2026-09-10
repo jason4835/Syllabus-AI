@@ -1,7 +1,7 @@
 /**
  * Class-page body and database-row builders. **Pure: no store, no network.**
  *
- * This file is the single definition of what a Syllabus AI page *looks like*.
+ * This file is the single definition of what a Syllabus Center page *looks like*.
  * Keeping it free of I/O means the layout can be asserted directly in a test
  * -- "does the grading table have one row per weight", "does every schedule
  * entry link to its assignment" -- without a Notion workspace, and it means
@@ -343,7 +343,7 @@ export function buildCoursePageBlocks(
     callout: {
       icon: { type: "emoji", emoji: "\u{1F4A1}" },
       rich_text: richText(
-        `Synced from Syllabus AI on ${syncedOn}. Properties stay current on re-sync; everything below the divider is yours and is never touched.`,
+        `Synced from Syllabus Center on ${syncedOn}. Properties stay current on re-sync; everything below the divider is yours and is never touched.`,
       ),
     },
   });

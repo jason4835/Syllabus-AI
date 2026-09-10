@@ -31,6 +31,6 @@ export async function POST(req: Request) {
     return ok(await buildNotionStatus(userId));
   } catch (err) {
     logApiError("notion.parent_failed", err, { userId, pageId });
-    return fail("Could not build the Syllabus AI hub in Notion.", 502, messageOf(err));
+    return fail("Could not build the Syllabus Center hub in Notion.", 502, messageOf(err));
   }
 }
