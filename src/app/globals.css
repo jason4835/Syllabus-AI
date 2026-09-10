@@ -38,7 +38,9 @@
   --color-line-strong: #d3ccbb;
   --color-ink: #1b1a16;
   --color-ink-soft: #494640;
-  --color-muted: #757066;
+  /* Muted type has to clear 4.5:1 on the *darkest* ground it lands on, not on
+     paper: at #757066 it measured 4.32 on raised and 4.14 on sunken. */
+  --color-muted: #6d6860;
 
   /* --- Accent (deep pine) ------------------------------------------------- */
   --color-accent: #1e5f4e;
@@ -58,9 +60,9 @@
 
   /* --- Workload ramp (0 calm .. 3 crunch) --------------------------------- */
   --color-track: #f2efe8;
-  --color-load-0: #bfb9a6;
-  --color-load-1: #8fb99c;
-  --color-load-2: #dda94f;
+  --color-load-0: #a49b83;
+  --color-load-1: #6a9a7a;
+  --color-load-2: #b8842e;
   --color-load-3: #bd5540;
 
   /* --- Per-course accents ------------------------------------------------- */
@@ -111,7 +113,7 @@
     --color-ok: #6cc9aa;
 
     --color-track: #1e1f19;
-    --color-load-0: #4d4f43;
+    --color-load-0: #63665a;
     --color-load-1: #4f8f6d;
     --color-load-2: #c2903f;
     --color-load-3: #bd5a44;
@@ -146,9 +148,9 @@
      * block above is unlayered, so it still wins in dark mode.
      */
     --color-track: #f2efe8;
-    --color-load-0: #bfb9a6;
-    --color-load-1: #8fb99c;
-    --color-load-2: #dda94f;
+    --color-load-0: #a49b83;
+    --color-load-1: #6a9a7a;
+    --color-load-2: #b8842e;
     --color-load-3: #bd5540;
   }
   @media (prefers-color-scheme: dark) {

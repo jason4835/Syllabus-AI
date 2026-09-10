@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import type { Course, MeetingKind, MeetingTime } from "@/lib/types";
 import { apiPatch } from "@/components/api-client";
-import { Button, Spinner } from "@/components/ui/button";
+import { Button, Spinner, TOUCH_TARGET } from "@/components/ui/button";
 import { CheckIcon } from "@/components/icons";
 import { MEETING_KIND_LABEL } from "@/components/labels";
 import {
@@ -537,8 +537,10 @@ export function CourseEditor({
                     aria-label={`Days meeting ${index + 1} happens`}
                     // Seven columns rather than a wrapping row: a week that
                     // breaks after Friday on a narrow phone stops reading as a
-                    // week at all.
-                    className="mt-1 grid max-w-64 grid-cols-7 gap-1"
+                    // week at all. The width cap only applies from `sm` up —
+                    // below it, 256px of a 343px column left each day 31px wide
+                    // for no reason.
+                    className="mt-1 grid grid-cols-7 gap-1 sm:max-w-64"
                   >
                     {DAY_INITIALS.map((initial, day) => {
                       const on = meeting.days.includes(day);
@@ -550,7 +552,7 @@ export function CourseEditor({
                           aria-label={DAY_NAMES[day]}
                           disabled={pending}
                           onClick={() => toggleDay(meeting.key, day)}
-                          className={`h-8 w-full rounded-md border text-[0.8125rem] font-medium transition-colors disabled:opacity-60 ${
+                          className={`h-8 w-full rounded-md border text-[0.8125rem] font-medium transition-colors disabled:opacity-60 [@media(pointer:coarse)]:h-11 ${
                             on
                               ? "border-accent bg-accent text-accent-on"
                               : "border-line-strong bg-surface text-muted hover:bg-raised hover:text-ink"
@@ -634,7 +636,7 @@ export function CourseEditor({
                     disabled={pending}
                     onClick={() => removeMeeting(meeting.key)}
                     aria-label={`Remove meeting ${index + 1}`}
-                    className="rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-raised hover:text-danger disabled:opacity-60"
+                    className={`inline-flex items-center justify-center rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-raised hover:text-danger disabled:opacity-60 ${TOUCH_TARGET}`}
                   >
                     Remove
                   </button>
@@ -649,7 +651,7 @@ export function CourseEditor({
             type="button"
             disabled={pending}
             onClick={addMeeting}
-            className="-ml-1.5 rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-surface hover:text-ink disabled:opacity-60"
+            className={`-ml-1.5 inline-flex items-center justify-center rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-surface hover:text-ink disabled:opacity-60 ${TOUCH_TARGET}`}
           >
             + Add meeting
           </button>

@@ -771,7 +771,7 @@ function MeetsLine({ course }: { course: Course }) {
       {/* Quieter than the class line on purpose: office hours are an option,
           not an obligation, and they are opt-in on the calendar too. */}
       {officeHours ? (
-        <p className="mt-0.5 text-[0.75rem] leading-snug text-muted opacity-75">
+        <p className="mt-0.5 text-[0.75rem] leading-snug text-muted">
           Office hours {officeHours}
         </p>
       ) : null}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import type { Assessment, Course, SemesterPlan, WeekLoad } from "@/lib/types";
 import { Panel } from "@/components/ui/panel";
 import { GridIcon, AlertIcon, InfoIcon } from "@/components/icons";
@@ -11,6 +12,7 @@ import { accentFor } from "@/components/course-accents";
 import {
   formatDateShort,
   formatHours,
+  formatHoursSpoken,
   formatWeekRange,
   mondayOf,
   pluralize,
@@ -21,7 +23,8 @@ import { INTENSITY_LABEL, intensityLabel } from "@/components/labels";
  * The signature visual. Each week is a column whose bar height is real
  * estimated hours and whose fill is the intensity band. Intensity is never
  * carried by color alone: the bar height, the printed hour count, and a
- * pattern (dots at "busy", hatching at "crunch") all say the same thing.
+ * pattern (fine rules at "calm", dots at "busy", hatching at "crunch") all say
+ * the same thing.
  */
 export function HeatmapPanel({
   loading,
@@ -161,27 +164,28 @@ export function HeatmapPanel({
                   8,
                   Math.round((week.estimatedHours / peak) * 100),
                 );
-                const pattern =
-                  week.intensity === 3
-                    ? "hatch"
-                    : week.intensity === 2
-                      ? "dotted"
-                      : "";
                 return (
                   <li key={week.weekStart} className="min-w-9 flex-1 sm:min-w-0">
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelected(isSelected ? null : week.weekStart)
-                      }
+                      // Sets, never toggles. A tap fires mouseenter (select)
+                      // and then click, so a toggle immediately undid itself
+                      // and the week snapped back — the signature visual's only
+                      // interaction was dead on every phone.
+                      onClick={() => setSelected(week.weekStart)}
                       onMouseEnter={() => setSelected(week.weekStart)}
-                      onFocus={() => setSelected(week.weekStart)}
+                      // Deliberately no onFocus: selecting on focus re-fired
+                      // the week-detail live region at all 17 tab stops, so
+                      // crossing the strip queued 17 full assessment lists.
+                      // Enter and Space still select, through onClick.
                       aria-pressed={isSelected}
                       aria-label={`Week ${week.weekNumber}, ${formatWeekRange(
                         week.weekStart,
-                      )}. ${intensityLabel(week.intensity)}, about ${formatHours(
-                        week.estimatedHours,
-                      )}.${week.warning ? ` Warning: ${week.warning}.` : ""}`}
+                      )}. ${intensityLabel(
+                        week.intensity,
+                      )}, about ${formatHoursSpoken(week.estimatedHours)}.${
+                        week.warning ? ` Warning: ${week.warning}.` : ""
+                      }`}
                       className={`group flex w-full flex-col items-center gap-1 rounded-md p-1 transition-colors ${
                         isSelected ? "bg-raised" : "hover:bg-raised"
                       }`}
@@ -196,10 +200,12 @@ export function HeatmapPanel({
                         }`}
                       >
                         <span
-                          className={`w-full rounded-[5px] transition-[height] duration-200 ${pattern}`}
+                          className={`w-full rounded-[5px] transition-[height] duration-200 ${patternClass(
+                            week.intensity,
+                          )}`}
                           style={{
                             height: `${height}%`,
-                            backgroundColor: `var(--color-load-${week.intensity})`,
+                            ...loadFill(week.intensity),
                           }}
                         />
                         {week.warning ? (
@@ -244,7 +250,6 @@ export function HeatmapPanel({
 }
 
 function Legend() {
-  const patterns = ["", "", "dotted", "hatch"];
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line pt-3">
       <span className="text-[0.6875rem] font-semibold tracking-[0.12em] text-muted uppercase">
@@ -257,8 +262,8 @@ function Legend() {
         >
           <span
             aria-hidden="true"
-            className={`h-3 w-5 rounded-sm ${patterns[index]}`}
-            style={{ backgroundColor: `var(--color-load-${index})` }}
+            className={`h-3 w-5 rounded-sm ${patternClass(index)}`}
+            style={loadFill(index)}
           />
           {label}
         </span>
@@ -308,10 +313,10 @@ function WeekDetail({
         <p className="flex items-center gap-2 text-[0.8125rem] text-ink-soft">
           <span
             aria-hidden="true"
-            className={`inline-block h-3 w-3 rounded-sm ${
-              week.intensity === 3 ? "hatch" : week.intensity === 2 ? "dotted" : ""
-            }`}
-            style={{ backgroundColor: `var(--color-load-${week.intensity})` }}
+            className={`inline-block h-3 w-3 rounded-sm ${patternClass(
+              week.intensity,
+            )}`}
+            style={loadFill(week.intensity)}
           />
           <span className="font-medium text-ink">
             {intensityLabel(week.intensity)}
@@ -354,6 +359,31 @@ function WeekDetail({
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The band's texture. "Busy" has had dots and "crunch" hatching from the
+ * start, but calm and steady were both flat and only 1.12:1 apart, so in
+ * greyscale — or to a deuteranope — they were one band. Calm now carries fine
+ * vertical rules of its own, which leaves each of the four visibly distinct
+ * with the color removed. Steady stays flat: giving *every* band a texture
+ * would make the strip read as noise.
+ *
+ * Calm's is written inline rather than as a utility because this file's two
+ * globals.css edits are spoken for; dots and hatch keep their utilities.
+ */
+function patternClass(intensity: number): string {
+  return intensity === 3 ? "hatch" : intensity === 2 ? "dotted" : "";
+}
+
+const CALM_RULES =
+  "repeating-linear-gradient(90deg, color-mix(in srgb, var(--color-surface) 62%, transparent) 0 1px, transparent 1px 4px)";
+
+function loadFill(intensity: number): CSSProperties {
+  return {
+    backgroundColor: `var(--color-load-${intensity})`,
+    ...(intensity === 0 ? { backgroundImage: CALM_RULES } : null),
+  };
+}
 
 /**
  * "8h study, 2h due" -- the two halves of the total, so a heavy week with no

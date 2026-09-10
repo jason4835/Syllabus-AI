@@ -6,7 +6,7 @@ import type { Assessment, AssessmentKind } from "@/lib/types";
 import { isSitting, needsReview } from "@/lib/types";
 import { apiDelete, apiPatch } from "@/components/api-client";
 import { Badge } from "@/components/ui/badge";
-import { Button, Spinner } from "@/components/ui/button";
+import { Button, Spinner, TOUCH_TARGET } from "@/components/ui/button";
 import { AlertIcon, CheckIcon } from "@/components/icons";
 import {
   formatDate,
@@ -23,8 +23,17 @@ const KINDS = Object.keys(KIND_LABEL) as AssessmentKind[];
  * the roadmap's add-item form. They share one control and one label so an
  * inline form always looks like the same thing wherever it opens.
  */
+/**
+ * 16px below `sm`, the app's 14px from `sm` up. iOS Safari zooms the page on
+ * focus for anything under 16px — including `date` and `time` — and the way out
+ * of that zoom is a pinch, so a two-field edit costs two pinches. The desktop
+ * density is unchanged.
+ *
+ * No `focus:outline-none`: the global `:focus-visible` ring is the app's focus
+ * indicator, and the accent border these used instead measured 1.56:1.
+ */
 export const FORM_INPUT =
-  "w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[0.875rem] text-ink placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-60";
+  "w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-base text-ink placeholder:text-muted focus:border-accent disabled:opacity-60 sm:text-[0.875rem]";
 export const FORM_LABEL = "block text-[0.75rem] font-medium text-muted";
 
 /** Exactly the fields `PATCH /api/assessments/[id]` accepts from the editor. */
@@ -164,6 +173,8 @@ export function AssessmentRow({
 }: AssessmentRowProps) {
   const fieldId = useId();
   const sourceId = `${fieldId}-source`;
+  const deleteTriggerId = `${fieldId}-delete`;
+  const deleteConfirmId = `${fieldId}-delete-confirm`;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => toDraft(assessment));
@@ -189,6 +200,24 @@ export function AssessmentRow({
   useEffect(() => {
     if (editing) titleRef.current?.focus();
   }, [editing]);
+
+  /**
+   * Focus follows the delete question, the way the account panel's does.
+   * Clicking Delete unmounts the trigger, so focus fell to `<body>` — and with
+   * it went the form's Escape handler, leaving the only way back a tab from the
+   * top of the page. Ids rather than refs because the shared `Button` takes no
+   * ref, and an effect rather than a callback because the button being focused
+   * only exists after the commit.
+   */
+  const wasConfirmingDelete = useRef(false);
+  useEffect(() => {
+    if (confirmingDelete && !wasConfirmingDelete.current) {
+      document.getElementById(deleteConfirmId)?.focus();
+    } else if (!confirmingDelete && wasConfirmingDelete.current) {
+      document.getElementById(deleteTriggerId)?.focus();
+    }
+    wasConfirmingDelete.current = confirmingDelete;
+  }, [confirmingDelete, deleteConfirmId, deleteTriggerId]);
 
   const editable = typeof onChanged === "function";
   const flagged = showConfidence && needsReview(assessment);
@@ -455,8 +484,10 @@ export function AssessmentRow({
                     </span>
                     <Button
                       type="button"
+                      id={deleteConfirmId}
                       size="sm"
                       variant="secondary"
+                      aria-label={`Yes, delete ${assessment.title}`}
                       disabled={pending !== null}
                       onClick={() => void remove()}
                       className="border-danger-line text-danger hover:bg-danger-soft"
@@ -470,6 +501,7 @@ export function AssessmentRow({
                       type="button"
                       size="sm"
                       variant="ghost"
+                      aria-label={`Keep ${assessment.title}`}
                       disabled={pending !== null}
                       onClick={() => setConfirmingDelete(false)}
                     >
@@ -479,8 +511,10 @@ export function AssessmentRow({
                 ) : (
                   <Button
                     type="button"
+                    id={deleteTriggerId}
                     size="sm"
                     variant="secondary"
+                    aria-label={`Delete ${assessment.title}`}
                     disabled={pending !== null}
                     onClick={() => setConfirmingDelete(true)}
                     className="border-danger-line text-danger hover:bg-danger-soft"
@@ -571,6 +605,7 @@ export function AssessmentRow({
                   type="button"
                   size="sm"
                   variant="secondary"
+                  aria-label={`Edit ${assessment.title}`}
                   disabled={pending !== null}
                   onClick={openEditor}
                 >
@@ -581,8 +616,9 @@ export function AssessmentRow({
                     type="button"
                     aria-expanded={showSource}
                     aria-controls={sourceId}
+                    aria-label={`${showSource ? "Hide" : "Show"} the syllabus line behind ${assessment.title}`}
                     onClick={() => setShowSource((open) => !open)}
-                    className="rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-warn transition-colors hover:bg-warn-line/40"
+                    className={`inline-flex items-center justify-center rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-warn transition-colors hover:bg-warn-line/40 ${TOUCH_TARGET}`}
                   >
                     {showSource ? "Hide source" : "Show source"}
                   </button>
@@ -619,8 +655,9 @@ export function AssessmentRow({
           <div className="mt-1">
             <button
               type="button"
+              aria-label={`Edit ${assessment.title}`}
               onClick={openEditor}
-              className={`-ml-1.5 rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:opacity-100 ${
+              className={`-ml-1.5 inline-flex items-center justify-center rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:opacity-100 ${TOUCH_TARGET} ${
                 coarsePointer
                   ? "opacity-100"
                   : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"

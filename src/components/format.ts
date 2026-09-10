@@ -145,10 +145,27 @@ export function mondayOf(value: string | Date | null): string | null {
   return `${monday.getFullYear()}-${month}-${day}`;
 }
 
+/**
+ * "2.8h" / "12h" / "0h" — the same bare unit every other hour figure on the
+ * dashboard uses, so a line can read "about 2.8h · 1.8h study, 1h due" instead
+ * of switching units mid-sentence.
+ */
 export function formatHours(hours: number): string {
-  if (!Number.isFinite(hours) || hours <= 0) return "0 hrs";
-  const rounded = hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
-  return `${rounded} ${rounded === 1 ? "hr" : "hrs"}`;
+  return `${roundHours(hours)}h`;
+}
+
+/**
+ * The same figure said aloud: "2.8 hours". A screen reader reads "2.8h" as
+ * "2.8 h", so anything going into an aria-label uses this instead.
+ */
+export function formatHoursSpoken(hours: number): string {
+  const rounded = roundHours(hours);
+  return pluralize(rounded, "hour");
+}
+
+function roundHours(hours: number): number {
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  return hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
 }
 
 export function formatPercent(value: number | null): string | null {
