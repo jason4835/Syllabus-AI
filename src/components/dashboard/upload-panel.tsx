@@ -11,10 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorState, Note } from "@/components/ui/states";
 import { AlertIcon, CheckIcon, FileIcon, UploadIcon } from "@/components/icons";
 import { AssessmentRow } from "@/components/dashboard/assessment-row";
-import {
-  SectionChooser,
-  needsSection,
-} from "@/components/dashboard/section-chooser";
+import { SectionChooser } from "@/components/dashboard/section-chooser";
+import { sectionGroups } from "@/lib/sections";
 import { formatPercent, pluralize } from "@/components/format";
 
 /** Mirrors the route's own limit, so the wording matches what the server says. */
@@ -529,8 +527,9 @@ function ExtractionResult({
 
         {/* Asked here, at the moment the syllabus is read, rather than left
             for the student to discover on a calendar full of other people's
-            classes. */}
-        {onCourseChanged && needsSection(course) ? (
+            classes. It stays after the last answer rather than vanishing: the
+            folded-down lines are the receipt for what was just chosen. */}
+        {onCourseChanged && sectionGroups(course).length > 0 ? (
           <div className="mt-3.5">
             <SectionChooser course={course} onChanged={onCourseChanged} />
           </div>

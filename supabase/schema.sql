@@ -1,4 +1,4 @@
--- Syllabus AI -- Postgres schema.
+-- Syllabus Center -- Postgres schema.
 --
 -- Dates are stored as `text`, not `date`/`timestamptz`, because the domain
 -- types in src/lib/types.ts are strings: a syllabus gives "2025-10-14" with no
@@ -39,6 +39,7 @@
 --   assessments.end_time          -- when a sitting ends, when the syllabus gave a range
 --   courses.no_class              -- term days when the class does not meet
 --   courses.section               -- the section the student picked, of the many listed
+--   courses.sections              -- one section per question the syllabus asks
 --   calendar_links.user_id        -- who a synced event belongs to
 --
 -- `calendar_links` also RESHAPED: its `assessment_id uuid` primary key became
@@ -119,12 +120,19 @@ create table if not exists public.courses (
   -- One entry per meeting the syllabus states, each carrying its own `kind`
   -- (lecture / recitation / lab / office_hours / other), `section` label and
   -- `instructor`. A big course's syllabus lists EVERY section, and they are all
-  -- kept: see `section` below for which one is the student's.
+  -- kept: see `sections` below for which ones are the student's.
   meeting_times  jsonb not null default '[]'::jsonb,
-  -- The section the student chose, matching one of the `section` labels in
-  -- meeting_times. Null until they choose -- and while a syllabus lists several
-  -- sections and this is null, no section-specific meeting is synced, because
-  -- guessing puts the student in someone else's classroom.
+  -- The sections the student chose, each matching a `section` label in
+  -- meeting_times. An ARRAY because a syllabus asks one question per meeting
+  -- kind, not one question overall: two lectures and three labs is a choice of
+  -- lecture AND a choice of lab, and the student attends one of each. While a
+  -- question is unanswered its meetings are not synced, because guessing puts
+  -- the student in someone else's classroom.
+  sections       jsonb not null default '[]'::jsonb,
+  -- The single answer this replaced. Kept, never written to again: reads fall
+  -- back to it as a one-element array (see `courseToDomain`), so a student who
+  -- had already picked their lecture keeps that answer and is simply asked the
+  -- lab question nobody ever put to them.
   section        text,
   -- Inclusive date ranges when the class does NOT meet -- holidays, recesses,
   -- and everything after the stated last day of classes. Drives which class
@@ -146,6 +154,13 @@ alter table public.courses
 -- before `kind`/`section`/`instructor` existed need no migration: meeting_times
 -- is jsonb, and every read completes them (`normalizeMeetingTimes`).
 alter table public.courses add column if not exists section text;
+
+-- Migration for databases created before `sections` existed. The legacy
+-- `section` column above is deliberately NOT dropped and NOT backfilled here:
+-- the read side folds it in (`section ? [section] : []`), so nobody's answer is
+-- lost and no migration has to run before the app is safe to deploy.
+alter table public.courses
+  add column if not exists sections jsonb not null default '[]'::jsonb;
 
 create index if not exists courses_user_id_idx on public.courses (user_id);
 
@@ -293,7 +308,7 @@ create table if not exists public.notion_connections (
   -- The page the user shared during consent; null until one is chosen, which
   -- is the whole point of the `needs_parent` status.
   parent_page_id     text,
-  -- The "Syllabus AI" hub page and its three databases. Null until built.
+  -- The "Syllabus Center" hub page and its three databases. Null until built.
   hub_page_id        text,
   hub_url            text,
   courses_db_id      text,

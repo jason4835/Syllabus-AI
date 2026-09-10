@@ -4,6 +4,7 @@ import { archiveNotionPages } from "@/lib/notion/sync";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { resolveSession } from "@/lib/session";
+import { reconcileSections } from "@/lib/sections";
 import { store } from "@/lib/store";
 import type { Course } from "@/lib/types";
 import { Invalid, validateCoursePatch } from "@/lib/validation";
@@ -19,6 +20,10 @@ export const dynamic = "force-dynamic";
  * -- so a student whose syllabus buried its dates gets a heatmap whose "week 1"
  * is wrong until they can type them in. Setting them here flips the plan's
  * `term.source` to `"syllabus"` and renumbers the weeks.
+ *
+ * It is also where a student answers "which section am I in?", which is the one
+ * field here that validation alone cannot settle: whether a label is real is a
+ * fact about THIS syllabus. See `reconcileSections` below.
  */
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { userId } = await resolveSession();
@@ -52,6 +57,22 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     } catch (err) {
       if (err instanceof Invalid) return fail("Invalid change.", 422, err.message);
       throw err;
+    }
+
+    if (patch.sections !== undefined) {
+      // Validation checked the shape; only the course itself can say whether
+      // these labels are real. Reconciling against the syllabus is what stops a
+      // stale or hand-made request enrolling someone in a section that does not
+      // exist, and what makes re-answering one question REPLACE that question's
+      // answer instead of piling a second lab on top of the first.
+      //
+      // Judged against the meeting times this same request is installing, when
+      // it carries them: a student correcting a mistyped lab label and picking
+      // that lab in one go must not have their pick rejected by the old list.
+      patch.sections = reconcileSections(
+        { ...current, meetingTimes: patch.meetingTimes ?? current.meetingTimes },
+        patch.sections,
+      );
     }
 
     const updated = await store.updateCourse(userId, id, patch);

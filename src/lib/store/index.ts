@@ -1,5 +1,5 @@
 /**
- * Storage facade for Syllabus AI.
+ * Storage facade for Syllabus Center.
  *
  * Routes never talk to Supabase or the filesystem directly: they talk to
  * `store`. That keeps the demo path (no keys, local JSON file) and the hosted
@@ -372,12 +372,14 @@ export interface Store {
    * `noClass` come from the parser and `createdAt`/`userId` are identity, so
    * none of them are reachable from an API body.
    *
-   * `section` and `meetingTimes` ARE reachable, because both are things only
+   * `sections` and `meetingTimes` ARE reachable, because both are things only
    * the student can settle. A syllabus for a big course lists every section
-   * and the extractor keeps them all; picking the one the student actually
-   * attends is `section`, and correcting a room or a time the extractor read
-   * wrong is `meetingTimes` -- a whole-array replace, since editing one entry
-   * of a list by index over HTTP is a race waiting to happen.
+   * and the extractor keeps them all; picking the ones the student actually
+   * attends -- one per question the syllabus asks -- is `sections`, and
+   * correcting a room or a time the extractor read wrong is `meetingTimes` --
+   * a whole-array replace, since editing one entry of a list by index over
+   * HTTP is a race waiting to happen. Both are replaced whole for the same
+   * reason; the route reconciles `sections` against the syllabus first.
    */
   updateCourse(
     userId: string,
@@ -391,7 +393,7 @@ export interface Store {
         | "term"
         | "startDate"
         | "endDate"
-        | "section"
+        | "sections"
         | "meetingTimes"
       >
     >,

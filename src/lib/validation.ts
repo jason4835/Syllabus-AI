@@ -62,6 +62,9 @@ export const COURSE_FIELD_KEYS = [
   "term",
   "startDate",
   "endDate",
+  "sections",
+  // The retired single-answer key, still accepted as an alias -- see
+  // `validateCoursePatch`.
   "section",
   "meetingTimes",
 ] as const;
@@ -236,7 +239,7 @@ export function collectAssessmentFields(
 
 /** Exactly what `store.updateCourse` accepts. */
 export type CoursePatch = Partial<
-  Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate" | "section" | "meetingTimes">
+  Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate" | "sections" | "meetingTimes">
 >;
 
 /**
@@ -273,7 +276,14 @@ export function validateCoursePatch(
   if ("endDate" in body) {
     patch.endDate = validateDateField(body.endDate, "endDate");
   }
-  if ("section" in body) patch.section = validateSection(body.section);
+  if ("sections" in body) patch.sections = validateSections(body.sections);
+  else if ("section" in body) {
+    // The shape this replaced sent one answer for the whole course. Still
+    // accepted, as the one-element array it always was, so a browser holding a
+    // page from the previous deploy is not answering into a void.
+    const one = validateSection(body.section);
+    patch.sections = one ? [one] : [];
+  }
   if ("meetingTimes" in body) patch.meetingTimes = validateMeetingTimes(body.meetingTimes);
 
   if (Object.keys(patch).length === 0) throw new Invalid("nothing to change");
@@ -303,6 +313,39 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function validateSection(value: unknown): string | null {
   return optionalText(value, "section", 40);
+}
+
+/**
+ * The most answers one course can hold: one per meeting kind, and there are
+ * five. Ten leaves room for a client that echoes a stale answer back alongside
+ * a new one -- the route reconciles the list against the syllabus anyway -- while
+ * still refusing a body that is trying to be a denial-of-service.
+ */
+const MAX_SECTIONS = 10;
+
+/**
+ * A student's answers to the section questions: labels, each naming a
+ * `MeetingTime.section` the syllabus states.
+ *
+ * Whether those labels EXIST is not checkable here -- this function has a body,
+ * not a course. The route reconciles the list against the syllabus
+ * (`reconcileSections`) before anything is stored, which is also what keeps a
+ * caller from enrolling in two labs at once.
+ */
+export function validateSections(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Invalid("sections must be an array");
+  if (value.length > MAX_SECTIONS) {
+    throw new Invalid(`sections: at most ${MAX_SECTIONS} sections`);
+  }
+  return value.map((raw, i) => {
+    const label = optionalText(raw, `sections[${i}]`, 40);
+    // `null` and "" are how a client CLEARS an answer, and clearing is one
+    // question's business, not the whole list's: an empty slot inside the array
+    // would silently mean something different depending on its position. To
+    // clear everything, send `[]`.
+    if (label === null) throw new Invalid(`sections[${i}] must not be empty`);
+    return label;
+  });
 }
 
 /**

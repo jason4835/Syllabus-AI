@@ -31,6 +31,7 @@ import type {
   StudyBlock,
 } from "@/lib/types";
 import { isSitting, needsReview } from "@/lib/types";
+import { meetingsForStudent, needsSection } from "@/lib/sections";
 
 /* -------------------------------------------------------------------------- */
 /* Model                                                                       */
@@ -108,10 +109,10 @@ export interface CalendarPlan {
   /** Planning-time problems, e.g. a malformed date. Never thrown. */
   errors: string[];
   /**
-   * Courses whose syllabus lists several sections while `course.section` is
-   * still null. Their section-specific meetings are all withheld -- see
-   * `buildMeetingEvents` -- and the UI uses this to ask which one the student
-   * is in. Distinct, in the order the courses were given.
+   * Courses with a section question the student has not answered yet -- a
+   * lecture group, a lab group, or both. The meetings belonging to each open
+   * group are withheld -- see `buildMeetingEvents` -- and the UI uses this to
+   * ask. Distinct, in the order the courses were given.
    */
   needsSection: string[];
 }
@@ -145,7 +146,7 @@ const REMINDER_ONE_DAY = 24 * 60;
 const REMINDER_ONE_WEEK = 7 * 24 * 60;
 const REMINDER_STUDY_BLOCK = 30;
 
-const PROVENANCE = "Created by Syllabus AI";
+const PROVENANCE = "Created by Syllabus Center";
 
 /** Body line for an assessment the user has not confirmed. See `needsReview`. */
 export const UNCONFIRMED_NOTE = "\u00b7 Unconfirmed \u2014 check your syllabus";
@@ -513,14 +514,6 @@ function meetingAllowedByPrefs(kind: MeetingKind, prefs: CalendarPrefs): boolean
   }
 }
 
-/**
- * A section label reduced to what two spellings of the same section share:
- * case and surrounding/inner whitespace. "b ", "B" and " b" are one section.
- */
-function normalizeSection(label: string): string {
-  return label.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
 /* -------------------------------------------------------------------------- */
 /* Building                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -561,27 +554,26 @@ export function inNoClassPeriod(date: string, course: Course): boolean {
  *  1. **Kind vs preferences.** Office hours are opt-in; recitations and labs
  *     travel together; lectures and unclassified meetings are "classes".
  *
- *  2. **Section gating**, the fix for the bug this module was rewritten for. A
- *     big course's syllabus lists every section, and syncing all of them put
- *     ten weekly series on one student's calendar. The rules:
+ *  2. **Section gating**, delegated wholesale to `@/lib/sections` so the
+ *     calendar, the study scheduler and the chooser cannot drift apart.
  *
- *     - Meetings with `section: null` -- office hours, and every meeting of a
- *       single-section course -- are NEVER gated. They apply to everyone.
- *     - One distinct label or none: nothing to choose between, include all.
- *       (Also the safe answer when a stale `course.section` names a section the
- *       syllabus no longer lists: the student still gets the one real series.)
- *     - Several labels and `course.section` chosen: only that section's
- *       meetings. Matched exactly first, then case- and whitespace-insensitively,
- *       so "b " off a form still finds "B".
- *     - Several labels and no choice yet: NOTHING section-specific, and the
- *       course is reported in `needsSection`. Guessing would put the student in
- *       someone else's classroom at someone else's hour, and an empty calendar
- *       asks a question a wrong calendar does not.
+ *     A syllabus asks one question PER MEETING KIND, not one question overall.
+ *     "LEC 01, LEC 02, LAB A, LAB B, LAB C" is a choice of lecture and a
+ *     separate choice of lab, and the student attends one of each. The flat
+ *     single-answer shape this replaced pooled all five into one list, so a
+ *     student who answered "LEC 01" was recorded as attending no lab at all and
+ *     every lab meeting silently vanished from their calendar.
+ *
+ *     `meetingsForStudent` applies the rule: unlabelled meetings and kinds that
+ *     offered no alternative always travel, an answered group contributes only
+ *     that answer's meetings, and an unanswered group contributes nothing --
+ *     guessing would put the student in someone else's classroom at someone
+ *     else's hour, and an empty slot asks a question a wrong slot does not.
  */
 export interface SelectedMeetings {
   /** The meetings to put on the calendar, with their original indices. */
   meetings: { meeting: MeetingTime; index: number }[];
-  /** True when the syllabus lists several sections and none is chosen yet. */
+  /** True while ANY of the syllabus's section questions is still unanswered. */
   needsSection: boolean;
 }
 
@@ -593,42 +585,22 @@ export interface SelectedMeetings {
  * One implementation, so the two cannot drift apart.
  */
 export function selectCourseMeetings(course: Course, prefs: CalendarPrefs): SelectedMeetings {
-  const all = course.meetingTimes ?? [];
-
-  const byPrefs = all
+  const byPrefs = (course.meetingTimes ?? [])
     .map((meeting, index) => ({ meeting, index }))
     .filter(({ meeting }) => meetingAllowedByPrefs(meetingKind(meeting), prefs));
 
-  // Labels are counted across EVERY meeting of the course, not just the ones
-  // preferences left standing: whether a syllabus lists several sections is a
-  // fact about the syllabus, and `needsSection` must not flicker when a student
-  // toggles office hours.
-  const labels = new Set<string>();
-  for (const m of all) {
-    const label = m.section?.trim();
-    if (label) labels.add(normalizeSection(label));
-  }
-  if (labels.size <= 1) return { meetings: byPrefs, needsSection: false };
+  // `meetingsForStudent` reads the WHOLE course, not the pref-filtered list, so
+  // membership is decided against the same set of options the chooser shows.
+  // Identity comparison is safe because it filters `course.meetingTimes` itself
+  // and hands back the very objects we are pairing with their indices.
+  const mine = new Set(meetingsForStudent(course));
 
-  const chosen = course.section?.trim();
-  if (!chosen) {
-    // Several sections, none chosen. Withhold the section-specific ones and say
-    // so; anything unsectioned still syncs.
-    return {
-      meetings: byPrefs.filter(({ meeting }) => !meeting.section?.trim()),
-      needsSection: true,
-    };
-  }
-
-  const chosenNormalized = normalizeSection(chosen);
   return {
-    meetings: byPrefs.filter(({ meeting }) => {
-      const label = meeting.section?.trim();
-      if (!label) return true; // applies to every section
-      if (meeting.section === course.section || label === chosen) return true;
-      return normalizeSection(label) === chosenNormalized;
-    }),
-    needsSection: false,
+    meetings: byPrefs.filter(({ meeting }) => mine.has(meeting)),
+    // Also computed across every meeting: whether a syllabus asks a question is
+    // a fact about the syllabus, so this must not flicker when a student toggles
+    // office hours off and the last labelled meeting leaves `byPrefs`.
+    needsSection: needsSection(course),
   };
 }
 

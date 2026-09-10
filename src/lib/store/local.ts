@@ -64,6 +64,14 @@ interface CalendarLinkRecord extends CalendarLink {
   updatedAt: string;
 }
 
+/**
+ * The pre-`sections` shape, still on disk in any database written by an older
+ * build: one answer for the whole course rather than one per question.
+ */
+interface LegacyCourseRecord extends Course {
+  section?: string | null;
+}
+
 /** The pre-`key` shape, still on disk in any database written by an older build. */
 interface LegacyCalendarLinkRecord extends CalendarLink {
   key?: string;
@@ -134,12 +142,22 @@ function normalizeAssessment(row: Assessment): Assessment {
  * meeting gained -- `kind`, `section`, `instructor` -- were added to rows that
  * already existed. A stored meeting with no `kind` is a lecture in the only
  * section, which is exactly what it meant when it was written.
+ *
+ * `sections` carries the one migration with a real consequence for a student.
+ * It replaced a single `section`, which could only ever hold one answer to what
+ * is really several questions -- so a student who picked their lecture was
+ * recorded as attending no lab at all. The old value is folded in as a
+ * one-element array rather than discarded: the lecture answer they gave still
+ * counts, and the lab question nobody ever put to them is simply asked now.
+ * Nothing writes `section` any more; it is read here and nowhere else.
  */
-function normalizeCourse(row: Course): Course {
+function normalizeCourse(row: LegacyCourseRecord): Course {
+  const legacy = row.section?.trim();
+  const { section: _legacySection, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     meetingTimes: normalizeMeetingTimes(row.meetingTimes),
-    section: row.section ?? null,
+    sections: Array.isArray(row.sections) ? row.sections : legacy ? [legacy] : [],
     noClass: Array.isArray(row.noClass) ? row.noClass : [],
   };
 }
@@ -200,7 +218,7 @@ async function readDatabase(): Promise<Database> {
         ? (shape.users as User[]).map(normalizeUser)
         : [],
       courses: Array.isArray(shape.courses)
-        ? (shape.courses as Course[]).map(normalizeCourse)
+        ? (shape.courses as LegacyCourseRecord[]).map(normalizeCourse)
         : [],
       assessments: Array.isArray(shape.assessments)
         ? (shape.assessments as Assessment[]).map(normalizeAssessment)
@@ -619,9 +637,9 @@ export function createLocalStore(): Store {
           startDate: parsed.course.startDate,
           endDate: parsed.course.endDate,
           meetingTimes: normalizeMeetingTimes(clone(parsed.course.meetingTimes ?? [])),
-          // Null from both parsers: which section is the student's is a fact
-          // about the student, and the upload flow has not asked yet.
-          section: parsed.course.section ?? null,
+          // Empty from both parsers: which sections are the student's is a
+          // fact about the student, and the upload flow has not asked yet.
+          sections: clone(parsed.course.sections ?? []),
           noClass: clone(parsed.course.noClass ?? []),
           gradeWeights: clone(parsed.course.gradeWeights ?? []),
           policies: clone(parsed.course.policies ?? []),

@@ -401,10 +401,11 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
       endDate,
       meetingTimes,
       // Never asked of the model, for the same reason `reviewedAt` is not:
-      // which section the student is in is a fact about the student, not about
+      // which sections the student is in is a fact about the student, not about
       // the document. A syllabus listing four sections gives the model no way
-      // to know, and a guess puts them in someone else's classroom.
-      section: null,
+      // to know, and a guess puts them in someone else's classroom. Empty, not
+      // absent: the questions exist, nobody has answered them yet.
+      sections: [],
       // Overlaps folded together, so the same recess stated in the header and
       // again in the week row is one period rather than two.
       noClass: mergeNoClassPeriods(noClass),

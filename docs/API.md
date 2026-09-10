@@ -19,13 +19,13 @@ Non-2xx responses still use this shape.
 | `/api/health` | GET | — | `{ status; version; commit; uptimeSeconds; time; capabilities; storage; warnings }` |
 | `/api/upload` | POST | `multipart/form-data`, field `file` (PDF); optional fields `replace` (course id) or `allowDuplicate` (`1`) | `{ courseId: string; course: Course; assessments: Assessment[]; warnings: string[]; replaced: string \| null }` — **409** `{ duplicateOf: { id; code; title; term } }` when the parsed course matches an existing one by code (case/space-insensitive) and term, unless `replace=<thatId>` (the old course and its assessments are deleted after the new one is saved; `replaced` carries the old id) or `allowDuplicate=1`. |
 | `/api/courses` | GET | — | `{ courses: Course[]; assessments: Assessment[] }` |
-| `/api/courses/[id]` | PATCH | `{ code?; title?; instructor?; term?; startDate?; endDate?; section?: string \| null; meetingTimes?: MeetingTime[] }` | `Course` — edit course details, including the term window the heatmap numbers weeks from. Dates `YYYY-MM-DD` or null; `endDate` must not precede `startDate`; **422** names the field; **404** if not the caller's. |
+| `/api/courses/[id]` | PATCH | `{ code?; title?; instructor?; term?; startDate?; endDate?; sections?: string[]; meetingTimes?: MeetingTime[] }` | `Course` — edit course details, including the term window the heatmap numbers weeks from. Dates `YYYY-MM-DD` or null; `endDate` must not precede `startDate`; **422** names the field; **404** if not the caller's. `sections` is the set of section labels the student is in — at most one per question the syllabus asks (a course with two lectures and three labs asks two), reconciled server-side against the labels the syllabus actually names. The legacy singular `section` is still accepted as a one-element array. |
 | `/api/courses/[id]` | DELETE | — | `{ deleted: true; calendarEventsRemoved: number }` — also deletes the Google events this course created, so nothing is orphaned. |
 | `/api/courses/[id]/assessments` | POST | `{ title; kind; dueDate?; dueTime?; endTime?; weightPercent?; notes? }` | `Assessment` — add an item the extractor missed. Created with `confidence: 1` and `reviewedAt` set (a person typed it). Same field rules as PATCH assessments; `title` and `kind` required. |
 | `/api/assessments/[id]` | DELETE | — | `{ deleted: true }` — removes the item and its calendar/Notion links. **404** if not the caller's. |
 | `/api/assessments/[id]` | PATCH | `{ title?; kind?; dueDate?; dueTime?; endTime?; weightPercent?; notes?; reviewed?: true }` | `Assessment` — confirm and edit share this route. Any accepted change (including `reviewed: true` alone) sets `reviewedAt`, which clears the review flag. **422** with a field-level `detail` on invalid input; **404** when the item is not the caller's. Dates `YYYY-MM-DD` or null, times `HH:MM` or null (`endTime` requires `dueTime` and must be later), weight 0–100 or null. |
 | `/api/plan` | GET | — | `SemesterPlan` |
-| `/api/sync` | POST | `{ courseId?: string; dryRun?: boolean }` | `CalendarSyncResult` — honours `calendarPrefs`; removes events whose source was deleted or deselected; `needsSection` lists courses that listed several sections with none chosen (their section-specific meetings are skipped, never guessed) |
+| `/api/sync` | POST | `{ courseId?: string; dryRun?: boolean }` | `CalendarSyncResult` — honours `calendarPrefs`; removes events whose source was deleted or deselected; `needsSection` lists courses with at least one section question still unanswered (only that question's meetings are skipped, never guessed — an answered lecture still syncs while the lab question is open) |
 | `/api/chat` | POST | `{ message: string; history?: {role,content}[] }` | `{ reply: string }` |
 | `/api/notion/auth` | GET | — | redirect to Notion consent (not JSON) |
 | `/api/notion/callback` | GET | `code`, `state` | redirect to `/dashboard?notion=connected` (not JSON) |
@@ -45,7 +45,7 @@ interface NotionStatus {
   connected: boolean;             // a connection record exists and is not revoked
   status: "connected" | "needs_parent" | "revoked" | null;
   workspaceName: string | null;
-  hubUrl: string | null;          // the "Syllabus AI" hub page, once built
+  hubUrl: string | null;          // the "Syllabus Center" hub page, once built
   needsParent: boolean;           // true => show the picker below
   candidates: { id: string; title: string; url: string }[];   // pages the user shared
   coursePages: Record<string, string>;   // courseId -> Notion page URL

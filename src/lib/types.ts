@@ -1,5 +1,5 @@
 /**
- * Shared domain contracts for Syllabus AI.
+ * Shared domain contracts for Syllabus Center.
  *
  * Every layer -- parsing, storage, planning, calendar sync, UI -- speaks these
  * types. Treat this file as the interface between modules: change it only with
@@ -127,12 +127,16 @@ export interface Course {
   endDate: string | null;
   meetingTimes: MeetingTime[];
   /**
-   * The section the student chose, matching a `MeetingTime.section`. Null
-   * until chosen -- and while the syllabus lists several sections and this is
-   * null, no section-specific meeting is synced, because guessing puts the
-   * student in someone else's classroom.
+   * The sections this student is in -- at most one per question the syllabus
+   * asks, matching a `MeetingTime.section`.
+   *
+   * A set rather than a single answer because a big course asks more than one
+   * question: two lectures and three labs is a choice of lecture AND a choice
+   * of lab, and the student attends one of each. While a question is
+   * unanswered, its meetings are not synced, because guessing puts the student
+   * in someone else's classroom. See `@/lib/sections`.
    */
-  section: string | null;
+  sections: string[];
   /**
    * When the class does not meet. Empty means "meets every week of the
    * term" -- the honest default when a syllabus says nothing about breaks.
@@ -310,7 +314,7 @@ export interface NotionConnection {
   botId: string | null;
   /** The page the user shared during consent. Null until one is chosen. */
   parentPageId: string | null;
-  /** The "Syllabus AI" hub page and its three databases. Null until built. */
+  /** The "Syllabus Center" hub page and its three databases. Null until built. */
   hubPageId: string | null;
   hubUrl: string | null;
   coursesDbId: string | null;

@@ -383,10 +383,11 @@ export function DashboardShell() {
   }, [courses]);
 
   /**
-   * The sync result names courses whose section is still unanswered; the
+   * The sync result names courses with a section question still open; the
    * chooser for each is already on the roadmap. Focus moves with the scroll so
    * a keyboard user lands on the radio group rather than at the top of a panel
-   * they were sent to for one specific question.
+   * they were sent to for one specific question. A course can have more than
+   * one open question, and the first unanswered one is where to start.
    */
   const onChooseSection = useCallback((courseId: string) => {
     const chooser = document.getElementById(`section-chooser-${courseId}`);
@@ -437,7 +438,10 @@ export function DashboardShell() {
             className="flex items-center gap-2.5 rounded-md font-serif text-[1.0625rem] font-semibold tracking-tight text-ink"
           >
             <Logo />
-            <span className="hidden sm:inline">Syllabus AI</span>
+            <span className="hidden sm:inline">
+              Syllabus{" "}
+              <span className="font-normal text-ink-soft">Center</span>
+            </span>
           </a>
           <div className="flex items-center gap-2 sm:gap-3">
             <Button
@@ -590,7 +594,7 @@ export function DashboardShell() {
           {plan?.generatedAt ? (
             <>Plan generated {new Date(plan.generatedAt).toLocaleString()}. </>
           ) : null}
-          Syllabus AI keeps your roadmap in step with the semester.
+          Syllabus Center keeps your roadmap in step with the semester.
         </div>
       </footer>
     </div>

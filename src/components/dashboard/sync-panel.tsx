@@ -15,6 +15,7 @@ import { ErrorState, Note } from "@/components/ui/states";
 import { LoadingRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertIcon, CalendarIcon, CheckIcon } from "@/components/icons";
 import { formatDateShort } from "@/components/format";
+import { openQuestionWords } from "@/components/dashboard/section-chooser";
 
 /** `POST /api/sync` answers with the result plus which mode it ran in. */
 type SyncResponse = CalendarSyncResult & { dryRun?: boolean };
@@ -277,14 +278,15 @@ export function SyncPanel({
                   <span className="block">
                     Class meetings were skipped for{" "}
                     {courseCodes(courses, state.result.needsSection).join(", ")} —
-                    the syllabus lists several sections and we won&rsquo;t guess
-                    which one is yours.
+                    the syllabus lists more than one of them and we won&rsquo;t
+                    guess which are yours.
                   </span>
                   <span className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
                     {state.result.needsSection.map((courseId) => (
                       <SectionJump
                         key={courseId}
                         code={courseCode(courses, courseId)}
+                        course={courses.find((row) => row.id === courseId)}
                         onClick={
                           onChooseSection
                             ? () => onChooseSection(courseId)
@@ -363,25 +365,32 @@ function courseCodes(courses: Course[], ids: string[]): string[] {
  */
 function SectionJump({
   code,
+  course,
   courseId,
   onClick,
 }: {
   code: string;
+  /** Absent only if the sync named a course the page has not loaded. */
+  course?: Course;
   courseId: string;
   onClick?: () => void;
 }) {
   const className =
     "rounded-sm text-[0.8125rem] font-medium text-ink underline decoration-warn-line underline-offset-2 transition-colors hover:text-accent";
+  // Names what is actually being asked — "Choose your lecture and lab" — so the
+  // link does not promise one decision where the roadmap will ask for two.
+  const words = course ? openQuestionWords(course) : "";
+  const label = `${code}: Choose your ${words || "section"}`;
   if (!onClick) {
     return (
       <a href={`#roadmap-card-${courseId}`} className={className}>
-        {code}: Choose your section
+        {label}
       </a>
     );
   }
   return (
     <button type="button" onClick={onClick} className={className}>
-      {code}: Choose your section
+      {label}
     </button>
   );
 }

@@ -1619,9 +1619,10 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
       startDate: termRange.explicit ? termRange.start : null,
       endDate: termRange.explicit ? termRange.end : null,
       meetingTimes,
-      // Which section is the student's is a fact about the student, not about
-      // the document. The parser never guesses it; the UI asks.
-      section: null,
+      // Which sections are the student's is a fact about the student, not
+      // about the document. The parser never guesses; the UI asks, once per
+      // question the syllabus turns out to be asking.
+      sections: [],
       // Empty is a real answer: it means the syllabus never said the class
       // skips a day, not that we failed to look.
       noClass,

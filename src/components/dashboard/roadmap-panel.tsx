@@ -28,10 +28,9 @@ import {
   SectionChooser,
   meetingSummary,
   meetingSummaryWithKind,
-  meetingsForStudent,
-  needsSection,
-  sectionLabels,
+  openQuestionWords,
 } from "@/components/dashboard/section-chooser";
+import { meetingsForStudent, sectionGroups } from "@/lib/sections";
 import { KIND_LABEL } from "@/components/labels";
 import { accentFor } from "@/components/course-accents";
 import {
@@ -127,12 +126,6 @@ export function RoadmapPanel({
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState<string | null>(null);
-  /**
-   * A course whose section is already chosen, reopened to change the answer.
-   * A course that has never answered does not need this: its chooser is on the
-   * card from the start, because nothing of its schedule syncs until it does.
-   */
-  const [changingSection, setChangingSection] = useState<string | null>(null);
   /** The course whose "are you sure?" is open, and the one being deleted. */
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -212,12 +205,14 @@ export function RoadmapPanel({
               typeof onEditCourse === "function";
             const canAdd = typeof onAssessmentAdded === "function";
             const canDelete = typeof onCourseDeleted === "function";
-            const sections = sectionLabels(course);
-            const chosenSection = course.section?.trim() ?? null;
-            // Unanswered courses ask on sight; answered ones ask when asked.
-            const showChooser =
-              editable &&
-              (needsSection(course) || changingSection === course.id);
+            /**
+             * The chooser stays on the card once the syllabus has asked
+             * anything at all: open questions as cards, answered ones folded
+             * down to a line with its own "Change". It used to be mounted only
+             * while unanswered, which meant the answer and the way to revise
+             * it lived in two different places.
+             */
+            const showChooser = editable && sectionGroups(course).length > 0;
 
             return (
               <article
@@ -262,30 +257,6 @@ export function RoadmapPanel({
                         .join(" · ")}
                     </p>
                     <MeetsLine course={course} />
-                    {/* Once answered, the answer stays visible — and editable,
-                        because the student who picked B in week one is the one
-                        who switches to C in week two. */}
-                    {editable && chosenSection && sections.length >= 2 ? (
-                      <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
-                        {/^section\b/i.test(chosenSection)
-                          ? chosenSection
-                          : `Section ${chosenSection}`}
-                        {" · "}
-                        <button
-                          type="button"
-                          aria-expanded={changingSection === course.id}
-                          aria-controls={`section-chooser-${course.id}`}
-                          onClick={() =>
-                            setChangingSection(
-                              changingSection === course.id ? null : course.id,
-                            )
-                          }
-                          className="rounded-sm font-medium text-muted underline decoration-line-strong underline-offset-2 transition-colors hover:text-ink"
-                        >
-                          Change section
-                        </button>
-                      </p>
-                    ) : null}
                     {/* Counts down as items are confirmed, then disappears. */}
                     {unreviewed > 0 ? (
                       <p className="mt-1.5">
@@ -411,15 +382,7 @@ export function RoadmapPanel({
                     <div className="mt-3">
                       <SectionChooser
                         course={course}
-                        onChanged={(updated) => {
-                          onCourseChanged?.(updated);
-                          setChangingSection(null);
-                        }}
-                        onCancel={
-                          changingSection === course.id
-                            ? () => setChangingSection(null)
-                            : undefined
-                        }
+                        onChanged={(updated) => onCourseChanged?.(updated)}
                       />
                     </div>
                   ) : null}
@@ -844,16 +807,16 @@ function formatNoClass(period: NoClassPeriod, termEnd: string | null): string {
  * schedules and left to work out which is theirs.
  */
 function MeetsLine({ course }: { course: Course }) {
-  const sections = sectionLabels(course);
-  const undecided = sections.length >= 2 && (course.section ?? null) === null;
-
   const mine = meetingsForStudent(course);
   const classes = mine.filter((meeting) => meeting.kind !== "office_hours");
   const hours = mine.filter((meeting) => meeting.kind === "office_hours");
 
-  const meets = undecided
-    ? `${sections.length} sections — choose yours`
-    : classes.map(meetingSummaryWithKind).filter(Boolean).join("; ");
+  // Names the kinds still open rather than counting labels, because a count
+  // reads as one question and this is not one question.
+  const open = openQuestionWords(course);
+  const choose = open ? `Choose your ${open} below` : "";
+
+  const meets = classes.map(meetingSummaryWithKind).filter(Boolean).join("; ");
   const officeHours = hours.map(meetingSummary).filter(Boolean).join("; ");
 
   const summaries = (course.noClass ?? [])
@@ -868,14 +831,16 @@ function MeetsLine({ course }: { course: Course }) {
       ? ""
       : `No class: ${shown.join(", ")}${hidden > 0 ? `, +${hidden} more` : ""}`;
 
-  if (!meets && !noClass && !officeHours) return null;
+  if (!meets && !noClass && !officeHours && !choose) return null;
 
   return (
     <>
-      {meets || noClass ? (
+      {meets || noClass || choose ? (
         <p className="mt-0.5 text-[0.8125rem] leading-snug text-muted">
-          {meets ? (undecided ? meets : `Meets ${meets}`) : null}
-          {meets && noClass ? " — " : null}
+          {meets ? `Meets ${meets}` : null}
+          {meets && choose ? " — " : null}
+          {choose ? <span>{choose}</span> : null}
+          {(meets || choose) && noClass ? " — " : null}
           {noClass ? (
             <span
               title={hidden > 0 ? `No class: ${summaries.join(", ")}` : undefined}

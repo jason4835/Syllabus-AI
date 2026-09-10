@@ -73,6 +73,12 @@ interface CourseRow {
   start_date: string | null;
   end_date: string | null;
   meeting_times: unknown;
+  /**
+   * One answer per question the syllabus asks. `section` is its single-answer
+   * predecessor: still on every existing row, never written to again, folded
+   * into `sections` on read by `courseToDomain`.
+   */
+  sections: unknown;
   section: string | null;
   no_class: unknown;
   grade_weights: unknown;
@@ -152,6 +158,12 @@ export { ASSESSMENT_KINDS };
 /** jsonb comes back as `unknown`; a malformed column must not crash a page. */
 function jsonArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/** The retired single answer, read as the one-element set of answers it was. */
+function legacySections(section: string | null): string[] {
+  const label = section?.trim();
+  return label ? [label] : [];
 }
 
 /** Postgres `numeric` is delivered as a string by some driver/column combos. */
@@ -246,7 +258,15 @@ function courseToDomain(row: CourseRow): Course {
     // before `kind`/`section`/`instructor` existed is a lecture in the only
     // section, which is exactly what it meant when it was written.
     meetingTimes: normalizeMeetingTimes(row.meeting_times),
-    section: row.section ?? null,
+    // Read-side migration, and the only place the legacy `section` column is
+    // still consulted. A row written before a course could hold more than one
+    // answer has `sections` null: the single answer it does have becomes a
+    // one-element array, so a student who picked their lecture keeps that pick
+    // and is simply asked the lab question they were never asked. Nothing is
+    // backfilled and nothing is dropped, so a rollback stays safe.
+    sections: Array.isArray(row.sections)
+      ? jsonArray<string>(row.sections)
+      : legacySections(row.section),
     // Defaults to [] through `jsonArray`, which is also the migration story: a
     // database without the `no_class` column reads back "this class has no
     // breaks" rather than `undefined`.
@@ -268,7 +288,10 @@ function courseToRow(course: Course): CourseRow {
     start_date: course.startDate,
     end_date: course.endDate,
     meeting_times: course.meetingTimes,
-    section: course.section,
+    sections: course.sections ?? [],
+    // Written as null on every insert from here on. The column survives only to
+    // keep older deploys readable; `courseToDomain` is what reads it.
+    section: null,
     no_class: course.noClass,
     grade_weights: course.gradeWeights,
     policies: course.policies,
@@ -292,13 +315,13 @@ function coursePatchToRow(
   if (patch.term !== undefined) row.term = patch.term;
   if (patch.startDate !== undefined) row.start_date = patch.startDate;
   if (patch.endDate !== undefined) row.end_date = patch.endDate;
-  // `section` and `meeting_times` ARE editable, unlike the rest of what the
+  // `sections` and `meeting_times` ARE editable, unlike the rest of what the
   // parser writes: a syllabus for a big course lists every section and the
-  // extractor keeps them all, so which one the student attends can only come
+  // extractor keeps them all, so which ones the student attends can only come
   // from the student -- and a room the extractor misread has to be fixable.
   // The array is replaced whole; normalising it here means an entry that
   // arrives without a `kind` cannot be stored without one.
-  if (patch.section !== undefined) row.section = patch.section;
+  if (patch.sections !== undefined) row.sections = patch.sections;
   if (patch.meetingTimes !== undefined) {
     row.meeting_times = normalizeMeetingTimes(patch.meetingTimes);
   }
@@ -988,9 +1011,9 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         startDate: parsed.course.startDate,
         endDate: parsed.course.endDate,
         meetingTimes: normalizeMeetingTimes(parsed.course.meetingTimes),
-        // Null from both parsers: which section is the student's is a fact
+        // Empty from both parsers: which sections are the student's is a fact
         // about the student, and the upload flow has not asked yet.
-        section: parsed.course.section ?? null,
+        sections: parsed.course.sections ?? [],
         noClass: parsed.course.noClass ?? [],
         gradeWeights: parsed.course.gradeWeights,
         policies: parsed.course.policies,
