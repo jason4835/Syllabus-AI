@@ -536,23 +536,32 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
    *
    * Scoped to links this user owns or that nobody owns: the id tests below are
    * prefix matches, and they must never be able to reach into another account.
+   *
+   * Returns what it deleted. The rows are the only remaining record of the
+   * Google event ids, so the caller needs them to clean up the calendar (see
+   * `CourseDeletion`); dropping them silently is what leaves a student with
+   * events for a class they deleted and no way to remove them.
    */
   async function deleteCalendarLinksFor(
     userId: string,
     assessmentIds: string[],
     courseIds: string[],
-  ): Promise<void> {
-    if (assessmentIds.length === 0 && courseIds.length === 0) return;
+  ): Promise<KeyedCalendarLink[]> {
+    if (assessmentIds.length === 0 && courseIds.length === 0) return [];
     const assessmentIdSet = new Set(assessmentIds);
     const courseIdSet = new Set(courseIds);
     const { owned, unowned } = await candidateCalendarLinkRows(userId);
-    const keys = [...owned, ...unowned]
-      .map((row) => row.key)
-      .filter((key) => isLegacyCalendarLinkOf(key, assessmentIdSet, courseIdSet));
-    if (keys.length === 0) return;
+    const orphaned = [...owned, ...unowned].filter((row) =>
+      isLegacyCalendarLinkOf(row.key, assessmentIdSet, courseIdSet),
+    );
+    if (orphaned.length === 0) return [];
 
-    const { error } = await client.from("calendar_links").delete().in("key", keys);
+    const { error } = await client
+      .from("calendar_links")
+      .delete()
+      .in("key", orphaned.map((row) => row.key));
     if (error) fail("deleting calendar links", error);
+    return orphaned.map(keyedCalendarLinkToDomain);
   }
 
   /** Returns the assessment's row only when `userId` owns its course. */
@@ -1053,16 +1062,18 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .eq("user_id", userId)
         .select("id");
       if (error) fail("deleteCourse", error);
-      if (((data ?? []) as { id: string }[]).length === 0) return false;
+      if (((data ?? []) as { id: string }[]).length === 0) return null;
 
       // Only after the delete succeeded: a caller who does not own the course
       // must not be able to clear anyone's links.
       await deleteNotionLinksForCourse(userId, courseId, assessmentIds);
       // The course's own class series (`mt_<courseId>_*`) as well as its
       // assessments' deadlines and study sessions. A class meeting is not a
-      // row, so nothing else would ever find those links again.
-      await deleteCalendarLinksFor(userId, assessmentIds, [courseId]);
-      return true;
+      // row, so nothing else would ever find those links again -- which is why
+      // the rows are returned rather than just dropped: the caller deletes the
+      // Google events they name.
+      const calendarLinks = await deleteCalendarLinksFor(userId, assessmentIds, [courseId]);
+      return { calendarLinks };
     },
 
     async listAssessments(userId) {

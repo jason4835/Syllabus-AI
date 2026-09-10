@@ -689,7 +689,7 @@ export function createLocalStore(): Store {
         );
         // Missing and not-yours are indistinguishable on purpose: a wrong userId
         // must not confirm that a course id exists.
-        if (index === -1) return false;
+        if (index === -1) return null;
 
         db.courses.splice(index, 1);
         const orphanIds = new Set(
@@ -699,6 +699,17 @@ export function createLocalStore(): Store {
         // The course's own class series (`mt_<courseId>_*`) as well as its
         // assessments' events: a class meeting is not a row, so nothing else
         // would ever find those links again.
+        //
+        // Which is exactly why they are handed back before they go: the rows
+        // are the only thing that still knows the Google event ids, and the
+        // caller deletes those events (see `CourseDeletion`).
+        const orphanedLinks: KeyedCalendarLink[] = db.calendarLinks
+          .filter((l) => isCalendarLinkOrphanedByCourse(l, userId, courseId, orphanIds))
+          .map((l) => ({
+            key: l.key,
+            googleEventId: l.googleEventId,
+            calendarId: l.calendarId,
+          }));
         db.calendarLinks = db.calendarLinks.filter(
           (l) => !isCalendarLinkOrphanedByCourse(l, userId, courseId, orphanIds),
         );
@@ -709,7 +720,7 @@ export function createLocalStore(): Store {
         db.notionLinks = db.notionLinks.filter(
           (l) => !isLinkOrphanedByCourse(l, userId, courseId, orphanIds),
         );
-        return true;
+        return { calendarLinks: orphanedLinks };
       });
     },
 

@@ -206,8 +206,13 @@ function scanFragments(text: string): DateFragment[] {
 
   // "12 September 2026" -- the international ordering, which US syllabi use for
   // study-abroad and cross-listed courses.
+  //
+  // The lookahead is what keeps "Midterm 2  Nov 18" from being read as the 2nd
+  // of November: a month followed by its own day number is a month-first date,
+  // and the item's number is just the item's number. A four-digit year is still
+  // allowed through, because `\d{1,2}\b` cannot match the front of "2026".
   const dayFirst = new RegExp(
-    `\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_PATTERN})\\.?(?:\\s*,?\\s*(\\d{4}))?`,
+    `\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_PATTERN})\\.?(?!\\s*\\d{1,2}\\b)(?:\\s*,?\\s*(\\d{4}))?`,
     "gi",
   );
   for (let m = dayFirst.exec(text); m !== null; m = dayFirst.exec(text)) {
@@ -368,34 +373,129 @@ export function findDateSpans(text: string): Array<{ start: number; end: number 
 }
 
 /**
- * Turns any syllabus date expression into `YYYY-MM-DD`, or null when the date
- * cannot be pinned down honestly.
+ * The separators that join two fragments into ONE range -- "Sep 7 - Sep 11".
  *
- * Ranges resolve to their END ("Oct 5-7" -> Oct 7, "Dec 14-18" -> Dec 18)
- * because when a syllabus gives a window for a graded item, the last day is the
- * deadline the student actually has to hit.
+ * A range is a single statement about a single item, so its two halves must not
+ * be mistaken for two competing dates; it still resolves to its END.
  */
-export function normalizeDate(raw: string, ctx: DateContext = {}): string | null {
-  if (typeof raw !== "string") return null;
+const RANGE_JOIN = /^\s*(?:-|to|through|thru|until|&|and)\s*$/i;
+
+/**
+ * The words a syllabus uses to say "this is the date the item is DUE", as they
+ * appear immediately before the date: "due Friday, Sep 18", "on Oct 7",
+ * "Final Exam: Dec 16".
+ *
+ * Weekday words and punctuation are allowed to sit between the cue and the
+ * date, because that is how syllabi actually write it.
+ */
+const DUE_CUE =
+  /(?:\bdue\b|\bon\b|\bby\b|:)[\s,;.\-]*(?:(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday)?\.?)?[\s,;.\-]*$/i;
+
+/** One date statement: a lone date, or a range that resolves to its end. */
+interface DateGroup {
+  /** Where the statement begins, so the cue before it can be read. */
+  start: number;
+  iso: string | null;
+  cued: boolean;
+}
+
+/** What a date expression actually said, including whether it said more than one thing. */
+export interface DateReading {
+  /** The date we would stand behind, or null when none could be resolved. */
+  date: string | null;
+  /**
+   * True when the text stated several different dates and nothing in it said
+   * which one is the deadline. The date is still our best guess; the caller is
+   * expected to flag it rather than present it as a fact.
+   */
+  ambiguous: boolean;
+  /** Every distinct date the text stated, in the order written -- for warnings. */
+  candidates: string[];
+}
+
+/**
+ * Reads a date expression and says how sure it is.
+ *
+ * The rule that matters: when a cell states TWO dates -- "Midterm 2  Nov 18,
+ * 2026; covers Oct 30, 2026" -- taking the last one silently moved the exam 19
+ * days early. So:
+ *   1. A range ("Sep 7 - Sep 11") is one statement, and still resolves to its end.
+ *   2. A statement introduced by a due-verb ("due", "on", "by", ":") wins,
+ *      because the syllabus said which date is the deadline.
+ *   3. Otherwise the FIRST statement wins -- it is the one written beside the
+ *      item's name -- and the reading is marked ambiguous so the caller can
+ *      flag the item instead of quietly picking for the student.
+ */
+export function readDate(raw: string, ctx: DateContext = {}): DateReading {
+  if (typeof raw !== "string") return { date: null, ambiguous: false, candidates: [] };
   const text = normalizeDashes(raw).replace(/\s+/g, " ").trim();
-  if (text.length === 0) return null;
+  if (text.length === 0) return { date: null, ambiguous: false, candidates: [] };
 
   // An already-ISO date is authoritative -- never re-derive it.
   const isoMatch = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(text);
   if (isoMatch) {
     const parsed = parseIsoDate(isoMatch[0]);
-    if (parsed) return toIso(parsed.year, parsed.month, parsed.day);
+    if (parsed) {
+      const iso = toIso(parsed.year, parsed.month, parsed.day);
+      return { date: iso, ambiguous: false, candidates: [iso] };
+    }
   }
 
   const fragments = scanFragments(text);
   if (fragments.length === 0) {
     // No calendar date at all -- the only thing left that can carry one is a
     // week number measured off the term start.
-    return resolveWeekNumber(text, ctx);
+    const week = resolveWeekNumber(text, ctx);
+    return { date: week, ambiguous: false, candidates: week ? [week] : [] };
   }
 
-  const last = fragments[fragments.length - 1];
-  return resolveFragment(last, text.slice(last.end), ctx);
+  // Fold ranges into single statements, then resolve each statement's end.
+  const groups: DateGroup[] = [];
+  let previousEnd = 0;
+  for (let i = 0; i < fragments.length; i += 1) {
+    const first = fragments[i];
+    let last = first;
+    while (
+      i + 1 < fragments.length &&
+      RANGE_JOIN.test(text.slice(last.end, fragments[i + 1].start))
+    ) {
+      i += 1;
+      last = fragments[i];
+    }
+    const before = text.slice(previousEnd, first.start);
+    previousEnd = last.end;
+    groups.push({
+      start: first.start,
+      iso: resolveFragment(last, text.slice(last.end), ctx),
+      cued: DUE_CUE.test(before),
+    });
+  }
+
+  const candidates = [...new Set(groups.map((g) => g.iso).filter((iso): iso is string => iso !== null))];
+  const cued = groups.filter((g) => g.cued && g.iso !== null);
+  const chosen = cued.length > 0 ? cued[0] : (groups.find((g) => g.iso !== null) ?? groups[0]);
+
+  const ambiguous =
+    cued.length > 0
+      ? new Set(cued.map((g) => g.iso)).size > 1
+      : candidates.length > 1;
+
+  return { date: chosen.iso, ambiguous, candidates };
+}
+
+/**
+ * Turns any syllabus date expression into `YYYY-MM-DD`, or null when the date
+ * cannot be pinned down honestly.
+ *
+ * Ranges resolve to their END ("Oct 5-7" -> Oct 7, "Dec 14-18" -> Dec 18)
+ * because when a syllabus gives a window for a graded item, the last day is the
+ * deadline the student actually has to hit.
+ *
+ * Callers that can act on ambiguity should use `readDate` instead: this one
+ * throws away the "the text said two different dates" signal.
+ */
+export function normalizeDate(raw: string, ctx: DateContext = {}): string | null {
+  return readDate(raw, ctx).date;
 }
 
 /**

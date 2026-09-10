@@ -20,6 +20,7 @@ import type {
   StudyBlock,
   WeekLoad,
 } from "@/lib/types";
+import { SITTING_KINDS, isSitting } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Date helpers                                                                */
@@ -77,6 +78,86 @@ export function formatShortDate(iso: string): string {
   }).format(parseISODate(iso));
 }
 
+/* -------------------------------------------------------------------------- */
+/* Where "now" is                                                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The planner is pure except for an injected `now`, but a `Date` is an instant,
+ * not a day: turning it into "today" needs a zone, and the process zone is the
+ * host's, not the student's. On a UTC server a New York student's 8pm Tuesday
+ * reads as Wednesday, so this evening is refused as "past" and every "today" and
+ * "tomorrow" in chat is off by one. These two helpers are the only place a
+ * calendar day or a wall clock is derived from an instant; callers that pass no
+ * zone keep the old process-zone behaviour.
+ */
+
+const zoneFormatters = new Map<string, Intl.DateTimeFormat | null>();
+
+/** Cached formatter for a zone, or null when the runtime rejects the zone. */
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  if (zoneFormatters.has(timeZone)) return zoneFormatters.get(timeZone) ?? null;
+  let fmt: Intl.DateTimeFormat | null = null;
+  try {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    // An unknown or malformed zone must not take the planner down; falling back
+    // to the process zone is what every caller did before zones existed here.
+    fmt = null;
+  }
+  zoneFormatters.set(timeZone, fmt);
+  return fmt;
+}
+
+interface WallClock {
+  date: string;
+  minutes: number;
+}
+
+function wallClock(now: Date, timeZone?: string): WallClock {
+  const fmt = timeZone ? zoneFormatter(timeZone) : null;
+  if (!fmt) {
+    return {
+      date: `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
+      minutes: now.getHours() * 60 + now.getMinutes(),
+    };
+  }
+  const parts = fmt.formatToParts(now);
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  // Some engines still render midnight as hour 24 under h23; fold it back.
+  const hour = Number(get("hour")) % 24;
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    minutes: hour * 60 + Number(get("minute")),
+  };
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/**
+ * The calendar date an instant falls on, in `timeZone` (IANA) or -- when it is
+ * absent or unusable -- the process zone.
+ */
+export function localDateIn(now: Date, timeZone?: string): string {
+  return wallClock(now, timeZone).date;
+}
+
+/** Minutes since local midnight for an instant, in the same zone rules. */
+export function localMinutesIn(now: Date, timeZone?: string): number {
+  return wallClock(now, timeZone).minutes;
+}
+
 /** Minutes since midnight for "HH:MM". Returns null for unparseable input. */
 export function minutesOfDay(hhmm: string | null): number | null {
   if (!hhmm) return null;
@@ -118,7 +199,7 @@ export const ASSESSMENT_HOUR_COSTS: Record<AssessmentKind, HourCost> = {
   exam: {
     baseHours: 8,
     referenceWeightPercent: 15,
-    note: "Review, practice problems and a final pass -- spread over several days, not one night.",
+    note: "Review, practice problems and a final pass \u2014 spread over several days, not one night.",
   },
   project: {
     baseHours: 12,
@@ -153,7 +234,7 @@ export const ASSESSMENT_HOUR_COSTS: Record<AssessmentKind, HourCost> = {
   other: {
     baseHours: 2,
     referenceWeightPercent: 5,
-    note: "Unclassified item -- estimated as a small assignment.",
+    note: "Unclassified item \u2014 estimated as a small assignment.",
   },
 };
 
@@ -178,7 +259,7 @@ export const ASSESSMENT_DUE_HOUR_COSTS: Record<AssessmentKind, number> = {
   assignment: 0.5, // hand-in and the last pass over it
   lab: 0.5, // write-up hand-in; bench time is scheduled class time
   quiz: 0.5,
-  reading: 0, // nothing is "delivered" -- the cost is all in the reading itself
+  reading: 0, // nothing is "delivered" — the cost is all in the reading itself
   other: 0.5,
 };
 
@@ -599,10 +680,18 @@ function describeMix(items: Assessment[]): string | null {
       phrases.length === 1
         ? phrases[0]
         : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
-    return `${list} due in the same week`;
+    // "2 exams due in the same week" was the most-read string in the product and
+    // it was wrong: you do not hand an exam in, you sit it. "Due" survives only
+    // where every item in the mix really is a deadline.
+    const everyItemIsADeadline = [...counts.keys()].every((k) => !SITTING_KINDS.includes(k));
+    return everyItemIsADeadline ? `${list} due in the same week` : `${list} in the same week`;
   }
   // No pileup of big-ticket items, but sheer volume can still be the problem.
-  if (items.length >= 4) return `${items.length} deadlines in one week`;
+  if (items.length >= 4) {
+    return items.every((a) => !isSitting(a))
+      ? `${items.length} deadlines in one week`
+      : `${items.length} things landing in one week`;
+  }
   return null;
 }
 
@@ -764,7 +853,7 @@ export function buildWeeksFromBlocks(
           .join(", ")}) counted here`
       : null;
     const shown = [...parts.slice(0, 2), ...(strayNote ? [strayNote] : [])];
-    const warning = shown.length === 0 ? null : capitalizeFirst(shown.join(" -- "));
+    const warning = shown.length === 0 ? null : capitalizeFirst(shown.join(" \u2014 "));
 
     return {
       weekStart: w.weekStart,
@@ -796,7 +885,7 @@ function heaviestWeekPhrase(
     dueHours > 0
       ? `${studyHours}h of planned study plus ${dueHours}h of sitting and submitting`
       : `${studyHours}h of planned study, all of it prep for what comes after`;
-  return `your heaviest week: ~${hours}h of work lands here -- ${split}`;
+  return `your heaviest week: ~${hours}h of work lands here \u2014 ${split}`;
 }
 
 function capitalizeFirst(s: string): string {

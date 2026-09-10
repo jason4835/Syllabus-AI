@@ -17,6 +17,7 @@ import { z } from "zod";
 
 import type { MeetingKind, MeetingTime, NoClassPeriod, ParsedSyllabus } from "../types";
 import { addDays, normalizeDate, parseTime, termWindowFromLabel, type DateContext } from "./dates";
+import { pluralize } from "@/components/format";
 import { mergeNoClassPeriods } from "./fallback";
 
 /**
@@ -303,7 +304,7 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
 
   if (droppedDates > 0) {
     warnings.push(
-      `${droppedDates} due date(s) came back in an unreadable format and were left blank rather than guessed.`,
+      `${pluralize(droppedDates, "due date")} came back in an unreadable format and ${droppedDates === 1 ? "was" : "were"} left blank rather than guessed.`,
     );
   }
 
@@ -329,7 +330,7 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
   }
   if (droppedPeriods > 0) {
     warnings.push(
-      `${droppedPeriods} no-class period(s) came back with dates we could not verify and were dropped, so those days are shown as normal class meetings.`,
+      `${pluralize(droppedPeriods, "no-class period")} came back with dates we could not verify and ${droppedPeriods === 1 ? "was" : "were"} dropped, so those days are shown as normal class meetings.`,
     );
   }
 

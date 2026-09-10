@@ -23,9 +23,15 @@ export async function POST(req: Request) {
 
 
   let courseId: string | undefined;
+  // "Show me what this would do." Preview is the only way to answer the
+  // question a reconciliation raises -- which of my events are about to be
+  // removed, and why -- BEFORE it is carried out. Without it a connected user
+  // has to run the real thing and read the receipt afterwards.
+  let previewOnly = false;
   try {
-    const body = (await req.json()) as { courseId?: string } | null;
+    const body = (await req.json()) as { courseId?: string; dryRun?: boolean } | null;
     courseId = body?.courseId;
+    previewOnly = body?.dryRun === true;
   } catch {
     // An empty body means "sync everything" -- not an error.
   }
@@ -40,11 +46,18 @@ export async function POST(req: Request) {
     const ids = new Set(courses.map((c) => c.id));
     const assessments = allAssessments.filter((a) => ids.has(a.courseId));
 
-    const plan = buildSemesterPlan(courses, assessments);
-    // Without Google credentials we still report exactly what a real sync
-    // would do, so the demo tells the truth instead of faking success.
+    // Read before planning: "today" decides which study sessions are still
+    // ahead of the student, and on a UTC host that is not the server's today.
     const user = await store.getUser(userId);
-    const dryRun = !isGoogleConfigured() || !user?.googleRefreshToken;
+    const plan = buildSemesterPlan(courses, assessments, {
+      timeZone: user?.timezone ?? undefined,
+    });
+    // Without Google credentials we still report exactly what a real sync
+    // would do, so the demo tells the truth instead of faking success. A
+    // connected user gets the same honesty on request: `dryRun` walks the
+    // identical plan-and-diff and skips only the network, so the counts it
+    // returns are the counts a real run would produce.
+    const dryRun = previewOnly || !isGoogleConfigured() || !user?.googleRefreshToken;
 
     const result = await syncToCalendar(userId, {
       courses,

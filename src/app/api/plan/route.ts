@@ -16,7 +16,11 @@ export async function GET() {
       store.listCourses(userId),
       store.listAssessments(userId),
     ]);
-    return ok(buildSemesterPlan(courses, assessments));
+    // The student's zone, not the host's: on a UTC box a New York student's
+    // evening already counts as tomorrow, and this evening's study block
+    // silently disappears as "past".
+    const timeZone = (await store.getUser(userId))?.timezone ?? undefined;
+    return ok(buildSemesterPlan(courses, assessments, { timeZone }));
   } catch (err) {
     logApiError("plan.build_failed", err, { userId });
     return fail("Could not build your plan.", 500, messageOf(err));

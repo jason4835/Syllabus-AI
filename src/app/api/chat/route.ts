@@ -33,8 +33,9 @@ export async function POST(req: Request) {
       store.listCourses(userId),
       store.listAssessments(userId),
     ]);
-    const plan = buildSemesterPlan(courses, assessments);
-    const reply = await answerQuestion(message, { courses, assessments, plan });
+    const timeZone = (await store.getUser(userId))?.timezone ?? undefined;
+    const plan = buildSemesterPlan(courses, assessments, { timeZone });
+    const reply = await answerQuestion(message, { courses, assessments, plan }, { timeZone });
     return ok({ reply });
   } catch (err) {
     logApiError("chat.failed", err, { userId });

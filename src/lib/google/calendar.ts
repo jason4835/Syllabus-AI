@@ -49,7 +49,8 @@ import {
   type CalendarEvent,
   type CalendarPlan,
 } from "@/lib/calendar/events";
-import { resolveTerm } from "@/lib/plan";
+import { buildSemesterPlan, resolveTerm } from "@/lib/plan";
+import type { KeyedCalendarLink } from "@/lib/store";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
 import type {
   Assessment,
@@ -176,6 +177,89 @@ function reconciliationScope(opts: SyncOptions): {
       ...opts.courses.map((c) => `mt_${c.id}_`),
     ],
   };
+}
+
+/**
+ * Today, as the student's calendar shows it. "In the past" is a question only
+ * a zone can answer: on a UTC host, a New York student's Tuesday evening is
+ * already Wednesday.
+ */
+function todayIn(timeZone: string): string {
+  try {
+    // en-CA formats as YYYY-MM-DD, which is the shape the rest of the app uses.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    // An unusable stored zone must not decide that everything is in the past.
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * The earliest day the semester touches, minus a month of runway -- a clock to
+ * plan against for the sessions that have already happened. Null when there is
+ * no dated work at all, in which case there is nothing to protect.
+ */
+function semesterStart(opts: SyncOptions): Date | null {
+  const days = [
+    ...opts.courses.map((c) => c.startDate),
+    ...opts.assessments.map((a) => a.dueDate),
+  ].filter((d): d is string => typeof d === "string" && d.length >= 10);
+  if (days.length === 0) return null;
+
+  const earliest = days.reduce((a, b) => (a < b ? a : b));
+  const ms = Date.parse(`${earliest.slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms - 30 * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * The study sessions the student has already done.
+ *
+ * `buildStudyBlocks` refuses to schedule a day that has passed, so a session
+ * planned in week 2 is simply absent from the plan by week 3 -- and the
+ * reconciliation pass below reads "absent from the plan" as "delete it from
+ * Google and tell the student it is no longer in their syllabus". Over a
+ * semester that quietly erases twenty to forty sessions the student actually
+ * sat through, which is not a tidy-up: it is the record of their work.
+ *
+ * A session's date is nowhere in its key (`sb_<assessmentId>_<n>`) and nowhere
+ * in the link row, so it is recovered the only honest way there is -- by
+ * running the same planner against a clock set before the semester started,
+ * which yields the whole ladder, past sessions included, with their dates.
+ * Pure and offline, so a dry run reaches the identical answer with no calls.
+ *
+ * Two cases deliberately fall through to deletion:
+ *  - an assessment that no longer exists contributes no sessions here, so its
+ *    orphans are still cleaned up;
+ *  - study sessions switched off in preferences are not protected either --
+ *    "stop putting these on my calendar" means all of them, not just the ones
+ *    still to come.
+ */
+function pastStudySessionKeys(
+  opts: SyncOptions,
+  timeZone: string,
+  prefs: CalendarPrefs,
+): Set<string> {
+  const keys = new Set<string>();
+  if (!prefs.studySessions) return keys;
+
+  const before = semesterStart(opts);
+  if (!before) return keys;
+
+  const today = todayIn(timeZone);
+  const asPlannedThen = buildSemesterPlan(opts.courses, opts.assessments, {
+    now: before,
+    timeZone,
+  });
+  for (const block of asPlannedThen.studyBlocks) {
+    if (block.start.slice(0, 10) < today) keys.add(block.id);
+  }
+  return keys;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -537,7 +621,14 @@ export async function syncToCalendar(
     }
   }
 
-  await removeStaleEvents(userId, opts, plan, dryRun ? null : api, result);
+  // Computed from the plan and the clock alone -- no network -- so the dry run
+  // and the real run protect exactly the same sessions. Lazy because most syncs
+  // have no stale session key at all and never need to ask.
+  let completed: ReadonlySet<string> | null = null;
+  const completedSessions = () =>
+    (completed ??= pastStudySessionKeys(opts, timeZone, prefs));
+
+  await removeStaleEvents(userId, opts, plan, dryRun ? null : api, result, completedSessions);
 
   return result;
 }
@@ -549,7 +640,10 @@ export async function syncToCalendar(
  * (see `reconciliationScope`). A link whose key is not among the planned keys
  * describes an event whose reason to exist is gone: a section the student is
  * not in, a meeting the syllabus no longer lists, a category they switched off,
- * an assessment that lost its due date. Google first, then the link -- an
+ * an assessment that lost its due date. The one exception is a study session
+ * that has already happened (`pastStudySessionKeys`): it is absent from the
+ * plan because the day is over, not because its reason to exist is gone.
+ * Google first, then the link -- an
  * orphaned link is recoverable (the next sync deletes it) while an orphaned
  * Google event is exactly the bug this exists to fix, and would be unreachable.
  *
@@ -564,6 +658,7 @@ async function removeStaleEvents(
   plan: CalendarPlan,
   api: calendar_v3.Calendar | null,
   result: CalendarSyncResult,
+  completedSessions: () => ReadonlySet<string>,
 ): Promise<void> {
   const desired = new Set(plan.events.map((e) => e.key));
   const { keys, keyPrefixes } = reconciliationScope(opts);
@@ -614,6 +709,9 @@ async function removeStaleEvents(
 
   for (const link of links) {
     if (desired.has(link.key)) continue;
+    // A session the student already sat through is not stale, it is history.
+    // The link stays too, so a later sync still knows the event is ours.
+    if (link.key.startsWith("sb_") && completedSessions().has(link.key)) continue;
 
     if (api === null) {
       // Dry run: same diff, no calls.
@@ -671,6 +769,75 @@ export async function planCalendarPayloads(
 /* -------------------------------------------------------------------------- */
 /* Deletion                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/** What `deleteCalendarEvents` managed to do, and what it could not. */
+export interface CalendarEventRemoval {
+  removed: number;
+  errors: string[];
+}
+
+/**
+ * Deletes specific events we created, given the links that named them.
+ *
+ * This is the other half of `store.deleteCourse`. Deleting a course drops its
+ * calendar links, and those rows are the ONLY record of the Google event ids:
+ * the sync's cleanup pass is scoped to the courses being synced, so a deleted
+ * course contributes no keys and no prefixes and can never reach its own
+ * events again. Every deadline, study session and class series it wrote would
+ * sit on the student's calendar for the rest of the term, unremovable by
+ * anything but hand. Hence: the links come back out of the store, and land
+ * here on their way to being forgotten.
+ *
+ * Best effort by construction. It never throws, and a caller is expected to
+ * report the count rather than act on it -- the student asked for the course
+ * to go, and a Google outage is not a reason to refuse them. What is lost when
+ * Google is down is the cleanup, not the delete.
+ *
+ * A 404/410 counts as removed, exactly as it does in the reconciliation pass:
+ * the event is not there, which is the end state that was asked for.
+ */
+export async function deleteCalendarEvents(
+  userId: string,
+  links: readonly KeyedCalendarLink[],
+): Promise<CalendarEventRemoval> {
+  const result: CalendarEventRemoval = { removed: 0, errors: [] };
+  if (links.length === 0) return result;
+
+  let api: calendar_v3.Calendar;
+  try {
+    const auth = await getAuthedClient(userId);
+    api = google.calendar({ version: "v3", auth });
+  } catch (err) {
+    // No account, no token, no network: nothing to do and nothing to fail.
+    result.errors.push(`Calendar unavailable: ${describeGoogleError(err).message}`);
+    return result;
+  }
+
+  for (const link of links) {
+    try {
+      await withRetry(() =>
+        api.events.delete({
+          calendarId: link.calendarId,
+          eventId: link.googleEventId,
+        }),
+      );
+      result.removed += 1;
+    } catch (err) {
+      const info = describeGoogleError(err);
+      if (info.status === 404 || info.status === 410) {
+        result.removed += 1;
+        continue;
+      }
+      // Collected, never thrown: one undeletable event must not strand the
+      // other nine.
+      result.errors.push(
+        `Could not remove a calendar event (${link.key}): ${info.message}`,
+      );
+    }
+  }
+
+  return result;
+}
 
 /**
  * Removes the user's "Syllabus AI" calendar from their Google account. Returns

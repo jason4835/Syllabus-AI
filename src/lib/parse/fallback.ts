@@ -7,12 +7,22 @@
  *   2. Insurance. When the OpenAI call fails mid-upload, the user gets this
  *      instead of an error page.
  *
- * The governing rule is honesty over coverage. Every item it emits carries a
- * confidence in the 0.4-0.6 band (the UI surfaces anything under 0.6 for
- * review) and the result always carries a warning saying pattern matching, not
- * AI, produced it. It would be easy to make this look more confident than it
- * is; that would be the wrong trade, because a student who trusts a wrong due
- * date misses a real deadline.
+ * The governing rule is honesty over coverage. The result always carries a
+ * warning saying pattern matching, not AI, produced it, and every item carries
+ * a confidence that actually discriminates:
+ *
+ *   0.72  a clean row: a strong kind rule, one unambiguous date, explicit year
+ *   0.64  the same row with the year inferred from the term
+ *   0.60  a weak kind rule ("Response Paper" could be several things)
+ *   <=0.5 something is ambiguous: two dates in one cell, a date outside the
+ *         term, or no date at all
+ *
+ * `REVIEW_CONFIDENCE_THRESHOLD` is 0.6 and `needsReview` compares with `<=`, so
+ * the first two bands pass and everything else asks the student to look. An
+ * earlier version capped the whole parser at exactly 0.6, which meant every
+ * single item flagged -- as useless as nothing flagging. It would be easy to
+ * make this look more confident than it is; that would be the wrong trade,
+ * because a student who trusts a wrong due date misses a real deadline.
  */
 
 import type {
@@ -33,9 +43,11 @@ import {
   parseDaysOfWeek,
   parseTime,
   parseTimeRange,
+  readDate,
   termWindowFromLabel,
   type DateContext,
 } from "./dates";
+import { pluralize } from "@/components/format";
 
 type LooseAssessment = ParsedSyllabus["assessments"][number];
 
@@ -53,6 +65,10 @@ export interface FallbackOptions {
  * has to beat both.
  */
 const KIND_RULES: Array<{ re: RegExp; kind: AssessmentKind; strong: boolean }> = [
+  // A take-home is a DEADLINE, whatever it is called. It has to beat the exam
+  // rules: filed as an exam, "Take-home final" is drawn on the calendar as a
+  // sitting that begins at its 11:59 PM cutoff.
+  { re: /\btake-?\s?home\b/i, kind: "assignment", strong: true },
   { re: /\bfinal\s+(?:exam|examination)\b/i, kind: "exam", strong: true },
   { re: /\bmidterm\b/i, kind: "exam", strong: true },
   { re: /\bquiz(?:zes)?\b/i, kind: "quiz", strong: true },
@@ -921,9 +937,37 @@ function parseDueTimes(text: string, warnings: string[]): DueTimes | null {
   return lone ? { start: lone, end: null } : null;
 }
 
+/**
+ * Confidence bands. See the module docstring -- these exist to DISCRIMINATE, so
+ * a clean row has to clear `REVIEW_CONFIDENCE_THRESHOLD` (0.6) and anything
+ * ambiguous has to stay at or under it.
+ */
+const CONFIDENCE = {
+  base: 0.5,
+  /** The kind rule was specific ("Midterm"), not a catch-all ("report"). */
+  strongKind: 0.12,
+  /** The syllabus printed the year, which removes the riskiest guess we make. */
+  explicitYear: 0.1,
+  /** A year we inferred from the term window: honest, but ours rather than theirs. */
+  inferredYear: 0.02,
+  noDate: -0.15,
+  /** Ceilings, not deductions: an ambiguous item must never clear the threshold. */
+  ambiguousCeiling: 0.5,
+  outsideTermCeiling: 0.45,
+  floor: 0.3,
+  cap: 0.8,
+} as const;
+
+/** Is a resolved date inside the (already padded) term window we inferred years against? */
+function outsideTerm(date: string, ctx: DateContext): boolean {
+  if (!ctx.termStart || !ctx.termEnd) return false;
+  return date < ctx.termStart || date > ctx.termEnd;
+}
+
 function findAssessments(
   lines: string[],
   ctx: DateContext,
+  term: { start: string | null; end: string | null },
   warnings: string[],
 ): LooseAssessment[] {
   const candidates: LooseAssessment[] = [];
@@ -944,7 +988,8 @@ function findAssessments(
       const dated = cellHasDate ? cell : line;
       if (!cellHasDate && findDateSpans(line).length === 0) continue;
 
-      const dueDate = normalizeDate(dated, ctx);
+      const reading = readDate(dated, ctx);
+      const dueDate = reading.date;
       const title = cleanTitle(cell);
       if (title.length < 3) continue;
       // "Week 5" alone is a schedule label, not an assignment.
@@ -958,10 +1003,34 @@ function findAssessments(
       // An explicit four-digit year removes the riskiest guess we make, so it
       // earns a little confidence; a missing date costs some.
       const hasExplicitYear = /\b20\d{2}\b/.test(dated);
-      let confidence = 0.45;
-      if (rule.strong) confidence += 0.05;
-      if (hasExplicitYear) confidence += 0.1;
-      if (!dueDate) confidence -= 0.1;
+      let confidence: number = CONFIDENCE.base;
+      if (rule.strong) confidence += CONFIDENCE.strongKind;
+      if (hasExplicitYear) confidence += CONFIDENCE.explicitYear;
+      else if (dueDate) confidence += CONFIDENCE.inferredYear;
+      if (!dueDate) confidence += CONFIDENCE.noDate;
+
+      // Two dates in one cell. We picked one, but the student has to be the one
+      // who decides -- silently taking either is how a midterm moved 19 days.
+      if (reading.ambiguous) {
+        confidence = Math.min(confidence, CONFIDENCE.ambiguousCeiling);
+        pushWarning(
+          warnings,
+          `"${title}" had more than one date beside it (${reading.candidates.join(", ")}); ${dueDate ?? "none"} was used — confirm it.`,
+        );
+      }
+
+      // A date carrying its own year skips year inference entirely, which is
+      // also how it skips the only sanity check we have. A May date in a Fall
+      // course is a misprint or a misread, never a quiet fact.
+      if (dueDate && outsideTerm(dueDate, ctx)) {
+        confidence = Math.min(confidence, CONFIDENCE.outsideTermCeiling);
+        pushWarning(
+          warnings,
+          `"${title}" is dated ${dueDate}, outside the course term${
+            term.start && term.end ? ` (${term.start} to ${term.end})` : ""
+          } — it was kept, but check it.`,
+        );
+      }
 
       const inlineWeight = /\((\d{1,3}(?:\.\d+)?)\s*%\)/.exec(cell);
 
@@ -976,10 +1045,10 @@ function findAssessments(
         endTime: times?.end ?? null,
         weightPercent: inlineWeight ? Number(inlineWeight[1]) : null,
         sourceText: collapse(line).slice(0, 400),
-        confidence: clamp(Number(confidence.toFixed(2)), 0.4, 0.6),
-        // Nothing here has been seen by a human yet. Everything this parser
-        // emits sits in the 0.4-0.6 band precisely so the UI asks the student
-        // to confirm it; marking it reviewed would erase that request.
+        confidence: clamp(Number(confidence.toFixed(2)), CONFIDENCE.floor, CONFIDENCE.cap),
+        // Nothing here has been seen by a human yet. A clean row clears the
+        // review threshold; anything the parser had to guess at stays under it,
+        // so the UI asks the student about the items that actually need it.
         reviewedAt: null,
         notes: null,
       });
@@ -1489,11 +1558,11 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
   const meetingTimes = findMeetingTimes(lines);
   const gradeWeights = findGradeWeights(lines);
   const policies = findPolicies(text);
-  const assessments = findAssessments(lines, inferenceCtx, warnings);
+  const assessments = findAssessments(lines, inferenceCtx, termRange, warnings);
   const noClass = findNoClassPeriods(lines, inferenceCtx, termRange, warnings);
 
   if (!code) {
-    warnings.push("No course code (like \"MATH 221\") was found -- please set the course name yourself.");
+    warnings.push("No course code (like \"MATH 221\") was found — please set the course name yourself.");
   }
   if (!termRange.explicit && term) {
     warnings.push(
@@ -1512,7 +1581,7 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
     const total = gradeWeights.reduce((sum, w) => sum + w.weightPercent, 0);
     if (Math.abs(total - 100) > 0.5) {
       warnings.push(
-        `Grading weights add up to ${Number(total.toFixed(1))}%, not 100% -- a category was probably missed or double-counted.`,
+        `Grading weights add up to ${Number(total.toFixed(1))}%, not 100% — a category was probably missed or double-counted.`,
       );
     }
   }
@@ -1523,7 +1592,7 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
     const undated = assessments.filter((a) => a.dueDate === null).length;
     if (undated > 0) {
       warnings.push(
-        `${undated} item(s) had no date we could resolve confidently and were left undated rather than guessed.`,
+        `${pluralize(undated, "item")} had no date we could resolve confidently and ${undated === 1 ? "was" : "were"} left undated rather than guessed.`,
       );
     }
   }
@@ -1537,7 +1606,7 @@ export function fallbackParse(text: string, options: FallbackOptions = {}): Pars
   const sections = [...new Set(meetingTimes.map((m) => m.section).filter((s) => s !== null))];
   if (sections.length > 1) {
     warnings.push(
-      `This syllabus lists ${sections.length} sections (${sections.slice(0, 4).join(", ")}${sections.length > 4 ? ", ..." : ""}). All of them were kept -- choose yours before syncing, so only your own meetings reach your calendar.`,
+      `This syllabus lists ${sections.length} sections (${sections.slice(0, 4).join(", ")}${sections.length > 4 ? ", ..." : ""}). All of them were kept — choose yours before syncing, so only your own meetings reach your calendar.`,
     );
   }
 

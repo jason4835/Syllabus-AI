@@ -128,7 +128,7 @@ function describeChanges(
       const when = a.dueDate ? ` due ${formatShortDate(a.dueDate)}` : " (no date yet)";
       const n = blocksFor(a.id);
       itemChanges.push(
-        `Added ${label(a)}${when} -- ${n > 0 ? `${sessions(n)} scheduled` : "nothing scheduled yet"}.`,
+        `Added ${label(a)}${when} — ${n > 0 ? `${sessions(n)} scheduled` : "nothing scheduled yet"}.`,
       );
       continue;
     }
@@ -139,15 +139,15 @@ function describeChanges(
         const dir = delta > 0 ? "later" : "earlier";
         const mag = Math.abs(delta);
         itemChanges.push(
-          `${label(a)} moved ${mag} day${mag === 1 ? "" : "s"} ${dir} (${formatShortDate(before.dueDate)} -> ${formatShortDate(a.dueDate)}) -- ${sessions(blocksFor(a.id))} rescheduled.`,
+          `${label(a)} moved ${mag} day${mag === 1 ? "" : "s"} ${dir} (${formatShortDate(before.dueDate)} -> ${formatShortDate(a.dueDate)}) — ${sessions(blocksFor(a.id))} rescheduled.`,
         );
       } else if (a.dueDate) {
         itemChanges.push(
-          `${label(a)} now has a date (${formatShortDate(a.dueDate)}) -- ${sessions(blocksFor(a.id))} scheduled.`,
+          `${label(a)} now has a date (${formatShortDate(a.dueDate)}) — ${sessions(blocksFor(a.id))} scheduled.`,
         );
       } else {
         itemChanges.push(
-          `${label(a)} lost its due date -- ${sessions(prevBlocksFor(a.id))} dropped until it has one again.`,
+          `${label(a)} lost its due date — ${sessions(prevBlocksFor(a.id))} dropped until it has one again.`,
         );
       }
       continue;
@@ -155,7 +155,7 @@ function describeChanges(
 
     if (before.kind !== a.kind) {
       itemChanges.push(
-        `${label(a)} reclassified from ${before.kind} to ${a.kind} -- estimate is now ~${estimatedHoursFor(a)}h (was ~${estimatedHoursFor(before)}h).`,
+        `${label(a)} reclassified from ${before.kind} to ${a.kind} — estimate is now ~${estimatedHoursFor(a)}h (was ~${estimatedHoursFor(before)}h).`,
       );
       continue;
     }
@@ -167,7 +167,7 @@ function describeChanges(
       const hoursAfter = estimatedHoursFor(a);
       if (hoursBefore !== hoursAfter) {
         itemChanges.push(
-          `${label(a)} weight changed ${from} -> ${to} -- estimate moved from ~${hoursBefore}h to ~${hoursAfter}h.`,
+          `${label(a)} weight changed ${from} -> ${to} — estimate moved from ~${hoursBefore}h to ~${hoursAfter}h.`,
         );
       }
     }
@@ -177,7 +177,7 @@ function describeChanges(
     if (nextById.has(a.id)) continue;
     const n = prevBlocksFor(a.id);
     itemChanges.push(
-      `Removed ${label(a)} -- ${n > 0 ? `${sessions(n)} freed up` : "nothing was scheduled for it"}.`,
+      `Removed ${label(a)} — ${n > 0 ? `${sessions(n)} freed up` : "nothing was scheduled for it"}.`,
     );
   }
 
@@ -205,7 +205,7 @@ function describeChanges(
   const peakAfter = heaviestWeek(plan.weeks);
   if (peakAfter && peakAfter.weekStart !== peakBefore?.weekStart) {
     weekChanges.push(
-      `Week ${peakAfter.weekNumber} (${formatShortDate(peakAfter.weekStart)}) is now your heaviest week -- ~${peakAfter.estimatedHours}h of work lands there (${peakAfter.studyHours}h study, ${peakAfter.dueHours}h due).`,
+      `Week ${peakAfter.weekNumber} (${formatShortDate(peakAfter.weekStart)}) is now your heaviest week — ~${peakAfter.estimatedHours}h of work lands there (${peakAfter.studyHours}h study, ${peakAfter.dueHours}h due).`,
     );
   }
 
@@ -219,7 +219,7 @@ function describeChanges(
   }
 
   const all = [...itemChanges, ...weekChanges.slice(0, 4)];
-  if (all.length === 0) return ["Nothing moved -- the plan is unchanged."];
+  if (all.length === 0) return ["Nothing moved — the plan is unchanged."];
   return all;
 }
 

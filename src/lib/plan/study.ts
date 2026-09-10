@@ -23,17 +23,22 @@
 import type {
   Assessment,
   AssessmentKind,
+  CalendarPrefs,
   Course,
   MeetingTime,
   StudyBlock,
   WeekLoad,
 } from "@/lib/types";
+import { isSitting } from "@/lib/types";
+import { inNoClassPeriod, selectCourseMeetings } from "@/lib/calendar/events";
 import {
   addDays,
   dayOfWeek,
   daysBetween,
   estimatedHoursFor,
   formatShortDate,
+  localDateIn,
+  localMinutesIn,
   minutesOfDay,
   mondayOf,
   parseISODate,
@@ -43,6 +48,16 @@ import {
 export interface StudyOptions {
   /** Injected so the scheduler is testable. Defaults to `new Date()`. */
   now?: Date;
+  /**
+   * IANA zone the student lives in, e.g. "America/New_York".
+   *
+   * `now` is an instant; which calendar day it falls on is a question only a
+   * zone can answer. Without this the scheduler uses the process zone, which on
+   * a UTC host means a New York student's Tuesday evening is already Wednesday
+   * -- so tonight is rejected as "past" and the first session is quietly lost.
+   * Omit it and behaviour is exactly what it was.
+   */
+  timeZone?: string;
   /** Earliest hour a block may start. Nobody studies well at 6am on a plan. */
   dayStartHour?: number;
   /** Latest hour a block may end. */
@@ -164,27 +179,73 @@ function mergeIntervals(list: Interval[]): Interval[] {
 }
 
 /**
- * Class time, keyed by weekday, merged across *all* the student's courses --
- * they cannot be in a MATH lecture and a CS lab at once, so every course's
- * meetings block every course's study time.
+ * What the student is actually expected to be in a room for.
+ *
+ * Every course's meetings block every other course's study time -- nobody is in
+ * a MATH lecture and a CS lab at once -- but only the meetings the student
+ * actually attends may block anything. Three filters, and all three are the
+ * calendar's, not a second copy of them:
+ *
+ *  - **Kind.** Office hours are optional, so they never black out an afternoon.
+ *    Lectures, recitations and labs do.
+ *  - **Section.** A six-section course used to black out six lecture slots for
+ *    a student enrolled in one of them. With no section chosen yet, the
+ *    section-specific meetings are withheld rather than guessed.
+ *  - **No-class periods.** A break or the week after the last day of classes is
+ *    free time; reserving a lecture slot through finals week is how the plan
+ *    refused to schedule on the days a student most needs it to.
+ *
+ * `selectCourseMeetings` and `inNoClassPeriod` come from the calendar module,
+ * which already had to answer exactly these questions to decide what goes on
+ * the student's calendar. Same answer, one implementation.
  */
-function classBusyByWeekday(courses: Course[]): Map<number, Interval[]> {
-  const byDay = new Map<number, Interval[]>();
-  const push = (day: number, m: MeetingTime) => {
-    const start = minutesOfDay(m.startTime);
-    const end = minutesOfDay(m.endTime);
-    if (start === null || end === null || end <= start) return;
-    const list = byDay.get(day) ?? [];
-    list.push({ start, end });
-    byDay.set(day, list);
-  };
-  for (const c of courses) {
-    for (const m of c.meetingTimes ?? []) {
-      for (const day of m.daysOfWeek ?? []) push(day, m);
+const STUDY_BUSY_PREFS: CalendarPrefs = {
+  classes: true,
+  recitations: true,
+  officeHours: false,
+  deadlines: false,
+  studySessions: false,
+};
+
+interface AttendedMeeting {
+  course: Course;
+  days: number[];
+  interval: Interval;
+}
+
+function attendedMeetings(courses: Course[]): AttendedMeeting[] {
+  const out: AttendedMeeting[] = [];
+  for (const course of courses) {
+    for (const { meeting } of selectCourseMeetings(course, STUDY_BUSY_PREFS).meetings) {
+      const interval = meetingInterval(meeting);
+      if (!interval) continue;
+      const days = (meeting.daysOfWeek ?? []).filter(
+        (d) => Number.isInteger(d) && d >= 0 && d <= 6,
+      );
+      if (days.length === 0) continue;
+      out.push({ course, days, interval });
     }
   }
-  for (const [day, list] of byDay) byDay.set(day, mergeIntervals(list));
-  return byDay;
+  return out;
+}
+
+function meetingInterval(m: MeetingTime): Interval | null {
+  const start = minutesOfDay(m.startTime);
+  const end = minutesOfDay(m.endTime);
+  if (start === null || end === null || end <= start) return null;
+  return { start, end };
+}
+
+/** The class time that really happens on one date, merged. */
+function classBusyOnDate(meetings: AttendedMeeting[], dayIso: string): Interval[] {
+  const dow = dayOfWeek(dayIso);
+  const hits: Interval[] = [];
+  for (const m of meetings) {
+    if (!m.days.includes(dow)) continue;
+    if (inNoClassPeriod(dayIso, m.course)) continue;
+    hits.push({ ...m.interval });
+  }
+  return mergeIntervals(hits);
 }
 
 type PlacementFailure = "past" | "cap" | "no-slot";
@@ -200,10 +261,6 @@ function toLocalDateTime(dayIso: string, minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${dayIso}T${pad2(h)}:${pad2(m)}:00`;
-}
-
-function localISODate(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 const ORDINALS = [
@@ -256,11 +313,11 @@ export function buildStudyBlocks(
   const minBlock = opts.minBlockHours ?? DEFAULT_STUDY_OPTIONS.minBlockHours;
   const maxBlock = opts.maxBlockHours ?? DEFAULT_STUDY_OPTIONS.maxBlockHours;
 
-  const todayIso = localISODate(now);
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const todayIso = localDateIn(now, opts.timeZone);
+  const nowMinutes = localMinutesIn(now, opts.timeZone);
 
   const courseById = new Map(courses.map((c) => [c.id, c]));
-  const classBusy = classBusyByWeekday(courses);
+  const attended = attendedMeetings(courses);
   const intensityByWeek = new Map(weeks.map((w) => [w.weekStart, w.intensity]));
 
   // Mutable calendar state, shared across every assessment.
@@ -285,7 +342,7 @@ export function buildStudyBlocks(
     if (earliest >= dayEnd) return { ok: false, reason: "no-slot" };
 
     const busy = mergeIntervals([
-      ...(classBusy.get(dayOfWeek(dayIso)) ?? []),
+      ...classBusyOnDate(attended, dayIso),
       ...(bookedByDay.get(dayIso) ?? []),
     ]);
 
@@ -427,9 +484,9 @@ function blockTitle(
   const prefix = courseCode ? `${courseCode} ` : "";
   if (total === 1) return `${prefix}${a.title}`;
   if (a.kind === "project" || a.kind === "presentation") {
-    return `${prefix}${a.title} -- ${milestoneLabel(index, total)} (${index + 1}/${total})`;
+    return `${prefix}${a.title} \u2014 ${milestoneLabel(index, total)} (${index + 1}/${total})`;
   }
-  return `${prefix}${a.title} -- Review ${index + 1}/${total}`;
+  return `${prefix}${a.title} \u2014 Review ${index + 1}/${total}`;
 }
 
 interface RationaleInput {
@@ -467,20 +524,32 @@ function buildRationale(input: RationaleInput): string {
   } = input;
 
   const name = courseCode ? `${courseCode} ${a.title}` : a.title;
+  // An exam is not handed in, so it is never "due" -- the phrasing chat had
+  // already been cleaned of was still being written into twelve blocks a
+  // semester, and copied verbatim into the Google Calendar event body.
+  const sitting = isSitting(a);
   const out =
-    daysOut === 0 ? "due today" : daysOut === 1 ? "it's due tomorrow" : `you're ${daysOut} days out`;
+    daysOut === 0
+      ? sitting
+        ? "it's today"
+        : "due today"
+      : daysOut === 1
+        ? sitting
+          ? "it's tomorrow"
+          : "it's due tomorrow"
+        : `you're ${daysOut} days out`;
   const len = hours === 1 ? "1h" : `${hours}h`;
 
   let core: string;
   if (total === 1) {
-    core = `A single ${len} block for ${name} -- ${out}. At this size one focused sitting is enough; anything longer is padding.`;
+    core = `A single ${len} block for ${name} \u2014 ${out}. At this size one focused sitting is enough; anything longer is padding.`;
   } else if (a.kind === "exam" || a.kind === "quiz") {
-    core = `${capitalize(ordinal(index))} of ${countWord(total)} spaced sessions before ${name} -- ${out}. ${len} here; splitting the review across days beats one long cram because each pass re-tests what the last one let slip.`;
+    core = `${capitalize(ordinal(index))} of ${countWord(total)} spaced sessions before ${name} \u2014 ${out}. ${len} here; splitting the review across days beats one long cram because each pass re-tests what the last one let slip.`;
   } else if (a.kind === "project" || a.kind === "presentation") {
     const label = milestoneLabel(index, total).toLowerCase();
-    core = `${capitalize(label)} milestone (${index + 1} of ${total}) on ${name} -- ${out}. ${len} now keeps the ${index === total - 1 ? "last day from becoming the whole project" : "final week from becoming the whole project"}.`;
+    core = `${capitalize(label)} milestone (${index + 1} of ${total}) on ${name} \u2014 ${out}. ${len} now keeps the ${index === total - 1 ? "last day from becoming the whole project" : "final week from becoming the whole project"}.`;
   } else {
-    core = `${capitalize(ordinal(index))} of ${countWord(total)} work sessions on ${name} -- ${out}. ${len} here so the last day is a review, not a first draft.`;
+    core = `${capitalize(ordinal(index))} of ${countWord(total)} work sessions on ${name} \u2014 ${out}. ${len} here so the last day is a review, not a first draft.`;
   }
 
   if (shift === 0) return core;
@@ -500,7 +569,7 @@ function buildRationale(input: RationaleInput): string {
       why = `${ideal} had no free window between classes before ${dayEndHour}:00`;
   }
   const direction = shift < 0 ? `Moved ${magnitude} ${dayWord} earlier` : `Pushed ${magnitude} ${dayWord} later`;
-  return `${core} ${direction} -- ${why}.`;
+  return `${core} ${direction} \u2014 ${why}.`;
 }
 
 function capitalize(s: string): string {

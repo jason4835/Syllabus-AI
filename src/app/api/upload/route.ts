@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
 import { syncToNotion } from "@/lib/notion/sync";
@@ -104,7 +105,32 @@ export async function POST(req: Request) {
     const { course, assessments } = await store.createCourse(userId, parsed);
     // Deleted only after the new course is safely stored: the reverse order
     // would lose the old syllabus if the write failed.
-    if (replacing) await store.deleteCourse(userId, replacing);
+    //
+    // The old course's Google events go with it. Every id in the new course is
+    // freshly minted, so nothing the next sync writes will land on top of the
+    // old events -- leaving them behind means a re-upload silently doubles the
+    // whole semester on the student's calendar, which is the single worst
+    // outcome of a flow whose entire point is "this replaces that". Best
+    // effort, like the delete route: the upload has already succeeded.
+    if (replacing) {
+      const deletion = await store.deleteCourse(userId, replacing);
+      if (deletion && deletion.calendarLinks.length > 0) {
+        try {
+          const removal = await deleteCalendarEvents(userId, deletion.calendarLinks);
+          if (removal.errors.length > 0) {
+            logApiError("upload.calendar_cleanup_failed", removal.errors[0], {
+              userId,
+              courseId: replacing,
+            });
+          }
+        } catch (err) {
+          logApiError("upload.calendar_cleanup_failed", err, {
+            userId,
+            courseId: replacing,
+          });
+        }
+      }
+    }
 
     const notion = await createNotionPage(userId, course, assessments);
     return ok({
@@ -161,7 +187,11 @@ async function createNotionPage(
   const conn = await store.getNotionConnection(userId);
   if (!conn || conn.status !== "connected") return null;
   try {
-    const plan = buildSemesterPlan([course], assessments);
+    const plan = buildSemesterPlan([course], assessments, {
+      // The student's zone, not the host's — otherwise an evening upload can
+      // lose its first study session to a "today" that has already rolled over.
+      timeZone: (await store.getUser(userId))?.timezone ?? undefined,
+    });
     const result = await syncToNotion(userId, {
       courses: [course],
       assessments,

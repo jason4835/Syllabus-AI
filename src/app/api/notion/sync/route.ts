@@ -37,7 +37,8 @@ export async function POST(req: Request) {
     if (courseId && courses.length === 0) return fail("Course not found.", 404);
     const ids = new Set(courses.map((c) => c.id));
     const assessments = allAssessments.filter((a) => ids.has(a.courseId));
-    const plan = buildSemesterPlan(courses, assessments);
+    const timeZone = (await store.getUser(userId))?.timezone ?? undefined;
+    const plan = buildSemesterPlan(courses, assessments, { timeZone });
 
     // Same honesty rule as calendar: no credentials or no connection means we
     // report exactly what a real sync would do, and say it was a dry run.

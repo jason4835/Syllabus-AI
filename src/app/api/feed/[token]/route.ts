@@ -32,8 +32,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
       store.listCourses(user.id),
       store.listAssessments(user.id),
     ]);
-    const plan = buildSemesterPlan(courses, assessments);
+    // Resolved before the plan, not after: "today" decides which study sessions
+    // are still ahead of the student, and the server's zone is not theirs.
     const timeZone = user.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const plan = buildSemesterPlan(courses, assessments, { timeZone });
     const events = buildCalendarEvents({
       courses,
       assessments,

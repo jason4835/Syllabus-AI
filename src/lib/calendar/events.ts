@@ -30,7 +30,7 @@ import type {
   MeetingTime,
   StudyBlock,
 } from "@/lib/types";
-import { isSitting } from "@/lib/types";
+import { isSitting, needsReview } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Model                                                                       */
@@ -146,6 +146,9 @@ const REMINDER_ONE_WEEK = 7 * 24 * 60;
 const REMINDER_STUDY_BLOCK = 30;
 
 const PROVENANCE = "Created by Syllabus AI";
+
+/** Body line for an assessment the user has not confirmed. See `needsReview`. */
+export const UNCONFIRMED_NOTE = "\u00b7 Unconfirmed \u2014 check your syllabus";
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_TIME = /^(\d{2}):(\d{2})$/;
@@ -407,6 +410,12 @@ function describeAssessment(a: Assessment, courseTitle: string | null): string {
     lines.push(`Worth: ${a.weightPercent}% of the final grade`);
   }
   if (a.notes) lines.push("", a.notes);
+  // An item the extractor is unsure about and nobody has confirmed is still put
+  // on the calendar -- withholding it is how a real deadline goes missing -- but
+  // it must not read as settled fact. The note goes in the body, never the
+  // title: a calendar grid is read at a glance, and a title that argues with
+  // itself is worse than one that is simply there.
+  if (needsReview(a)) lines.push(UNCONFIRMED_NOTE);
   // Trailing provenance line: makes it obvious in the user's calendar where an
   // event came from, and lets them search for ours.
   lines.push("", PROVENANCE);
@@ -525,8 +534,13 @@ function normalizeDays(days: number[]): number[] {
   return [...seen].sort((a, b) => a - b);
 }
 
-/** Is `date` inside any of the course's no-class ranges? Inclusive both ends. */
-function inNoClassPeriod(date: string, course: Course): boolean {
+/**
+ * Is `date` inside any of the course's no-class ranges? Inclusive both ends.
+ *
+ * Exported for the study scheduler: a Thanksgiving Wednesday is a free day, and
+ * a lecture slot in finals week is not a lecture.
+ */
+export function inNoClassPeriod(date: string, course: Course): boolean {
   for (const p of course.noClass ?? []) {
     if (!ISO_DATE.test(p.start) || !ISO_DATE.test(p.end)) continue;
     // Lexicographic comparison is exact for zero-padded ISO dates.
@@ -564,11 +578,21 @@ function inNoClassPeriod(date: string, course: Course): boolean {
  *       someone else's classroom at someone else's hour, and an empty calendar
  *       asks a question a wrong calendar does not.
  */
-function selectMeetings(
-  course: Course,
-  prefs: CalendarPrefs,
-  plan: CalendarPlan,
-): { meeting: MeetingTime; index: number }[] {
+export interface SelectedMeetings {
+  /** The meetings to put on the calendar, with their original indices. */
+  meetings: { meeting: MeetingTime; index: number }[];
+  /** True when the syllabus lists several sections and none is chosen yet. */
+  needsSection: boolean;
+}
+
+/**
+ * The pure half of `selectMeetings`: which meetings this student attends, with
+ * no plan to mutate. Exported because the study scheduler has to answer exactly
+ * the same question -- it must not black out six sections of a lecture the
+ * student attends one of, and it must not treat optional office hours as busy.
+ * One implementation, so the two cannot drift apart.
+ */
+export function selectCourseMeetings(course: Course, prefs: CalendarPrefs): SelectedMeetings {
   const all = course.meetingTimes ?? [];
 
   const byPrefs = all
@@ -584,23 +608,41 @@ function selectMeetings(
     const label = m.section?.trim();
     if (label) labels.add(normalizeSection(label));
   }
-  if (labels.size <= 1) return byPrefs;
+  if (labels.size <= 1) return { meetings: byPrefs, needsSection: false };
 
   const chosen = course.section?.trim();
   if (!chosen) {
     // Several sections, none chosen. Withhold the section-specific ones and say
     // so; anything unsectioned still syncs.
-    if (!plan.needsSection.includes(course.id)) plan.needsSection.push(course.id);
-    return byPrefs.filter(({ meeting }) => !meeting.section?.trim());
+    return {
+      meetings: byPrefs.filter(({ meeting }) => !meeting.section?.trim()),
+      needsSection: true,
+    };
   }
 
   const chosenNormalized = normalizeSection(chosen);
-  return byPrefs.filter(({ meeting }) => {
-    const label = meeting.section?.trim();
-    if (!label) return true; // applies to every section
-    if (meeting.section === course.section || label === chosen) return true;
-    return normalizeSection(label) === chosenNormalized;
-  });
+  return {
+    meetings: byPrefs.filter(({ meeting }) => {
+      const label = meeting.section?.trim();
+      if (!label) return true; // applies to every section
+      if (meeting.section === course.section || label === chosen) return true;
+      return normalizeSection(label) === chosenNormalized;
+    }),
+    needsSection: false,
+  };
+}
+
+/** `selectCourseMeetings`, recording the unanswered section question on `plan`. */
+function selectMeetings(
+  course: Course,
+  prefs: CalendarPrefs,
+  plan: CalendarPlan,
+): { meeting: MeetingTime; index: number }[] {
+  const selected = selectCourseMeetings(course, prefs);
+  if (selected.needsSection && !plan.needsSection.includes(course.id)) {
+    plan.needsSection.push(course.id);
+  }
+  return selected.meetings;
 }
 
 function buildMeetingEvents(

@@ -40,6 +40,8 @@ import {
   estimatedHoursFor,
   formatShortDate,
   heaviestWeek,
+  localDateIn,
+  localMinutesIn,
   minutesOfDay,
   mondayOf,
   parseISODate,
@@ -63,7 +65,31 @@ export interface ChatOptions {
   model?: string;
   /** Injectable clock, so "this week" is testable. */
   now?: Date;
+  /**
+   * IANA zone the student lives in, e.g. "America/New_York".
+   *
+   * `now` names an instant; "today" is a calendar day, and only a zone turns
+   * one into the other. On a UTC host a New York student asking at 8pm was
+   * being answered about tomorrow. Omit it and the process zone is used, as
+   * before.
+   */
+  timeZone?: string;
   history?: ChatTurn[];
+}
+
+/**
+ * Everything the answering code needs to know about "now": the instant, the
+ * student's zone, and the calendar day those two imply. Derived once per
+ * question so no two sentences in one answer can disagree about what day it is.
+ */
+interface Clock {
+  now: Date;
+  timeZone?: string;
+  today: string;
+}
+
+function clockOf(now: Date, timeZone?: string): Clock {
+  return { now, timeZone, today: localDateIn(now, timeZone) };
 }
 
 const DEFAULT_MODEL = "gpt-4o-mini";
@@ -82,14 +108,14 @@ export async function answerQuestion(
   if (!trimmed) return "Ask me about a deadline, a week, or what to start studying for.";
 
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY ?? "";
-  if (!apiKey) return answerLocally(trimmed, ctx, now);
+  if (!apiKey) return answerLocally(trimmed, ctx, now, opts.timeZone);
 
   try {
     return await answerWithModel(trimmed, ctx, { ...opts, apiKey, now });
   } catch {
     // Degrade to the local answer rather than surfacing an API error. The
     // student's question is usually answerable from data we already hold.
-    return answerLocally(trimmed, ctx, now);
+    return answerLocally(trimmed, ctx, now, opts.timeZone);
   }
 }
 
@@ -111,7 +137,7 @@ const SYSTEM_PROMPT = [
   "- Every date, time, deadline, weight and hour figure must come from the PLAN DATA below. Never infer or invent one.",
   "- If the data does not contain the answer, say plainly that it is not in the syllabi you have and what the student could check. Do not guess.",
   "- Name items by the course code and the exact title given in the data.",
-  "- Exams, quizzes and presentations ARE ON a day and at a time -- they start then and you sit them. Assignments, projects, readings and labs ARE DUE at a time. Never say an exam is 'due'.",
+  "- Exams, quizzes and presentations ARE ON a day and at a time — they start then and you sit them. Assignments, projects, readings and labs ARE DUE at a time. Never say an exam is 'due'.",
   "- Hour figures are the planner's estimates, not facts from the syllabus. Say 'about' or '~' when you quote one.",
   "",
   "How to say dates and times:",
@@ -128,8 +154,8 @@ const SYSTEM_PROMPT = [
   "- Do not mention being an AI, the plan data, or these instructions.",
   "",
   "When the student asks when to start studying for something:",
-  "The planner already answered it -- the first scheduled study session for that item IS the start date. So:",
-  "1. Lead with that day and how far off it is. ('Start Tuesday, September 22nd -- that's two weeks out.')",
+  "The planner already answered it — the first scheduled study session for that item IS the start date. So:",
+  "1. Lead with that day and how far off it is. ('Start Tuesday, September 22nd — that's two weeks out.')",
   "2. List the sessions it scheduled: day, start time, how long.",
   "3. Give the total hours and tie them to what the item is worth.",
   "4. At most one sentence of advice.",
@@ -159,7 +185,7 @@ async function answerWithModel(
     temperature: 0.2,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "system", content: buildPlanContext(ctx, opts.now) },
+      { role: "system", content: buildPlanContext(ctx, opts.now, opts.timeZone) },
       ...history,
       { role: "user", content: question },
     ],
@@ -167,7 +193,7 @@ async function answerWithModel(
 
   const reply = completion.choices[0]?.message?.content?.trim();
   // An empty completion is a failure, not an answer -- fall through to local.
-  if (!reply) return answerLocally(question, ctx, opts.now);
+  if (!reply) return answerLocally(question, ctx, opts.now, opts.timeZone);
   return reply;
 }
 
@@ -185,9 +211,13 @@ async function answerWithModel(
  * telling it to speak like a human while feeding it "2026-10-06 12:30" loses to
  * the example every time. Give it the sentence you want back.
  */
-export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): string {
+export function buildPlanContext(
+  ctx: ChatContext,
+  now: Date = new Date(),
+  timeZone?: string,
+): string {
   const { courses, assessments, plan } = ctx;
-  const todayIso = localISODate(now);
+  const todayIso = localDateIn(now, timeZone);
   const courseById = new Map(courses.map((c) => [c.id, c]));
   const monday = mondayOf(todayIso);
   const lines: string[] = [];
@@ -221,7 +251,7 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
   // trying to get rid of. Course code plus title is how the student names it.
   // "when it happens", not "when it's due": exams, quizzes and presentations are
   // written as happening ON a day, and the model copies the shape it is given.
-  lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it happens -- 'on' for a sitting you attend, 'due' for a deadline | prep estimate)");
+  lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it happens — 'on' for a sitting you attend, 'due' for a deadline | prep estimate)");
   for (const a of dated) {
     const code = courseById.get(a.courseId)?.code ?? "?";
     const weight = a.weightPercent === null ? "weight not stated" : `worth ${a.weightPercent}%`;
@@ -237,7 +267,7 @@ export function buildPlanContext(ctx: ChatContext, now: Date = new Date()): stri
 
   const undated = assessments.filter((a) => !a.dueDate);
   if (undated.length) {
-    lines.push("", "UNDATED (no resolvable date in the syllabus -- never claim a date for these)");
+    lines.push("", "UNDATED (no resolvable date in the syllabus — never claim a date for these)");
     for (const a of undated) {
       const code = courseById.get(a.courseId)?.code ?? "?";
       lines.push(`- ${code} | ${a.title} | ${a.kind}`);
@@ -513,10 +543,18 @@ export function rankAssessments(
   courses: Course[],
   assessments: Assessment[],
   now: Date = new Date(),
+  timeZone?: string,
 ): AssessmentMatch[] {
   const courseById = new Map(courses.map((c) => [c.id, c]));
   const q = buildQuery(question, courses);
-  const today = localISODate(now);
+  const today = localDateIn(now, timeZone);
+
+  // "When is my Spanish oral exam?" used to come back with MATH 221's final,
+  // because "exam" alone cleared the bar and "spanish" and "oral" cost nothing.
+  // A query whose own distinguishing words appear NOWHERE in the student's
+  // courses is not a weak match, it is a question about something we do not
+  // have -- so it returns nothing and the caller asks which item was meant.
+  if (!namesAnythingWeHave(q, courses, assessments)) return [];
 
   // Equal evidence: the student almost certainly means the one still ahead of
   // them, soonest first. Falling back to the most recent past item keeps "how
@@ -552,8 +590,70 @@ export function findAssessment(
   courses: Course[],
   assessments: Assessment[],
   now: Date = new Date(),
+  timeZone?: string,
 ): Assessment | null {
-  return rankAssessments(question, courses, assessments, now)[0]?.assessment ?? null;
+  return rankAssessments(question, courses, assessments, now, timeZone)[0]?.assessment ?? null;
+}
+
+/** Every kind word, across every kind -- the vocabulary that identifies nothing. */
+const ALL_KIND_WORDS = new Set(Object.values(KIND_WORDS).flat());
+
+/**
+ * Is this token one the student could have used to name a *particular* item?
+ *
+ * "exam", "midterm" and "hw" are not: they say what sort of thing is meant, and
+ * every course has some. Bare numbers are not either -- `scoreAssessment`
+ * already handles a contradicting ordinal, and rejecting on one would throw out
+ * "quiz 3" when the syllabus calls it "Quiz III". What is left ("spanish",
+ * "oral", "thermodynamics") is the part of the query that picks something out.
+ */
+function isDistinctive(token: string): boolean {
+  if (/^\d+$/.test(token)) return false;
+  if (ALL_KIND_WORDS.has(token)) return false;
+  return !(ALIASES[token] ?? []).some((a) => ALL_KIND_WORDS.has(a));
+}
+
+/** Every word that appears in a course or an assessment the student actually has. */
+function corpusTokens(courses: Course[], assessments: Assessment[]): Set<string> {
+  const out = new Set<string>();
+  for (const c of courses) {
+    for (const t of contentTokens(`${c.code} ${c.title}`)) out.add(t);
+  }
+  for (const a of assessments) {
+    for (const t of contentTokens(a.title)) out.add(t);
+  }
+  return out;
+}
+
+/**
+ * True unless the query's distinctive words match nothing at all. A query with
+ * no distinctive words ("when should I start studying for the final?") passes:
+ * it is vague, not about a course the student is not taking, and the scorer is
+ * the right judge of it.
+ */
+function namesAnythingWeHave(q: Query, courses: Course[], assessments: Assessment[]): boolean {
+  const distinctive = q.tokens.filter(isDistinctive);
+  if (distinctive.length === 0) return true;
+  const corpus = corpusTokens(courses, assessments);
+  return distinctive.some(
+    (t) => corpus.has(t) || (ALIASES[t] ?? []).some((a) => corpus.has(a)),
+  );
+}
+
+/**
+ * The question is about *something in particular*, and that something is not in
+ * the student's semester. Separate from "no match": a vague question deserves
+ * the overview, while "when is my Spanish oral exam?" deserves to be told we
+ * have no such thing rather than a cheerful summary of three other courses.
+ */
+function asksAboutSomethingWeLack(
+  question: string,
+  courses: Course[],
+  assessments: Assessment[],
+): boolean {
+  const q = buildQuery(question, courses);
+  if (q.tokens.filter(isDistinctive).length === 0) return false;
+  return !namesAnythingWeHave(q, courses, assessments);
 }
 
 /**
@@ -572,24 +672,41 @@ function ambiguityNote(
   if (rivals.length === 0) return null;
   const codeOf = (id: string) => courses.find((c) => c.id === id)?.code ?? "another course";
   const others = [...new Set(rivals.map((m) => codeOf(m.assessment.courseId)))];
-  return `Heads up: ${others.length + 1} of your courses have something by that name (${[codeOf(chosen.courseId), ...others].join(", ")}). I'm answering for the one that comes first -- name the course if you meant another.`;
+  return `Heads up: ${others.length + 1} of your courses have something by that name (${[codeOf(chosen.courseId), ...others].join(", ")}). I'm answering for the one that comes first — name the course if you meant another.`;
 }
 
-type Intent = "heaviest" | "dueThisWeek" | "behind" | "studyFor" | "overview";
+type Intent = "policy" | "heaviest" | "dueThisWeek" | "behind" | "studyFor" | "overview";
+
+/**
+ * Questions about the rules of a course rather than its calendar.
+ *
+ * Checked first, and the reason it exists: "What is the late work policy for
+ * HIST 310?" contains the word "late", which an unanchored alternative in the
+ * "behind" pattern matched, so a policy question came back as a report of
+ * missed deadlines. Chat is deliberately not given the policies, so the honest
+ * answer is that we do not have them.
+ */
+const POLICY_RE =
+  /\b(polic(?:y|ies)|late\s+work|attendance|academic\s+integrity|plagiarism|grading\s+scale|syllabus\s+say)\b/;
 
 function classify(question: string): Intent {
   const q = question.toLowerCase();
+  if (POLICY_RE.test(q)) return "policy";
   if (/(heaviest|busiest|worst|hardest|craziest|toughest)\s+(week|stretch)/.test(q)) return "heaviest";
   if (/\bweek\b/.test(q) && /(heavy|busy|bad|rough|hard)/.test(q)) return "heaviest";
-  if (/(behind|catch\s*up|falling\s+behind|slipping|overdue|missed|late)/.test(q)) return "behind";
-  if (/(due|coming up|deadline|happening|on my plate).{0,20}(this week|week|soon|now)/.test(q)) {
+  // Every alternative is anchored: an unanchored `late` also fires on
+  // "translate" and "the latest", and `up` on "upcoming".
+  if (/\b(behind|catch\s*up|falling\s+behind|slipping|overdue|missed|late)\b/.test(q)) {
+    return "behind";
+  }
+  if (/\b(due|coming\s+up|deadline|happening|on my plate)\b.{0,20}\b(this week|week|soon|now)\b/.test(q)) {
     return "dueThisWeek";
   }
-  if (/^what'?s? (due|coming|next)/.test(q)) return "dueThisWeek";
-  if (/(when|how).{0,30}(start|begin|study|studying|prep|prepare|work on|revise)/.test(q)) {
+  if (/^what'?s? (due|coming|next)\b/.test(q)) return "dueThisWeek";
+  if (/\b(when|how)\b.{0,30}\b(start|begin|study|studying|prep|prepare|work on|revise)\b/.test(q)) {
     return "studyFor";
   }
-  if (/(study|prep|prepare|revise|ready) (for|4)\b/.test(q)) return "studyFor";
+  if (/\b(study|prep|prepare|revise|ready) (for|4)\b/.test(q)) return "studyFor";
   return "overview";
 }
 
@@ -597,29 +714,61 @@ function classify(question: string): Intent {
  * Answers without a model. Never returns a shrug for the four common shapes --
  * it either has the data and says it, or says precisely what is missing.
  */
-export function answerLocally(question: string, ctx: ChatContext, now: Date = new Date()): string {
+export function answerLocally(
+  question: string,
+  ctx: ChatContext,
+  now: Date = new Date(),
+  timeZone?: string,
+): string {
+  const clock = clockOf(now, timeZone);
   const intent = classify(question);
   switch (intent) {
+    case "policy":
+      return answerPolicy(question, ctx);
     case "heaviest":
-      return answerHeaviest(ctx, now);
+      return answerHeaviest(ctx, clock);
     case "dueThisWeek":
-      return answerDueThisWeek(ctx, now);
+      return answerDueThisWeek(ctx, clock);
     case "behind":
-      return answerBehind(ctx, now);
+      return answerBehind(ctx, clock);
     case "studyFor":
-      return answerStudyFor(question, ctx, now);
+      return answerStudyFor(question, ctx, clock);
     default: {
       // An unlabelled question that names a real item is still a question about
-      // that item -- answer it rather than falling back to a menu.
-      const hit = findAssessment(question, ctx.courses, ctx.assessments, now);
-      if (hit) return describeAssessment(hit, ctx, now);
-      return answerOverview(ctx, now);
+      // that item — answer it rather than falling back to a menu.
+      const hit = findAssessment(question, ctx.courses, ctx.assessments, now, timeZone);
+      if (hit) return describeAssessment(hit, ctx, clock);
+      // Named something we do not have. An overview here reads as an answer to
+      // a question nobody asked, and the student never learns that the item is
+      // missing from their plan.
+      if (asksAboutSomethingWeLack(question, ctx.courses, ctx.assessments)) {
+        return answerUnnamedItem(ctx, clock);
+      }
+      return answerOverview(ctx, clock);
     }
   }
 }
 
-function answerHeaviest(ctx: ChatContext, now: Date): string {
-  const today = localISODate(now);
+/**
+ * The one thing chat cannot answer.
+ *
+ * The planner is given dates, weights and the plan built from them -- never the
+ * syllabus prose. Saying so plainly, and pointing at where the answer really
+ * is, beats both a guess and a shrug.
+ */
+function answerPolicy(question: string, ctx: ChatContext): string {
+  const q = buildQuery(question, ctx.courses);
+  const named = ctx.courses.filter((c) => q.namedCourseIds.has(c.id)).map((c) => c.code);
+  const whose = named.length === 1 ? `${named[0]}'s syllabus` : "your syllabi";
+  return [
+    `I don't have your syllabus policies \u2014 late work, attendance, grading rules and the like never make it into my copy of ${whose}, so anything I said about them would be invented.`,
+    "That section of the PDF is the only place with the real answer; your instructor is the other.",
+    "I can tell you when something's due, which week is your worst, or what to start studying for.",
+  ].join(" ");
+}
+
+function answerHeaviest(ctx: ChatContext, clock: Clock): string {
+  const today = clock.today;
   const week = heaviestWeek(ctx.plan.weeks);
   if (!week) return "I don't have any dated work yet, so there's no heaviest week to point at. Upload a syllabus and I'll build the map.";
 
@@ -635,7 +784,7 @@ function answerHeaviest(ctx: ChatContext, now: Date): string {
     for (const a of items) {
       const due = a.dueDate as string;
       lines.push(
-        `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind} ${whenWord(a)} ${weekdayThe(due, week.weekStart)}, about ${estimatedHoursFor(a)}h`,
+        `  - ${courseCode(ctx, a)} ${a.title} — ${a.kind} ${whenWord(a)} ${weekdayThe(due, week.weekStart)}, about ${estimatedHoursFor(a)}h`,
       );
     }
   }
@@ -651,8 +800,8 @@ function answerHeaviest(ctx: ChatContext, now: Date): string {
   return lines.join("\n");
 }
 
-function answerDueThisWeek(ctx: ChatContext, now: Date): string {
-  const today = localISODate(now);
+function answerDueThisWeek(ctx: ChatContext, clock: Clock): string {
+  const today = clock.today;
   const start = mondayOf(today);
   const end = addDays(start, 6);
   const due = ctx.assessments
@@ -668,14 +817,25 @@ function answerDueThisWeek(ctx: ChatContext, now: Date): string {
     const lines = ["Nothing's due this week. Next up:"];
     for (const a of next) {
       const d = a.dueDate as string;
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} — ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
     }
     return lines.join("\n");
   }
 
-  const hours = Math.round(due.reduce((s, a) => s + estimatedHoursFor(a), 0) * 4) / 4;
+  // Read the week's hours off the plan rather than re-summing the prep of what
+  // is due. Those are two different models -- the plan scores the work that
+  // LANDS in a week (study blocks plus the cost of sitting and submitting),
+  // which is what the heatmap draws -- and running both meant chat said "about
+  // 4.25h" about the same week the chart called 2.8h.
+  const planWeek = ctx.plan.weeks.find((w) => w.weekStart === start) ?? null;
+  const hours = planWeek
+    ? planWeek.estimatedHours
+    : Math.round(due.reduce((s, a) => s + estimatedHoursFor(a), 0) * 4) / 4;
+  const split = planWeek
+    ? ` (${planWeek.studyHours}h of study, ${planWeek.dueHours}h of sitting and submitting)`
+    : "";
   const lines = [
-    `You've got ${countWord(due.length)} thing${due.length === 1 ? "" : "s"} due this week -- ${dateRangePhrase(start, end, today)} -- and about ${hours}h of work behind ${due.length === 1 ? "it" : "them"}:`,
+    `You've got ${countWord(due.length)} thing${due.length === 1 ? "" : "s"} due this week \u2014 ${dateRangePhrase(start, end, today)} \u2014 and about ${hours}h of work lands in it${split}:`,
   ];
   for (const a of due) {
     const d = a.dueDate as string;
@@ -683,21 +843,22 @@ function answerDueThisWeek(ctx: ChatContext, now: Date): string {
     const rel = relativeDay(today, d);
     const when = daysBetween(today, d) < 0 ? "already passed" : rel;
     lines.push(
-      `  - ${courseCode(ctx, a)} ${a.title} -- ${a.kind}${a.weightPercent !== null ? ` worth ${a.weightPercent}%` : ""}, ${whenWord(a)} ${weekdayThe(d, start)}${at ? ` at ${at}` : ""} (${when})`,
+      `  - ${courseCode(ctx, a)} ${a.title} — ${a.kind}${a.weightPercent !== null ? ` worth ${a.weightPercent}%` : ""}, ${whenWord(a)} ${weekdayThe(d, start)}${at ? ` at ${at}` : ""} (${when})`,
     );
   }
   const todaysBlocks = ctx.plan.studyBlocks.filter((b) => b.start.slice(0, 10) === today);
   if (todaysBlocks.length) {
     lines.push(
-      `Today you're down for ${listPhrase(todaysBlocks.map((b) => `${humanizeClockTimes(b.title)} at ${clock(b.start.slice(11, 16))}`))}.`,
+      `Today you're down for ${listPhrase(todaysBlocks.map((b) => `${humanizeClockTimes(b.title)} at ${clockText(b.start.slice(11, 16))}`))}.`,
     );
   }
   return lines.join("\n");
 }
 
-function answerBehind(ctx: ChatContext, now: Date): string {
-  const today = localISODate(now);
-  const nowIso = `${today}T${pad2(now.getHours())}:${pad2(now.getMinutes())}:00`;
+function answerBehind(ctx: ChatContext, clock: Clock): string {
+  const today = clock.today;
+  const minutes = localMinutesIn(clock.now, clock.timeZone);
+  const nowIso = `${today}T${pad2(Math.floor(minutes / 60))}:${pad2(minutes % 60)}:00`;
 
   // "Behind" has two honest meanings: deadlines that have passed, and prep the
   // plan said to do that the clock has now overtaken.
@@ -719,7 +880,7 @@ function answerBehind(ctx: ChatContext, now: Date): string {
   const lines: string[] = [];
   if (missedByAssessment.size === 0 && passed.length === 0) {
     const nextBlock = ctx.plan.studyBlocks.find((b) => b.start >= nowIso);
-    lines.push("You're not behind on anything -- no past deadlines, no study sessions you've blown past.");
+    lines.push("You're not behind on anything — no past deadlines, no study sessions you've blown past.");
     if (nextBlock) {
       lines.push(
         `Next on the plan is ${humanizeClockTimes(nextBlock.title)}, ${whenPhrase(today, nextBlock.start)}.`,
@@ -738,10 +899,10 @@ function answerBehind(ctx: ChatContext, now: Date): string {
       if (!a) continue;
       const dueDate = a.dueDate as string;
       lines.push(
-        `  - ${courseCode(ctx, a)} ${a.title}: ${countWord(blocks.length)} missed session${blocks.length === 1 ? "" : "s"}, and it's ${whenWord(a)} ${friendlyDate(dueDate, today)} -- ${relativeDay(today, dueDate)}.`,
+        `  - ${courseCode(ctx, a)} ${a.title}: ${countWord(blocks.length)} missed session${blocks.length === 1 ? "" : "s"}, and it's ${whenWord(a)} ${friendlyDate(dueDate, today)} — ${relativeDay(today, dueDate)}.`,
       );
     }
-    lines.push("Those hours don't disappear -- they get squeezed into the days you have left.");
+    lines.push("Those hours don't disappear — they get squeezed into the days you have left.");
   }
   if (passed.length > 0) {
     // Lead with the state of things when there were no missed sessions to
@@ -756,33 +917,47 @@ function answerBehind(ctx: ChatContext, now: Date): string {
     }
     for (const a of passed) {
       const d = a.dueDate as string;
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- was ${whenWord(a)} ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} — was ${whenWord(a)} ${friendlyDate(d, today)}, ${relativeDay(today, d)}`);
     }
   }
   return lines.join("\n");
 }
 
-function answerStudyFor(question: string, ctx: ChatContext, now: Date): string {
-  const matches = rankAssessments(question, ctx.courses, ctx.assessments, now);
+function answerStudyFor(question: string, ctx: ChatContext, clock: Clock): string {
+  const matches = rankAssessments(
+    question,
+    ctx.courses,
+    ctx.assessments,
+    clock.now,
+    clock.timeZone,
+  );
   const hit = matches[0]?.assessment ?? null;
   if (hit) {
     const note = ambiguityNote(matches, ctx.courses, hit);
-    const body = describeAssessment(hit, ctx, now);
+    const body = describeAssessment(hit, ctx, clock);
     return note ? `${note}\n${body}` : body;
   }
-  {
-    const upcoming = ctx.assessments
-      .filter((a) => a.dueDate && a.dueDate >= localISODate(now))
-      .sort((a, b) => (a.dueDate as string).localeCompare(b.dueDate as string))
-      .slice(0, 4);
-    const lines = ["I couldn't tell which one you meant. Here's what's closest on the calendar:"];
-    for (const a of upcoming) {
-      const d = a.dueDate as string;
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${whenWord(a)} ${friendlyDate(d, localISODate(now))}, ${relativeDay(localISODate(now), d)}`);
-    }
-    lines.push("Name one of those and I'll give you the schedule I built for it.");
-    return lines.join("\n");
+  return answerUnnamedItem(ctx, clock);
+}
+
+/**
+ * What to say when the query names nothing we hold: the nearest real work, and
+ * an invitation to name one of those. Nothing here claims the item does not
+ * exist -- a syllabus may simply not have been uploaded yet -- but nothing here
+ * pretends to have found it either.
+ */
+function answerUnnamedItem(ctx: ChatContext, clock: Clock): string {
+  const upcoming = ctx.assessments
+    .filter((a) => a.dueDate && a.dueDate >= clock.today)
+    .sort((a, b) => (a.dueDate as string).localeCompare(b.dueDate as string))
+    .slice(0, 4);
+  const lines = ["I couldn't tell which one you meant — nothing in your uploaded syllabi matches it. Here's what's closest on the calendar:"];
+  for (const a of upcoming) {
+    const d = a.dueDate as string;
+    lines.push(`  - ${courseCode(ctx, a)} ${a.title} — ${whenWord(a)} ${friendlyDate(d, clock.today)}, ${relativeDay(clock.today, d)}`);
   }
+  lines.push("Name one of those and I'll give you the schedule I built for it.");
+  return lines.join("\n");
 }
 
 /**
@@ -794,8 +969,8 @@ function answerStudyFor(question: string, ctx: ChatContext, now: Date): string {
  * under the hour-estimate derivation, which is how an answer ends up sounding
  * like "as soon as possible" even when a real date was sitting right there.
  */
-function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string {
-  const today = localISODate(now);
+function describeAssessment(a: Assessment, ctx: ChatContext, clock: Clock): string {
+  const today = clock.today;
   const code = courseCode(ctx, a);
   const est = estimateAssessmentHours(a);
   const blocks = ctx.plan.studyBlocks.filter((b) => b.assessmentId === a.id);
@@ -815,7 +990,7 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
     const past = daysBetween(today, a.dueDate) < 0;
     return past
       ? `${name} was ${verb} ${dueWhen}, ${dueRel}, so there's nothing left to schedule for it.`
-      : `${name} is ${verb} ${dueWhen} -- ${dueRel}${worth}. I haven't got any sessions on the calendar for it: there was no free window left ${isSitting(a) ? "beforehand" : "before the deadline"}, so grab whatever time you can and budget about ${est.hours}h.`;
+      : `${name} is ${verb} ${dueWhen} — ${dueRel}${worth}. I haven't got any sessions on the calendar for it: there was no free window left ${isSitting(a) ? "beforehand" : "before the deadline"}, so grab whatever time you can and budget about ${est.hours}h.`;
   }
 
   const startDay = blocks[0].start.slice(0, 10);
@@ -824,8 +999,8 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
 
   lines.push(
     untilStart <= 0
-      ? `Start today -- your first session is at ${clock(blocks[0].start.slice(11, 16))}.`
-      : `Start ${friendlyDate(startDay, today)} -- that's ${relativeDay(today, startDay)}.`,
+      ? `Start today — your first session is at ${clockText(blocks[0].start.slice(11, 16))}.`
+      : `Start ${friendlyDate(startDay, today)} — that's ${relativeDay(today, startDay)}.`,
   );
 
   lines.push(
@@ -836,11 +1011,11 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
     // The block title repeats the course and item, which the lead sentence just
     // said. Four rows of "MATH 221 Midterm Exam 1 -- Review 3/4" is a database
     // dump; "Review 3/4" is what a person would have written.
-    lines.push(`  - ${shortDayDate(day)}, ${blockTimePhrase(b)} -- ${sessionLabel(b.title, name)}`);
+    lines.push(`  - ${shortDayDate(day)}, ${blockTimePhrase(b)} — ${sessionLabel(b.title, name)}`);
   }
 
   lines.push(
-    `That's about ${est.hours}h in total, and it's ${verb} ${dueWhen} -- ${dueRel}${worth}.`,
+    `That's about ${est.hours}h in total, and it's ${verb} ${dueWhen} — ${dueRel}${worth}.`,
   );
   // The planner's own rationale is the most persuasive sentence we have, but it
   // was written for a UI card, so its clock times get the same 12-hour pass.
@@ -848,8 +1023,8 @@ function describeAssessment(a: Assessment, ctx: ChatContext, now: Date): string 
   return lines.join("\n");
 }
 
-function answerOverview(ctx: ChatContext, now: Date): string {
-  const today = localISODate(now);
+function answerOverview(ctx: ChatContext, clock: Clock): string {
+  const today = clock.today;
   const upcoming = ctx.assessments
     .filter((a) => a.dueDate && a.dueDate >= today)
     .sort((a, b) => (a.dueDate as string).localeCompare(b.dueDate as string))
@@ -862,19 +1037,19 @@ function answerOverview(ctx: ChatContext, now: Date): string {
     for (const a of upcoming) {
       const d = a.dueDate as string;
       const at = atRange(a);
-      lines.push(`  - ${courseCode(ctx, a)} ${a.title} -- ${friendlyDate(d, today)}${at ? ` at ${at}` : ""}, ${relativeDay(today, d)}`);
+      lines.push(`  - ${courseCode(ctx, a)} ${a.title} — ${friendlyDate(d, today)}${at ? ` at ${at}` : ""}, ${relativeDay(today, d)}`);
     }
   } else {
     lines.push("You've got nothing dated ahead of you right now.");
   }
   if (worst) {
     lines.push(
-      `Your heaviest week starts ${friendlyDate(worst.weekStart, today)} -- ${relativeDay(today, worst.weekStart)}, about ${worst.estimatedHours}h.`,
+      `Your heaviest week starts ${friendlyDate(worst.weekStart, today)} — ${relativeDay(today, worst.weekStart)}, about ${worst.estimatedHours}h.`,
     );
   }
   const next = ctx.plan.studyBlocks.find((b) => b.start.slice(0, 10) >= today);
   if (next) {
-    lines.push(`Your next study session is ${whenPhrase(today, next.start)} -- ${humanizeClockTimes(next.title)}.`);
+    lines.push(`Your next study session is ${whenPhrase(today, next.start)} — ${humanizeClockTimes(next.title)}.`);
   }
   lines.push("Ask me when to start studying for something, what's due this week, which week is your worst, or what you're behind on.");
   return lines.join("\n");
@@ -931,10 +1106,6 @@ const INTENSITY_LABELS = ["calm", "normal", "busy", "crunch"] as const;
 
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
-}
-
-function localISODate(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1050,7 +1221,7 @@ export function friendlyTime(hhmm: string | null): string | null {
 }
 
 /** Clock time from planner-produced "HH:MM", which is always well-formed. */
-function clock(hhmm: string): string {
+function clockText(hhmm: string): string {
   return friendlyTime(hhmm) ?? hhmm;
 }
 
@@ -1117,10 +1288,10 @@ export function relativeDay(fromIso: string, toIso: string): string {
  */
 function whenPhrase(today: string, startIso: string): string {
   const day = startIso.slice(0, 10);
-  const at = clock(startIso.slice(11, 16));
+  const at = clockText(startIso.slice(11, 16));
   const rel = relativeDay(today, day);
   if (rel === "today" || rel === "tomorrow" || rel === "yesterday") return `${rel} at ${at}`;
-  return `${friendlyDate(day, today)} at ${at} -- ${rel}`;
+  return `${friendlyDate(day, today)} at ${at} — ${rel}`;
 }
 
 /**
@@ -1140,7 +1311,7 @@ function weekRelative(today: string, weekStart: string): string {
 function sessionLabel(title: string, name: string): string {
   const clean = humanizeClockTimes(title);
   if (clean === name) return "study session";
-  const prefix = `${name} -- `;
+  const prefix = `${name} — `;
   return clean.startsWith(prefix) ? clean.slice(prefix.length) : clean;
 }
 

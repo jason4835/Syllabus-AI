@@ -1,4 +1,5 @@
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { resolveSession } from "@/lib/session";
@@ -61,16 +62,47 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   }
 }
 
+/**
+ * Deletes a course, and the Google events it put on the student's calendar.
+ *
+ * The calendar half is not optional bookkeeping. Nothing else can do it: the
+ * sync's cleanup pass only looks at the courses it is syncing, so the moment
+ * this course's row is gone its events are beyond the reach of every code path
+ * in the app -- a deleted class that keeps announcing its deadlines until the
+ * student deletes forty events by hand.
+ *
+ * It is still best effort. A Google failure is reported as a smaller
+ * `calendarEventsRemoved`, never as a failed delete: the student asked for the
+ * course to go, and it is already gone.
+ */
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   const { id } = await ctx.params;
   try {
     // The store scopes the delete by userId, so a stranger's id 404s here
-    // rather than deleting someone else's course.
-    const deleted = await store.deleteCourse(userId, id);
-    if (!deleted) return fail("Course not found.", 404);
-    return ok({ deleted: true });
+    // rather than deleting someone else's course. It hands back the calendar
+    // links it dropped, because they are the last record of the event ids.
+    const deletion = await store.deleteCourse(userId, id);
+    if (!deletion) return fail("Course not found.", 404);
+
+    let calendarEventsRemoved = 0;
+    try {
+      const removal = await deleteCalendarEvents(userId, deletion.calendarLinks);
+      calendarEventsRemoved = removal.removed;
+      if (removal.errors.length > 0) {
+        logApiError("courses.calendar_cleanup_failed", removal.errors[0], {
+          userId,
+          courseId: id,
+        });
+      }
+    } catch (err) {
+      // Belt and braces: `deleteCalendarEvents` reports rather than throws,
+      // and even if that changes the course stays deleted.
+      logApiError("courses.calendar_cleanup_failed", err, { userId, courseId: id });
+    }
+
+    return ok({ deleted: true, calendarEventsRemoved });
   } catch (err) {
     logApiError("courses.delete_failed", err, { userId, courseId: id });
     return fail("Could not delete that course.", 500, messageOf(err));

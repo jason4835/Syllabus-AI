@@ -11,6 +11,12 @@ import type { Assessment, GradeWeight, ParsedSyllabus } from "@/lib/types";
  *
  * A category covering several items ("Problem Sets" over seven of them) has its
  * weight divided among them, because that is what the category means.
+ *
+ * How many is "them" is the trap. Dividing by the items we FOUND makes the
+ * parser's own blind spots inflate the survivors: a "Problem Sets (10) — 30%"
+ * category with one dated set gave that set 30% of the course, ten times its
+ * real 3%, and the workload model then planned the semester around it. So when
+ * the syllabus states the size of the category, that number wins over ours.
  */
 
 /** Words that carry no signal when matching a category to a title. */
@@ -84,12 +90,31 @@ function score(category: string, a: Assessment): number {
 }
 
 /**
+ * How many items a category says it holds -- the "(10)" in "Problem Sets (10)".
+ *
+ * `normalize` deliberately strips it when MATCHING (it is not part of the
+ * category's name), which is exactly why it has to be read here before the
+ * split: it is the only statement of the category's real size we get.
+ */
+function statedItemCount(category: string): number | null {
+  const m = /\((\d{1,3})\)/.exec(category);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 1 && n <= 200 ? n : null;
+}
+
+/**
  * Assigns each assessment to its single best-matching category, then splits
- * every category's weight across the assessments that chose it.
+ * every category's weight across the assessments that chose it -- or across the
+ * count the syllabus stated, when that is larger.
+ *
+ * `warnings` is optional and appended to: a split we had to correct is a fact
+ * about the parse that the student should see.
  */
 export function applyGradeWeights<T extends { title: string; kind: Assessment["kind"]; weightPercent: number | null }>(
   assessments: T[],
   gradeWeights: GradeWeight[],
+  warnings?: string[],
 ): T[] {
   if (gradeWeights.length === 0 || assessments.length === 0) return assessments;
 
@@ -118,21 +143,36 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
 
   const out = assessments.map((a) => ({ ...a }));
   for (const [categoryIndex, indices] of claimed) {
-    const weight = gradeWeights[categoryIndex]?.weightPercent;
+    const category = gradeWeights[categoryIndex];
+    const weight = category?.weightPercent;
     if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) continue;
-    const share = weight / indices.length;
+
+    // The syllabus's own count wins when it is bigger than what we matched:
+    // the missing items exist whether or not we found their due dates, and
+    // handing their weight to the ones we did find is a fabricated number.
+    const stated = statedItemCount(category.category);
+    const divisor = stated !== null && stated > indices.length ? stated : indices.length;
+    const share = weight / divisor;
     // Two decimals: 24% over seven problem sets is 3.43 each, and a stored
     // 3.4285714... reads like false precision everywhere it is displayed.
     const rounded = Math.round(share * 100) / 100;
     for (const i of indices) out[i].weightPercent = rounded;
+
+    if (divisor !== indices.length && warnings) {
+      const message = `"${category.category}" is worth ${weight}% across ${divisor} items, but only ${indices.length} of them ${
+        indices.length === 1 ? "was" : "were"
+      } found in the schedule. Each found item was weighted at ${rounded}%, not ${
+        Math.round((weight / indices.length) * 100) / 100
+      }% — the rest of that category is missing from your course.`;
+      if (!warnings.includes(message)) warnings.push(message);
+    }
   }
   return out;
 }
 
 /** Applies the join to a freshly parsed syllabus, before it is persisted. */
 export function attachWeights(parsed: ParsedSyllabus): ParsedSyllabus {
-  return {
-    ...parsed,
-    assessments: applyGradeWeights(parsed.assessments, parsed.course.gradeWeights),
-  };
+  const warnings = [...parsed.warnings];
+  const assessments = applyGradeWeights(parsed.assessments, parsed.course.gradeWeights, warnings);
+  return { ...parsed, assessments, warnings };
 }

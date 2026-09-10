@@ -71,6 +71,29 @@ export interface KeyedCalendarLink extends CalendarLink {
   key: string;
 }
 
+/**
+ * What `deleteCourse` hands back, so the events it orphans can still be found.
+ *
+ * The links are dropped from the store as part of the delete -- they name a
+ * course that no longer exists -- but the Google events they point at are
+ * still on the student's calendar, and once the rows are gone NOTHING can
+ * reach them again: the next sync scopes its cleanup by course, and this
+ * course is not in any sync's scope any more. So the rows are returned on
+ * their way out and the caller is expected to delete the events (see
+ * `deleteCalendarEvents` in `@/lib/google/calendar`).
+ *
+ * Returning them rather than calling Google from the store is deliberate: the
+ * store is the one layer with no network in it, and a Google outage must not
+ * be able to stop a student deleting their own course.
+ */
+export interface CourseDeletion {
+  /**
+   * The calendar links the delete dropped -- deadlines, study sessions and the
+   * course's class series. Empty when the course was never synced.
+   */
+  calendarLinks: KeyedCalendarLink[];
+}
+
 /** Narrows a `listCalendarLinks` call to the keys a caller actually cares about. */
 export interface CalendarLinkQuery {
   /** Exact keys. */
@@ -346,7 +369,19 @@ export interface Store {
       >
     >,
   ): Promise<Course | null>;
-  deleteCourse(userId: string, courseId: string): Promise<boolean>;
+  /**
+   * Removes one course and everything keyed on it -- its assessments, their
+   * calendar links, the course's own class-series links, and the Notion links
+   * for all of the above.
+   *
+   * Returns the calendar links it dropped, or null when there was nothing to
+   * delete (including when the course belongs to someone else -- the two are
+   * indistinguishable on purpose). Null rather than `false` because the caller
+   * has one more job to do: the dropped links are the last record of Google
+   * events that would otherwise sit on the student's calendar forever, so a
+   * caller that ignores the return value is leaving orphans behind.
+   */
+  deleteCourse(userId: string, courseId: string): Promise<CourseDeletion | null>;
 
   listAssessments(userId: string): Promise<Assessment[]>;
   /**
