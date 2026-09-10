@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { needsReview } from "@/lib/types";
 import type { DragEvent } from "react";
 import type { Assessment, Course } from "@/lib/types";
@@ -16,6 +16,9 @@ import {
   needsSection,
 } from "@/components/dashboard/section-chooser";
 import { formatPercent, pluralize } from "@/components/format";
+
+/** Mirrors the route's own limit, so the wording matches what the server says. */
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
 export interface UploadResult {
   courseId: string;
@@ -106,6 +109,21 @@ export function UploadPanel({
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  /**
+   * The one handle on a request already in flight. A hung upload used to be
+   * unstoppable: no timeout, no signal, and the reset control hidden while
+   * busy — the only way out was reloading the page.
+   */
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Leaving the panel must not leave a request running against a dead setState.
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setPhase({ kind: "idle" });
+  }, []);
 
   const onRowChanged = useCallback(
     (updated: Assessment) => {
@@ -152,11 +170,34 @@ export function UploadPanel({
         });
         return;
       }
+      /**
+       * The server rejects this at 15 MB, and it did so only after the whole
+       * file had crossed the wire — an 18 MB syllabus on hotel wifi spent two
+       * minutes uploading to be told no. The browser knows the size before a
+       * byte moves, so the answer comes from here, in the server's own words.
+       */
+      if (file.size > MAX_UPLOAD_BYTES) {
+        setPhase({
+          kind: "error",
+          error: `That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is 15 MB.`,
+          detail: "Export or compress the syllabus below 15 MB and try again.",
+        });
+        return;
+      }
+      if (file.size === 0) {
+        setPhase({ kind: "error", error: "That file is empty." });
+        return;
+      }
+
+      const controller = new AbortController();
+      abortRef.current?.abort();
+      abortRef.current = controller;
 
       setPhase({ kind: "uploading", fileName: file.name, percent: 0 });
 
       const result = await apiUpload<UploadResult>("/api/upload", file, {
         fields,
+        signal: controller.signal,
         onProgress: (percent) => {
           setPhase((current) =>
             current.kind === "uploading"
@@ -172,6 +213,9 @@ export function UploadPanel({
           }
         },
       });
+
+      if (controller.signal.aborted) return;
+      abortRef.current = null;
 
       if (!result.ok) {
         const duplicate = readDuplicate(result);
@@ -212,7 +256,13 @@ export function UploadPanel({
           : "PDF only. One course per file."
       }
       action={
-        phase.kind === "done" || phase.kind === "error" ? (
+        busy ? (
+          // Always an exit: this used to disappear exactly when a stuck upload
+          // made it the only control worth having.
+          <Button variant="secondary" size="sm" onClick={cancel}>
+            Cancel
+          </Button>
+        ) : phase.kind === "done" || phase.kind === "error" ? (
           <Button
             variant="secondary"
             size="sm"
@@ -276,6 +326,16 @@ export function UploadPanel({
                     ? `${phase.percent}% sent`
                     : "Extracting courses, dates and grading weights."}
                 </p>
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={cancel}
+                  >
+                    Cancel this upload
+                  </Button>
+                </div>
               </div>
             ) : (
               <>
@@ -436,7 +496,7 @@ function ExtractionResult({
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Badge tone="accent">
-            {pluralize(assessments.length, "assessment")}
+            {pluralize(assessments.length, "item")}
           </Badge>
           <Badge tone="neutral">
             {pluralize(course.gradeWeights.length, "grading row")}
@@ -542,7 +602,7 @@ function ExtractionResult({
 
       <div>
         <h4 className="mb-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted uppercase">
-          Assessments found
+          Items found
         </h4>
         <ul className="divide-y divide-line">
           {assessments.map((assessment) => (

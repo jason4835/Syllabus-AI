@@ -15,6 +15,7 @@ import type {
 import { apiGet, apiPost } from "@/components/api-client";
 import type { AppConfig } from "@/components/api-client";
 import { accentVar, buildAccentMap } from "@/components/course-accents";
+import { pluralize } from "@/components/format";
 import { Logo, RefreshIcon } from "@/components/icons";
 import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
@@ -32,6 +33,23 @@ import { ChatPanel } from "@/components/dashboard/chat-panel";
 interface Failure {
   error: string;
   detail?: string;
+}
+
+/**
+ * Scrolls without animating for anyone who asked not to be animated. Three
+ * jumps on this page were unconditionally smooth, which is exactly the
+ * vestibular trigger `prefers-reduced-motion` exists for; the instant jump
+ * lands in the same place.
+ */
+function scrollToElement(
+  target: Element | null | undefined,
+  block: ScrollLogicalPosition,
+): void {
+  if (!target) return;
+  const reduced =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  target.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block });
 }
 
 interface CoursesPayload {
@@ -88,7 +106,7 @@ export function DashboardShell() {
     // Chrome, and the panel is far enough down the page for that to be the
     // difference between arriving and not moving at all.
     target.focus({ preventScroll: true });
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToElement(target, "start");
   }, []);
 
   const loadCourses = useCallback(async () => {
@@ -198,7 +216,7 @@ export function DashboardShell() {
     if (!pendingNotionScroll) return;
     if (coursesLoading || planLoading || notionLoading) return;
     setPendingNotionScroll(false);
-    notionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToElement(notionRef.current, "center");
   }, [pendingNotionScroll, coursesLoading, planLoading, notionLoading]);
 
   // Ref, not state: the guard must survive React's StrictMode double-effect,
@@ -261,7 +279,7 @@ export function DashboardShell() {
   /**
    * A confirmed or edited item comes back from the server already final, so
    * it replaces its row in place -- no refetch of every course. The plan is
-   * refetched because a moved date moves study blocks and week loads.
+   * refetched because a moved date moves study sessions and week loads.
    */
   const onAssessmentChanged = useCallback(
     (updated: Assessment) => {
@@ -308,6 +326,24 @@ export function DashboardShell() {
   );
 
   /**
+   * A course deleted outright. The route removes its Google events first, so
+   * by the time this runs there is nothing left of it anywhere — the page
+   * drops the course and everything that hung off it, then re-reads the plan,
+   * whose weeks and study sessions were built from those items.
+   */
+  const onCourseDeleted = useCallback(
+    (courseId: string) => {
+      setCourses((current) => current.filter((course) => course.id !== courseId));
+      setAssessments((current) =>
+        current.filter((item) => item.courseId !== courseId),
+      );
+      setEditingCourseId((current) => (current === courseId ? null : current));
+      void loadPlan();
+    },
+    [loadPlan],
+  );
+
+  /**
    * A replace is a swap, not an addition: the old course and everything that
    * hung off it are gone on the server, so they go from the page in the same
    * update rather than lingering until the refetch lands.
@@ -332,11 +368,15 @@ export function DashboardShell() {
   );
 
   /**
-   * The heatmap does not know which course to blame for a guessed term window,
-   * and with one course there is no question: send them to the first one.
+   * The heatmap's subtitle blames a specific course — it quotes the term label
+   * it guessed from ("estimated from 'Fall 2026'"), which is the first course
+   * that has one. Sending the student to `courses[0]` instead opened a
+   * different course's form from the one the sentence just named.
    */
   const onSetTermDates = useCallback(() => {
-    const target = courses[0];
+    const target =
+      courses.find((course) => Boolean(course.term && course.term.trim())) ??
+      courses[0];
     if (!target) return;
     setEditFocusField("startDate");
     setEditingCourseId(target.id);
@@ -359,7 +399,7 @@ export function DashboardShell() {
       chooser?.querySelector<HTMLInputElement>('input[type="radio"]:checked') ??
       chooser?.querySelector<HTMLInputElement>('input[type="radio"]');
     radio?.focus({ preventScroll: true });
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToElement(target, "center");
   }, []);
 
   const onEditCourse = useCallback((courseId: string | null) => {
@@ -369,6 +409,24 @@ export function DashboardShell() {
 
   const demoMode = config?.demoMode ?? false;
   const weeks = plan?.weeks ?? [];
+
+  /**
+   * One element, rendered in one of two places. Declared once so the two
+   * layouts cannot drift apart.
+   */
+  const uploadPanel = (
+    <UploadPanel
+      demoMode={demoMode}
+      accent={nextAccent}
+      onUploaded={onUploaded}
+      onAssessmentChanged={onAssessmentChanged}
+      onCourseChanged={onCourseChanged}
+      onCourseReplaced={onCourseReplaced}
+    />
+  );
+  // Only once the answer is known: moving the panel mid-load would be a jump
+  // for every visitor, including the ones who do have courses.
+  const noCourses = !coursesLoading && !coursesError && courses.length === 0;
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -420,7 +478,7 @@ export function DashboardShell() {
           <h1 className="text-display text-ink">Your semester</h1>
           <p className="mt-1.5 max-w-2xl text-[0.9375rem] leading-relaxed text-muted">
             {courses.length > 0
-              ? `${courses.length} ${courses.length === 1 ? "course" : "courses"}, ${assessments.length} graded ${assessments.length === 1 ? "item" : "items"}, mapped across ${weeks.length || "—"} weeks.`
+              ? `${pluralize(courses.length, "course")}, ${pluralize(assessments.length, "item")}${weeks.length > 0 ? `, mapped across ${pluralize(weeks.length, "week")}` : ""}.`
               : "Upload a syllabus to build your roadmap, heatmap and calendar."}
           </p>
         </div>
@@ -432,6 +490,11 @@ export function DashboardShell() {
         ) : null}
 
         <div className="space-y-6">
+          {/* A signed-in first-timer met three empty panels before the one
+              control that fills them — twelve thousand pixels down at 375px.
+              With no courses, the upload box is the page. */}
+          {noCourses ? uploadPanel : null}
+
           <HeatmapPanel
             loading={planLoading}
             error={planError}
@@ -444,8 +507,11 @@ export function DashboardShell() {
             onSetTermDates={courses.length > 0 ? onSetTermDates : undefined}
           />
 
+          {/* `min-w-0` on both children: a grid child's min-width is `auto`,
+              so a long unbreakable string (a feed URL) pushed the whole
+              dashboard wider than a 320px viewport. */}
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] lg:items-start">
-            <div className="space-y-6">
+            <div className="min-w-0 space-y-6">
               <UpcomingPanel
                 loading={coursesLoading}
                 error={coursesError}
@@ -466,6 +532,7 @@ export function DashboardShell() {
                 onAssessmentAdded={onAssessmentAdded}
                 onAssessmentDeleted={onAssessmentDeleted}
                 onCourseChanged={onCourseChanged}
+                onCourseDeleted={onCourseDeleted}
                 editingCourseId={editingCourseId}
                 editFocusField={editFocusField}
                 onEditCourse={onEditCourse}
@@ -474,15 +541,8 @@ export function DashboardShell() {
               />
             </div>
 
-            <div className="space-y-6">
-              <UploadPanel
-                demoMode={demoMode}
-                accent={nextAccent}
-                onUploaded={onUploaded}
-                onAssessmentChanged={onAssessmentChanged}
-                onCourseChanged={onCourseChanged}
-                onCourseReplaced={onCourseReplaced}
-              />
+            <div className="min-w-0 space-y-6">
+              {noCourses ? null : uploadPanel}
               <SyncPanel
                 demoMode={demoMode}
                 googleReady={config?.googleReady ?? false}
@@ -701,9 +761,21 @@ function UserMenu({
               Account
             </MenuItem>
             {demoMode ? (
-              <MenuItem onClick={() => window.location.assign("/")}>
-                Exit demo
-              </MenuItem>
+              <>
+                {/* The way out of the demo used to be a link on a branch the
+                    demo never reached: a demo visitor saw "Account" and "Exit
+                    demo", and nothing that turned this into their own
+                    semester. Demo is per visitor now, so signing in is a live
+                    option from inside it. */}
+                <MenuItem
+                  onClick={() => window.location.assign("/api/auth/google")}
+                >
+                  Sign in with Google
+                </MenuItem>
+                <MenuItem onClick={() => window.location.assign("/")}>
+                  Exit demo
+                </MenuItem>
+              </>
             ) : (
               <MenuItem disabled={pending} onClick={() => void logOut()}>
                 {pending ? (

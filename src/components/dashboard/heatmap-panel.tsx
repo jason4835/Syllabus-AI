@@ -145,11 +145,22 @@ export function HeatmapPanel({
       ) : error ? (
         <ErrorState error={error.error} detail={error.detail} onRetry={onRetry} />
       ) : weeks.length === 0 ? (
-        <EmptyState
-          icon={<GridIcon width={22} height={22} />}
-          title="No semester to map yet"
-          body="Once a syllabus is uploaded, every week gets scored so you can see the heavy stretches coming."
-        />
+        // Two different situations wear the same empty panel. Telling a student
+        // who has already uploaded to upload something reads as the app not
+        // noticing -- what is actually missing is a date on the work.
+        courses.length > 0 ? (
+          <EmptyState
+            icon={<GridIcon width={22} height={22} />}
+            title="No dated work to map yet"
+            body="Your syllabi are in, but nothing in them carries a date the heatmap can place. Add a due date to an item, or set the term dates, and the weeks fill in."
+          />
+        ) : (
+          <EmptyState
+            icon={<GridIcon width={22} height={22} />}
+            title="No semester to map yet"
+            body="Once a syllabus is uploaded, every week gets scored so you can see the heavy stretches coming."
+          />
+        )
       ) : (
         <div className="space-y-4">
           <div className="-mx-1 overflow-x-auto px-1 pb-1">

@@ -66,6 +66,17 @@ export function ChatPanel({ openaiReady }: { openaiReady: boolean }) {
     setPending(false);
 
     if (!result.ok) {
+      /**
+       * A rate-limited question used to vanish: it was already in the log (so
+       * the transcript claimed it had been sent) and already out of the input
+       * (so retyping it was the only way back). A question that never reached
+       * the server is not part of the conversation — it goes back in the box,
+       * where the retry below sends it again.
+       */
+      setMessages((current) =>
+        current.filter((message) => message.id !== outgoing.id),
+      );
+      setDraft(trimmed);
       setError({ error: result.error, detail: result.detail });
       return;
     }
@@ -168,7 +179,13 @@ export function ChatPanel({ openaiReady }: { openaiReady: boolean }) {
         </div>
 
         {error ? (
-          <ErrorState error={error.error} detail={error.detail} />
+          <ErrorState
+            error={error.error}
+            detail={error.detail}
+            onRetry={
+              draft.trim().length > 0 ? () => void ask(draft) : undefined
+            }
+          />
         ) : null}
 
         {!openaiReady ? (

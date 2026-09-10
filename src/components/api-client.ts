@@ -129,9 +129,38 @@ export function apiDelete<T>(path: string, body?: unknown): Promise<ApiResult<T>
   );
 }
 
+/**
+ * Reads the wait out of a rate-limit message ("Try again in 40 seconds.",
+ * "The limit resets in 3 minutes."). Returns null for anything else, so an
+ * ordinary failure never locks a button.
+ *
+ * It lives here because the envelope is where a 429 lands: the shared client
+ * hands panels the message, not the `Retry-After` header, so every panel that
+ * wants a countdown has to read the same sentence. Calendar sync and the
+ * Notion sync both do.
+ */
+export function parseRetryAfterSeconds(
+  ...messages: (string | undefined | null)[]
+): number | null {
+  const text = messages.filter(Boolean).join(" ");
+  const match = /in (?:about )?(\d+) (second|minute|hour)s?/i.exec(text);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = match[2].toLowerCase();
+  const seconds = unit === "hour" ? 3600 : unit === "minute" ? 60 : 1;
+  return amount * seconds;
+}
+
 export interface UploadHandlers {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
+  /**
+   * How long to wait before giving up, in milliseconds. A syllabus that has
+   * stopped moving has to end in a message rather than a spinner that never
+   * stops, so there is always a value — the caller only changes it.
+   */
+  timeoutMs?: number;
   /**
    * Extra multipart fields sent alongside the file — `replace=<courseId>` and
    * `allowDuplicate=1`, the two answers to the upload route's 409.
@@ -155,11 +184,29 @@ export function apiUpload<T>(
       form.append(name, value);
     }
 
+    const signal = handlers.signal;
+    if (signal?.aborted) {
+      resolve({ ok: false, error: "Upload cancelled" });
+      return;
+    }
+
     const xhr = new XMLHttpRequest();
     xhr.open("POST", path);
     xhr.setRequestHeader("Accept", "application/json");
+    /**
+     * Without this the `timeout` event can never fire, so a request that dies
+     * mid-flight left the panel spinning for as long as the tab stayed open.
+     * Two minutes is past the slowest real parse and well short of "forever".
+     */
+    xhr.timeout = handlers.timeoutMs ?? 120_000;
 
-    const settle = (result: ApiResult<T>) => resolve(result);
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener("abort", onAbort);
+
+    const settle = (result: ApiResult<T>) => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
 
     xhr.upload.addEventListener("progress", (event) => {
       if (!event.lengthComputable || !handlers.onProgress) return;
@@ -193,10 +240,13 @@ export function apiUpload<T>(
       settle({ ok: false, error: "Upload cancelled" }),
     );
     xhr.addEventListener("timeout", () =>
-      settle({ ok: false, error: "Upload timed out" }),
+      settle({
+        ok: false,
+        error: "Upload timed out",
+        detail: "The server stopped responding. Try again.",
+      }),
     );
 
-    handlers.signal?.addEventListener("abort", () => xhr.abort());
     xhr.send(form);
   });
 }

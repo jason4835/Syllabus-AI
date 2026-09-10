@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { SVGProps } from "react";
 import type { Course, NotionSyncResult } from "@/lib/types";
-import { apiPost } from "@/components/api-client";
+import { apiPost, parseRetryAfterSeconds } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, LinkButton, Spinner } from "@/components/ui/button";
 import { ErrorState, Note } from "@/components/ui/states";
@@ -112,7 +112,7 @@ export function NotionPanel({
     // The shared client hands back the envelope, not the response headers, so
     // `Retry-After` is unreachable here. The 429 body states the wait in words
     // ("Try again in 40 seconds."), which is the same number -- read it there.
-    const seconds = parseWait(`${result.error} ${result.detail ?? ""}`);
+    const seconds = parseRetryAfterSeconds(result.error, result.detail);
     if (seconds !== null) {
       setNow(Date.now());
       setCooldownUntil(Date.now() + seconds * 1000);
@@ -559,7 +559,7 @@ function SyncSummary({ result }: { result: SyncResponse }) {
         <CheckIcon width={15} height={15} />
         {result.dryRun ? "Dry run complete" : "Sync complete"}
       </p>
-      <dl className="mt-3 grid grid-cols-1 gap-2 text-center sm:grid-cols-3">
+      <dl className="mt-3 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
         <Stat
           label="Created"
           value={total(result.created)}
@@ -571,6 +571,15 @@ function SyncSummary({ result }: { result: SyncResponse }) {
           breakdown={breakdown(result.updated)}
         />
         <Stat label="Skipped" value={result.skipped} breakdown="already current" />
+        {/* The one number a student would not predict, so it says where the
+            rows went: archiving is Notion's trash, not a shredder. */}
+        <Stat
+          label="Archived"
+          value={result.removed}
+          breakdown={
+            result.removed === 0 ? "nothing stale" : "moved to Notion's trash"
+          }
+        />
       </dl>
       {result.hubUrl ? (
         <p className="mt-3 text-[0.75rem] text-muted">
@@ -636,21 +645,6 @@ function breakdown(counts: Counts): string {
     `${counts.assignments} ${counts.assignments === 1 ? "assignment" : "assignments"}`,
     `${counts.sessions} ${counts.sessions === 1 ? "session" : "sessions"}`,
   ].join(" · ");
-}
-
-/**
- * Reads the wait out of a rate-limit message ("Try again in 40 seconds.",
- * "The limit resets in 3 minutes."). Returns null for anything else, so an
- * ordinary failure never locks the button.
- */
-function parseWait(message: string): number | null {
-  const match = /in (?:about )?(\d+) (second|minute|hour)s?/i.exec(message);
-  if (!match) return null;
-  const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  const unit = match[2].toLowerCase();
-  const seconds = unit === "hour" ? 3600 : unit === "minute" ? 60 : 1;
-  return amount * seconds;
 }
 
 /** External links always open in a new tab; the dashboard stays put. */

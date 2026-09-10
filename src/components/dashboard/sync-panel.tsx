@@ -3,17 +3,27 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { CalendarPrefs, CalendarSyncResult, Course, User } from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
-import { apiGet, apiPatch, apiPost } from "@/components/api-client";
+import {
+  apiGet,
+  apiPatch,
+  apiPost,
+  parseRetryAfterSeconds,
+} from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, Spinner } from "@/components/ui/button";
 import { ErrorState, Note } from "@/components/ui/states";
 import { LoadingRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertIcon, CalendarIcon, CheckIcon } from "@/components/icons";
+import { formatDateShort } from "@/components/format";
+
+/** `POST /api/sync` answers with the result plus which mode it ran in. */
+type SyncResponse = CalendarSyncResult & { dryRun?: boolean };
 
 type State =
   | { kind: "idle" }
-  | { kind: "syncing" }
-  | { kind: "done"; result: CalendarSyncResult }
+  /** `dry` is what was asked for; the result says what actually ran. */
+  | { kind: "running"; dry: boolean }
+  | { kind: "done"; dry: boolean; result: SyncResponse }
   | { kind: "error"; error: string; detail?: string };
 
 /**
@@ -59,17 +69,44 @@ export function SyncPanel({
   onChooseSection?: (courseId: string) => void;
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
+  /**
+   * A 429 left the button enabled and the message static, so the honest
+   * response — press it again in forty seconds — read as press it again now.
+   * The wait comes out of the message the envelope carries, the same way the
+   * Notion panel reads it, and ticks down in front of the student.
+   */
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  async function sync() {
-    setState({ kind: "syncing" });
-    const result = await apiPost<CalendarSyncResult>("/api/sync", {});
+  useEffect(() => {
+    if (cooldownUntil === null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
+
+  const cooldownLeft =
+    cooldownUntil === null
+      ? 0
+      : Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+  const running = state.kind === "running";
+  const blocked = running || cooldownLeft > 0 || !hasCourses;
+
+  async function sync(dry: boolean) {
+    setState({ kind: "running", dry });
+    const result = await apiPost<SyncResponse>(
+      "/api/sync",
+      dry ? { dryRun: true } : {},
+    );
     if (!result.ok) {
-      // 429 arrives as an ordinary envelope whose message states the wait, so
-      // it reads correctly here with no special case.
       setState({ kind: "error", error: result.error, detail: result.detail });
+      const seconds = parseRetryAfterSeconds(result.error, result.detail);
+      if (seconds !== null) {
+        setNow(Date.now());
+        setCooldownUntil(Date.now() + seconds * 1000);
+      }
       return;
     }
-    setState({ kind: "done", result: result.data });
+    setState({ kind: "done", dry, result: result.data });
   }
 
   return (
@@ -80,7 +117,7 @@ export function SyncPanel({
       description={
         demoMode
           ? "Dry run — nothing is written to a real calendar."
-          : "Push every deadline, study block and class meeting to your calendar."
+          : "Sync every deadline, study session and class meeting to your calendar."
       }
     >
       <div className="space-y-4">
@@ -98,12 +135,9 @@ export function SyncPanel({
 
         <CalendarPrefsSection />
 
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            onClick={() => void sync()}
-            disabled={state.kind === "syncing" || !hasCourses}
-          >
-            {state.kind === "syncing" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void sync(false)} disabled={blocked}>
+            {running && !state.dry ? (
               <>
                 <Spinner label="Syncing" />
                 Syncing…
@@ -115,12 +149,41 @@ export function SyncPanel({
               </>
             )}
           </Button>
+          {/* The removals are the part nobody expects, so there is a way to
+              read them before anything is written rather than after. */}
+          <Button
+            variant="secondary"
+            onClick={() => void sync(true)}
+            disabled={blocked}
+          >
+            {running && state.dry ? (
+              <>
+                <Spinner label="Checking what will change" />
+                Checking…
+              </>
+            ) : (
+              "See what will change"
+            )}
+          </Button>
           {!hasCourses ? (
             <p className="text-[0.8125rem] text-muted">
               Upload a syllabus first — there is nothing to sync yet.
             </p>
           ) : null}
         </div>
+
+        {cooldownLeft > 0 ? (
+          <p
+            role="status"
+            className="text-[0.8125rem] leading-relaxed text-muted"
+          >
+            Too many syncs in a row — you can sync again in{" "}
+            <span className="font-mono text-ink tabular-nums">
+              {formatWait(cooldownLeft)}
+            </span>
+            .
+          </p>
+        ) : null}
 
         <p className="text-[0.75rem] leading-relaxed text-muted">
           Class meetings go across as recurring events — one series per meeting
@@ -133,19 +196,39 @@ export function SyncPanel({
           <ErrorState
             error={state.error}
             detail={state.detail}
-            onRetry={() => void sync()}
+            onRetry={
+              cooldownLeft > 0 ? undefined : () => void sync(false)
+            }
           />
         ) : null}
 
         {state.kind === "done" ? (
-          <div className="rise rounded-lg border border-line bg-sunken/60 p-4">
+          (() => {
+            // A dry run is what was asked for, or what the server fell back to
+            // with no Google account attached; either way nothing was written.
+            const preview = state.dry || state.result.dryRun === true;
+            const removedItems = state.result.removedItems ?? [];
+            const removed = state.result.removed ?? 0;
+            return (
+          <div
+            role="status"
+            className="rise rounded-lg border border-line bg-sunken/60 p-4"
+          >
             <p className="flex items-center gap-1.5 text-[0.8125rem] font-semibold text-ok">
               <CheckIcon width={15} height={15} />
-              {demoMode ? "Dry run complete" : "Sync complete"}
+              {preview
+                ? "Nothing written yet — here is what this sync would do"
+                : "Sync complete"}
             </p>
             <dl className="mt-3 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
-              <Stat label="Created" value={state.result.created} />
-              <Stat label="Updated" value={state.result.updated} />
+              <Stat
+                label={preview ? "To create" : "Created"}
+                value={state.result.created}
+              />
+              <Stat
+                label={preview ? "To update" : "Updated"}
+                value={state.result.updated}
+              />
               <Stat label="Skipped" value={state.result.skipped} />
               <Stat
                 label="Class schedules"
@@ -154,14 +237,38 @@ export function SyncPanel({
               />
             </dl>
             {/* Removals are the quiet half of a sync and the half a student
-                will otherwise notice as events silently missing. */}
-            {(state.result.removed ?? 0) > 0 ? (
-              <p className="mt-2 rounded-md border border-line bg-surface px-3 py-2 text-[0.8125rem] leading-relaxed text-ink-soft">
-                <span className="font-mono text-ink tabular-nums">
-                  {state.result.removed}
-                </span>{" "}
-                removed — no longer in your syllabus or deselected
-              </p>
+                otherwise meets as events silently missing. "No longer in your
+                syllabus" was the rare case; a moved date or a type switched
+                off above is the ordinary one, so the copy says so and the
+                titles are listed rather than counted. */}
+            {removed > 0 ? (
+              <div className="mt-2 rounded-md border border-line bg-surface px-3 py-2">
+                <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
+                  <span className="font-mono text-ink tabular-nums">
+                    {removed}
+                  </span>{" "}
+                  {preview
+                    ? `${removed === 1 ? "event will be" : "events will be"} removed`
+                    : `${removed === 1 ? "event was" : "events were"} removed`}{" "}
+                  — the date moved, the item is gone from your syllabus, or you
+                  switched that type off above.
+                </p>
+                {removedItems.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {removedItems.map((item) => (
+                      <li
+                        key={item.key}
+                        className="flex flex-wrap items-baseline justify-between gap-x-3 text-[0.8125rem] leading-relaxed text-ink"
+                      >
+                        <span className="min-w-0">{item.title}</span>
+                        <span className="font-mono text-[0.75rem] text-muted tabular-nums">
+                          {item.start ? formatDateShort(item.start) : "no date"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
             ) : null}
 
             {(state.result.needsSection ?? []).length > 0 ? (
@@ -212,7 +319,23 @@ export function SyncPanel({
                 ))}
               </ul>
             ) : null}
+
+            {/* A preview ends where the decision is: next to what it found. */}
+            {preview && !demoMode ? (
+              <div className="mt-3">
+                <Button
+                  size="sm"
+                  onClick={() => void sync(false)}
+                  disabled={blocked}
+                >
+                  <CalendarIcon width={15} height={15} />
+                  Sync it for real
+                </Button>
+              </div>
+            ) : null}
           </div>
+            );
+          })()
         ) : null}
 
         <FeedSection demoMode={demoMode} />
@@ -337,8 +460,10 @@ function CalendarPrefsSection() {
           What to add
         </h3>
         <p className="mt-1 text-[0.8125rem] leading-relaxed text-muted">
-          Applies to the Google sync and the subscription feed. Anything you
-          switch off is removed from both on the next sync.
+          Applies to the Google sync, the subscription feed and your Notion
+          pages, and anything you switch off is removed from them on the next
+          sync. Notion has no class meetings, so that one switch is calendars
+          only.
         </p>
       </div>
 
@@ -399,6 +524,13 @@ function Stat({
       ) : null}
     </div>
   );
+}
+
+/** "45s", "2m 05s" — a countdown reads worse as a bare number of seconds. */
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -474,7 +606,7 @@ function FeedSection({ demoMode }: { demoMode: boolean }) {
         <p className="mt-1 text-[0.8125rem] leading-relaxed text-muted">
           Apple Calendar, Outlook, Fantastical — anything that takes a
           subscription URL. The feed is read-only and refreshes itself, so
-          deadlines, study blocks and class meetings stay current without
+          deadlines, study sessions and class meetings stay current without
           another sync.
         </p>
       </div>

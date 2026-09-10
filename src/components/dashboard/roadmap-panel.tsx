@@ -9,7 +9,7 @@ import type {
   NoClassPeriod,
 } from "@/lib/types";
 import { needsReview } from "@/lib/types";
-import { apiPost } from "@/components/api-client";
+import { apiDelete, apiPost } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { Button, Spinner } from "@/components/ui/button";
@@ -92,6 +92,7 @@ export function RoadmapPanel({
   onAssessmentAdded,
   onAssessmentDeleted,
   onCourseChanged,
+  onCourseDeleted,
   editingCourseId = null,
   editFocusField = "code",
   onEditCourse,
@@ -111,6 +112,12 @@ export function RoadmapPanel({
   onAssessmentDeleted?: (id: string) => void;
   onCourseChanged?: (updated: Course) => void;
   /**
+   * A course removed outright, server and all. Without a listener the control
+   * is not offered: deleting a course the page then keeps showing is worse
+   * than no delete at all.
+   */
+  onCourseDeleted?: (courseId: string) => void;
+  /**
    * Which course is open in the editor. Controlled by the shell so the
    * heatmap's "Set term dates" can open the same form from another panel.
    */
@@ -126,6 +133,26 @@ export function RoadmapPanel({
    * card from the start, because nothing of its schedule syncs until it does.
    */
   const [changingSection, setChangingSection] = useState<string | null>(null);
+  /** The course whose "are you sure?" is open, and the one being deleted. */
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function removeCourse(course: Course) {
+    setDeleting(course.id);
+    setDeleteError(null);
+    const result = await apiDelete<{
+      deleted: boolean;
+      calendarEventsRemoved: number;
+    }>(`/api/courses/${course.id}`);
+    setDeleting(null);
+    if (!result.ok) {
+      setDeleteError(result.detail ?? result.error);
+      return;
+    }
+    setConfirmingDelete(null);
+    onCourseDeleted?.(course.id);
+  }
 
   /**
    * The editor can be opened from the heatmap, a whole panel away, so an
@@ -133,9 +160,10 @@ export function RoadmapPanel({
    */
   useEffect(() => {
     if (!editingCourseId) return;
-    document
-      .getElementById(`roadmap-card-${editingCourseId}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToElement(
+      document.getElementById(`roadmap-card-${editingCourseId}`),
+      "center",
+    );
   }, [editingCourseId]);
 
   const byCourse = useMemo(() => {
@@ -183,6 +211,7 @@ export function RoadmapPanel({
               typeof onCourseChanged === "function" &&
               typeof onEditCourse === "function";
             const canAdd = typeof onAssessmentAdded === "function";
+            const canDelete = typeof onCourseDeleted === "function";
             const sections = sectionLabels(course);
             const chosenSection = course.section?.trim() ?? null;
             // Unanswered courses ask on sight; answered ones ask when asked.
@@ -289,10 +318,28 @@ export function RoadmapPanel({
                       Edit course
                     </button>
                   ) : null}
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      id={`delete-course-${course.id}`}
+                      aria-expanded={confirmingDelete === course.id}
+                      aria-controls={`delete-course-confirm-${course.id}`}
+                      onClick={() => {
+                        setDeleteError(null);
+                        setConfirmingDelete(
+                          confirmingDelete === course.id ? null : course.id,
+                        );
+                      }}
+                      className="rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger"
+                    >
+                      Delete
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     aria-expanded={!isCollapsed}
                     aria-controls={bodyId}
+                    aria-label={`${isCollapsed ? "Show" : "Hide"} ${course.code} items`}
                     onClick={() =>
                       setCollapsed((current) => ({
                         ...current,
@@ -305,6 +352,60 @@ export function RoadmapPanel({
                   </button>
                   </div>
                   </div>
+
+                  {/* Inline, like the item delete: the question is asked where
+                      the control is, and it names what goes with it. */}
+                  {canDelete && confirmingDelete === course.id ? (
+                    <div
+                      id={`delete-course-confirm-${course.id}`}
+                      className="mt-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2.5"
+                    >
+                      <p className="text-[0.8125rem] leading-relaxed text-ink">
+                        Delete{" "}
+                        <span className="font-mono text-[0.8125rem]">
+                          {course.code}
+                        </span>
+                        {course.title ? ` — ${course.title}` : ""}? Its{" "}
+                        {pluralize(items.length, "item")} go with it, and the
+                        events this course put on your Google Calendar are
+                        removed too. This cannot be undone.
+                      </p>
+                      {deleteError ? (
+                        <p
+                          role="alert"
+                          className="mt-2 text-[0.75rem] leading-relaxed text-danger"
+                        >
+                          That didn&rsquo;t delete — {deleteError}
+                        </p>
+                      ) : null}
+                      <div className="mt-2.5 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          aria-label={`Yes, delete ${course.code}`}
+                          disabled={deleting === course.id}
+                          onClick={() => void removeCourse(course)}
+                          className="border-danger-line text-danger hover:bg-danger-soft"
+                        >
+                          {deleting === course.id ? (
+                            <Spinner label="Deleting" />
+                          ) : null}
+                          Delete this course
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Keep ${course.code}`}
+                          disabled={deleting === course.id}
+                          onClick={() => setConfirmingDelete(null)}
+                        >
+                          Keep it
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {showChooser ? (
                     <div className="mt-3">
@@ -345,7 +446,7 @@ export function RoadmapPanel({
 
                     {weeks.length === 0 && undated.length === 0 ? (
                       <p className="py-2 text-[0.8125rem] text-muted">
-                        No assessments were extracted for this course.
+                        No items were extracted for this course.
                       </p>
                     ) : (
                       <ol className="space-y-3">
@@ -434,6 +535,22 @@ export function RoadmapPanel({
       )}
     </Panel>
   );
+}
+
+/**
+ * Scrolls without animating for anyone who asked not to be animated. A smooth
+ * scroll across a long dashboard is exactly the vestibular trigger
+ * `prefers-reduced-motion` exists for, and the jump lands in the same place.
+ */
+function scrollToElement(
+  target: Element | null,
+  block: ScrollLogicalPosition,
+): void {
+  if (!target) return;
+  const reduced =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  target.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -743,7 +860,7 @@ function MeetsLine({ course }: { course: Course }) {
     .map((period) => formatNoClass(period, course.endDate))
     .filter(Boolean);
   // Three is what fits on a phone before the line wraps twice; the rest stay
-  // one hover away rather than pushing the assessment list down the page.
+  // one hover away rather than pushing the item list down the page.
   const shown = summaries.slice(0, 3);
   const hidden = summaries.length - shown.length;
   const noClass =
