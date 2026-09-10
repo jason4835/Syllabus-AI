@@ -257,6 +257,12 @@ success and a quiet, non-blocking note if Notion failed.
   app is the source of truth for dates; Notion is the source of truth for
   status. Pulling status back is the obvious next step and the `Syllabus AI ID`
   property on every row is what makes it possible.
-- **Delete Notion pages when a course is deleted here.** Disconnect and course
-  deletion leave Notion untouched — deleting someone's notes is not a decision
-  software should make for them.
+- **Delete the class page when a course is deleted here.** Disconnecting leaves
+  Notion entirely untouched, and deleting a course leaves its class page where
+  it is — that page is where the student's own notes live, and deleting those
+  is not a decision software should make for them. The page's *rows* are a
+  different thing: a Coursework row for a deadline that no longer exists is not
+  a note, it is wrong data, so deleting a course or an item archives the rows it
+  generated (`CourseDeletion.notionPages` → `archiveNotionPages`), exactly as it
+  deletes the Google events it generated. Archiving is Notion's trash, so a
+  student who disagrees can restore them.

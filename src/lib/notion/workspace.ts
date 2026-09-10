@@ -55,7 +55,21 @@ const HUB_ICON = "\u{1F4DA}";
 export const HUB_TITLE = "Syllabus AI";
 
 export const COURSES_DB_TITLE = "Courses";
-export const ASSIGNMENTS_DB_TITLE = "Assignments";
+/**
+ * "Coursework", not "Assignments": the database holds exams, quizzes, labs,
+ * readings and presentations, and a student looking for their final under a
+ * heading called Assignments has been told the wrong thing.
+ *
+ * Safe to rename in place because **nothing here looks a database up by title**
+ * -- `ensureWorkspace` verifies the stored `assignmentsDbId` with
+ * `dataSources.retrieve` and only builds when that id is gone. A workspace built
+ * before this change therefore keeps its database, its rows and its links, and
+ * keeps the title Notion already shows; it is not orphaned and no second
+ * database is created. Renaming the Notion database for those workspaces would
+ * need a `databases.update` call the client wrapper does not expose, so the old
+ * title simply stands until the student renames it themselves.
+ */
+export const ASSIGNMENTS_DB_TITLE = "Coursework";
 export const SESSIONS_DB_TITLE = "Study Sessions";
 
 type DatabaseProperties = NonNullable<
@@ -176,7 +190,7 @@ async function createHubPage(
         callout: {
           icon: { type: "emoji", emoji: "\u{1F5D3}️" },
           rich_text: richText(
-            "Want a semester calendar? Open Assignments or Study Sessions and click + Add view → Calendar. Every dated row already has a real date property, so it works immediately. (Notion's API cannot create views for you.)",
+            `Want a semester calendar? Open ${ASSIGNMENTS_DB_TITLE} or ${SESSIONS_DB_TITLE} and click + Add view → Calendar. Every dated row already has a real date property, so it works immediately. (Notion's API cannot create views for you.)`,
           ),
         },
       },
@@ -305,7 +319,7 @@ export async function ensureWorkspace(conn: NotionConnection): Promise<NotionCon
   const coursesDbId = next.coursesDbId;
   if (!coursesDbId) throw new Error("Notion created the Courses database but returned no id.");
 
-  /* --- Assignments --- */
+  /* --- Coursework --- */
   let assignmentsOk = false;
   const existingAssignmentsId = next.assignmentsDbId;
   if (existingAssignmentsId) {
@@ -322,14 +336,14 @@ export async function ensureWorkspace(conn: NotionConnection): Promise<NotionCon
         ASSIGNMENTS_DB_TITLE,
         assignmentsSchema(coursesDbId),
       ),
-      // Study Sessions relates to Assignments, so it follows Assignments down.
+      // Study Sessions relates to Coursework, so it follows Coursework down.
       sessionsDbId: null,
     };
     log.info("notion.workspace.db_created", { userId: next.userId, db: ASSIGNMENTS_DB_TITLE });
   }
   const assignmentsDbId = next.assignmentsDbId;
   if (!assignmentsDbId) {
-    throw new Error("Notion created the Assignments database but returned no id.");
+    throw new Error(`Notion created the ${ASSIGNMENTS_DB_TITLE} database but returned no id.`);
   }
 
   /* --- Study Sessions --- */

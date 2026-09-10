@@ -20,7 +20,9 @@
  */
 
 import type { BlockObjectRequest, CreatePageParameters } from "@notionhq/client";
+import { DEFAULT_SITTING_MINUTES } from "@/lib/calendar/events";
 import { estimatedHoursFor, formatShortDate } from "@/lib/plan/workload";
+import { isSitting, needsReview } from "@/lib/types";
 import type {
   Assessment,
   Course,
@@ -83,7 +85,7 @@ export function chunkBlocks(
 
 const DAY_LETTERS = ["Su", "M", "T", "W", "Th", "F", "Sa"];
 
-/** "MWF 10:00-10:50 - Hayes Hall 210" */
+/** "MWF 10:00–10:50 · Hayes Hall 210" */
 export function formatMeetingTime(m: MeetingTime): string {
   const days = m.daysOfWeek
     .slice()
@@ -113,15 +115,15 @@ const KIND_LABELS: Record<Assessment["kind"], string> = {
   other: "Other",
 };
 
-/** `MATH 221 -- Multivariable Calculus`, the Courses row title. */
+/** `MATH 221 — Multivariable Calculus`, the Courses row title. */
 export function courseTitle(course: Course): string {
   return course.title ? `${course.code} — ${course.title}` : course.code;
 }
 
 /**
- * The term line, e.g. "Fall 2026 - Aug 24 - Dec 18". Returns null when the
+ * The term line, e.g. "Fall 2026 · Aug 24 – Dec 18". Returns null when the
  * syllabus gave neither a label nor dates, so the caller can drop the row
- * rather than print "Term - ".
+ * rather than print "Term · ".
  */
 function formatTerm(course: Course): string | null {
   const span =
@@ -186,7 +188,61 @@ export interface AssessmentPropertyOptions {
   initial?: boolean;
 }
 
-/** An Assignments row. `coursePageId` is null when the course page is unknown. */
+/**
+ * The `Due` date, as a range for a sitting and as an instant for a deadline.
+ *
+ * A deadline is a cutoff: "11:59 PM" is the whole truth, and giving it an end
+ * would invent a length the syllabus never stated. A sitting HAPPENS between
+ * two times, so a bare start read "12:30 PM" for an exam the calendar already
+ * draws as 12:30–1:50 -- the same instant, telling the student much less.
+ * Notion's date property takes `end`, so the two are spelled differently.
+ *
+ * When the syllabus gave a start but no end, the end is `DEFAULT_SITTING_MINUTES`
+ * later -- the same guess the calendar makes, imported rather than re-guessed,
+ * so a student comparing Notion with their calendar sees one answer.
+ *
+ * An undated item, or a dated one with no time at all, stays a plain day.
+ */
+function dueDateProperty(assessment: Assessment): PageProperties[string] {
+  if (!assessment.dueDate) return { date: null };
+  if (!assessment.dueTime) return { date: { start: assessment.dueDate } };
+
+  const start = `${assessment.dueDate}T${assessment.dueTime}:00`;
+  if (!isSitting(assessment)) return { date: { start } };
+
+  const end =
+    assessment.endTime !== null
+      ? `${assessment.dueDate}T${assessment.endTime}:00`
+      : plusMinutes(assessment.dueDate, assessment.dueTime, DEFAULT_SITTING_MINUTES);
+
+  // A stated end at or before the start is a misread range, not a fact worth
+  // honouring: fall back to the instant rather than send Notion a backwards date.
+  return { date: end && end > start ? { start, end } : { start } };
+}
+
+/**
+ * `YYYY-MM-DDTHH:MM:00`, `minutes` after the given local wall-clock time.
+ *
+ * Deliberately zone-free arithmetic on the wall clock, because that is what the
+ * rest of the app stores and what Notion renders: turning this into a real
+ * instant would need a zone this function has no business knowing. Rolls over
+ * midnight correctly; returns null if the stored time is unparseable.
+ */
+function plusMinutes(date: string, time: string, minutes: number): string | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) return null;
+  const base = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+    Number(match[1]),
+    Number(match[2]),
+  );
+  if (Number.isNaN(base)) return null;
+  return `${new Date(base + minutes * 60_000).toISOString().slice(0, 16)}:00`;
+}
+
+/** A Coursework row. `coursePageId` is null when the course page is unknown. */
 export function assessmentProperties(
   assessment: Assessment,
   coursePageId: string | null,
@@ -202,21 +258,16 @@ export function assessmentProperties(
       number: assessment.weightPercent === null ? null : assessment.weightPercent / 100,
     },
     "Est. hours": { number: estimatedHoursFor(assessment) },
-    // The extractor's own confidence, surfaced as a checkbox the student can
-    // filter on -- "what did the parser guess at" is a real question.
-    "Needs review": { checkbox: assessment.confidence < 0.6 },
+    // "What has nobody looked at yet", surfaced as a checkbox the student can
+    // filter on. `needsReview` -- not a bare confidence test -- because an item
+    // the student confirmed is certain no matter what the parser scored it, and
+    // because the threshold is inclusive: the heuristic parser lands exactly on
+    // 0.6, which a `<` comparison silently waved through.
+    "Needs review": { checkbox: needsReview(assessment) },
     "Syllabus AI ID": { rich_text: richText(assessment.id) },
   };
 
-  props.Due = assessment.dueDate
-    ? {
-        date: {
-          start: assessment.dueTime
-            ? `${assessment.dueDate}T${assessment.dueTime}:00`
-            : assessment.dueDate,
-        },
-      }
-    : { date: null };
+  props.Due = dueDateProperty(assessment);
 
   if (options.initial) props.Status = { select: { name: "Not started" } };
 

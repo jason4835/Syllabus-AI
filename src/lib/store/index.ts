@@ -92,7 +92,34 @@ export interface CourseDeletion {
    * course's class series. Empty when the course was never synced.
    */
   calendarLinks: KeyedCalendarLink[];
+  /**
+   * The Notion pages the delete orphaned, for the same reason and with the same
+   * expectation: the link rows are the only record of the page ids, and the
+   * sync's own removal pass is scoped to the courses being synced, so a deleted
+   * course can never reach its pages again.
+   *
+   * Deliberately narrower than the links dropped: this is the generated rows
+   * only -- coursework and study sessions -- and never the course page. A row
+   * describing a deadline that no longer exists is simply wrong data, but the
+   * class page is where the student's own notes live, and deleting those is not
+   * a decision this software makes for them (docs/NOTION.md).
+   */
+  notionPages: OrphanedNotionPage[];
 }
+
+/** One page a delete cut loose: enough to archive it, nothing more. */
+export interface OrphanedNotionPage {
+  kind: NotionLinkKind;
+  entityId: string;
+  pageId: string;
+}
+
+/**
+ * What `deleteAssessment` hands back. The same two cleanups as `CourseDeletion`
+ * narrowed to one row -- an assessment's deadline event and its study sessions'
+ * are exactly as unreachable once its links are gone as a whole course's are.
+ */
+export type AssessmentDeletion = CourseDeletion;
 
 /** Narrows a `listCalendarLinks` call to the keys a caller actually cares about. */
 export interface CalendarLinkQuery {
@@ -406,10 +433,12 @@ export interface Store {
    *
    * The same cascade `deleteCourse` performs, narrowed to one row. Leaving a
    * session link behind would point a later sync at a page describing work for
-   * a deadline that no longer exists. False when there was nothing to delete,
-   * including when the item belongs to someone else.
+   * a deadline that no longer exists. Null when there was nothing to delete,
+   * including when the item belongs to someone else -- and, like `deleteCourse`,
+   * the orphaned links come back out on their way to being forgotten so the
+   * caller can delete what they name.
    */
-  deleteAssessment(userId: string, id: string): Promise<boolean>;
+  deleteAssessment(userId: string, id: string): Promise<AssessmentDeletion | null>;
 
   /**
    * The event we last wrote for `key`, or null.
@@ -475,6 +504,11 @@ export interface Store {
   /** Upsert keyed by (kind, entityId): a re-link after a 404 must update in place, never duplicate. */
   setNotionLink(link: NotionLink): Promise<void>;
   listNotionLinks(userId: string): Promise<NotionLink[]>;
+  /**
+   * Forgets one link. The Notion page itself is the sync's business (it
+   * archives it first); this only drops our record that we created it.
+   */
+  deleteNotionLink(kind: NotionLinkKind, entityId: string): Promise<void>;
 }
 
 let instance: Store | null = null;
@@ -546,6 +580,7 @@ export const store: Store = {
   getNotionLink: (kind, entityId) => getStore().getNotionLink(kind, entityId),
   setNotionLink: (link) => getStore().setNotionLink(link),
   listNotionLinks: (userId) => getStore().listNotionLinks(userId),
+  deleteNotionLink: (kind, entityId) => getStore().deleteNotionLink(kind, entityId),
 };
 
 export default store;

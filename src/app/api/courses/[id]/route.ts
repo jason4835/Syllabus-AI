@@ -1,5 +1,6 @@
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
+import { archiveNotionPages } from "@/lib/notion/sync";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { resolveSession } from "@/lib/session";
@@ -63,17 +64,18 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 /**
- * Deletes a course, and the Google events it put on the student's calendar.
+ * Deletes a course, the Google events it put on the student's calendar, and
+ * the rows it put in their Notion databases.
  *
- * The calendar half is not optional bookkeeping. Nothing else can do it: the
- * sync's cleanup pass only looks at the courses it is syncing, so the moment
- * this course's row is gone its events are beyond the reach of every code path
- * in the app -- a deleted class that keeps announcing its deadlines until the
- * student deletes forty events by hand.
+ * Neither cleanup is optional bookkeeping. Nothing else can do them: both
+ * sync passes only look at the courses they are syncing, so the moment this
+ * course's row is gone its events and its Coursework rows are beyond the reach
+ * of every code path in the app -- a deleted class that keeps announcing its
+ * deadlines until the student clears forty of them by hand.
  *
- * It is still best effort. A Google failure is reported as a smaller
- * `calendarEventsRemoved`, never as a failed delete: the student asked for the
- * course to go, and it is already gone.
+ * Both are still best effort. A Google or Notion failure is reported as a
+ * smaller `calendarEventsRemoved` / `notionPagesRemoved`, never as a failed
+ * delete: the student asked for the course to go, and it is already gone.
  */
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { userId } = await resolveSession();
@@ -102,7 +104,25 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
       logApiError("courses.calendar_cleanup_failed", err, { userId, courseId: id });
     }
 
-    return ok({ deleted: true, calendarEventsRemoved });
+    // The same cleanup on the other integration, for the same reason: the
+    // rows in the Coursework database describe deadlines that no longer
+    // exist, and the links that named them are gone. The class page itself is
+    // not in `notionPages` and stays where it is.
+    let notionPagesRemoved = 0;
+    try {
+      const removal = await archiveNotionPages(userId, deletion.notionPages);
+      notionPagesRemoved = removal.removed;
+      if (removal.errors.length > 0) {
+        logApiError("courses.notion_cleanup_failed", removal.errors[0], {
+          userId,
+          courseId: id,
+        });
+      }
+    } catch (err) {
+      logApiError("courses.notion_cleanup_failed", err, { userId, courseId: id });
+    }
+
+    return ok({ deleted: true, calendarEventsRemoved, notionPagesRemoved });
   } catch (err) {
     logApiError("courses.delete_failed", err, { userId, courseId: id });
     return fail("Could not delete that course.", 500, messageOf(err));

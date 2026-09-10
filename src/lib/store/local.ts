@@ -36,6 +36,7 @@ import type {
   CalendarLink,
   CalendarLinkQuery,
   KeyedCalendarLink,
+  OrphanedNotionPage,
   Store,
   UserUpsert,
 } from "@/lib/store";
@@ -713,14 +714,21 @@ export function createLocalStore(): Store {
         db.calendarLinks = db.calendarLinks.filter(
           (l) => !isCalendarLinkOrphanedByCourse(l, userId, courseId, orphanIds),
         );
-        // The Notion pages themselves are deliberately left in place (see
-        // docs/NOTION.md); what goes is our pointer to them, so a course
-        // re-uploaded later builds fresh pages instead of patching pages that
-        // describe a deleted class.
+        // The pointer goes either way, so a course re-uploaded later builds
+        // fresh pages instead of patching pages that describe a deleted class.
+        // The generated rows come back out to be archived; the class page does
+        // not (see `CourseDeletion.notionPages`).
+        const orphanedPages: OrphanedNotionPage[] = db.notionLinks
+          .filter(
+            (l) =>
+              l.kind !== "course" &&
+              isLinkOrphanedByCourse(l, userId, courseId, orphanIds),
+          )
+          .map((l) => ({ kind: l.kind, entityId: l.entityId, pageId: l.pageId }));
         db.notionLinks = db.notionLinks.filter(
           (l) => !isLinkOrphanedByCourse(l, userId, courseId, orphanIds),
         );
-        return { calendarLinks: orphanedLinks };
+        return { calendarLinks: orphanedLinks, notionPages: orphanedPages };
       });
     },
 
@@ -791,11 +799,19 @@ export function createLocalStore(): Store {
           (a) => a.id === id && owned.has(a.courseId),
         );
         // Same silence as deleteCourse: not-yours reads as not-there.
-        if (index === -1) return false;
+        if (index === -1) return null;
 
         db.assessments.splice(index, 1);
         // The deadline's own event and its study sessions' (`sb_<id>_*`),
-        // which have no row to be found by once this one is gone.
+        // which have no row to be found by once this one is gone -- so, as in
+        // deleteCourse, they are handed back before they go.
+        const orphanedLinks: KeyedCalendarLink[] = db.calendarLinks
+          .filter((l) => isCalendarLinkOrphanedByAssessment(l, userId, id))
+          .map((l) => ({
+            key: l.key,
+            googleEventId: l.googleEventId,
+            calendarId: l.calendarId,
+          }));
         db.calendarLinks = db.calendarLinks.filter(
           (l) => !isCalendarLinkOrphanedByAssessment(l, userId, id),
         );
@@ -805,13 +821,17 @@ export function createLocalStore(): Store {
         // owner because that prefix test is not an id match. The Notion pages
         // themselves stay put (docs/NOTION.md) -- what goes is our pointer.
         const sessionPrefix = notionSessionLinkPrefix(id);
-        db.notionLinks = db.notionLinks.filter((l) => {
-          if (l.userId !== userId) return true;
-          if (l.kind === "assessment") return l.entityId !== id;
-          if (l.kind === "session") return !l.entityId.startsWith(sessionPrefix);
-          return true;
-        });
-        return true;
+        const orphaned = (l: NotionLink): boolean => {
+          if (l.userId !== userId) return false;
+          if (l.kind === "assessment") return l.entityId === id;
+          if (l.kind === "session") return l.entityId.startsWith(sessionPrefix);
+          return false;
+        };
+        const orphanedPages: OrphanedNotionPage[] = db.notionLinks
+          .filter(orphaned)
+          .map((l) => ({ kind: l.kind, entityId: l.entityId, pageId: l.pageId }));
+        db.notionLinks = db.notionLinks.filter((l) => !orphaned(l));
+        return { calendarLinks: orphanedLinks, notionPages: orphanedPages };
       });
     },
 
@@ -933,6 +953,15 @@ export function createLocalStore(): Store {
       return readOnly((db) =>
         clone(db.notionLinks.filter((l) => l.userId === userId)),
       );
+    },
+
+    async deleteNotionLink(kind, entityId) {
+      await mutate((db) => {
+        db.notionLinks = db.notionLinks.filter(
+          (l) => !(l.kind === kind && l.entityId === entityId),
+        );
+        return undefined;
+      });
     },
   };
 }

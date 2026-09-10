@@ -19,7 +19,19 @@
  *    deleted the page) means create fresh and re-link. Syncing twice never
  *    duplicates.
  *
- * 3. **Bodies are written once.** The class-page body is appended only when
+ * 3. **The student's preferences decide what exists.** The same
+ *    `CalendarPrefs` the calendar sync honours -- unticking "Study sessions"
+ *    stops Notion writing them, and archives the ones already there. Notion has
+ *    no class-meeting database, so only `deadlines` and `studySessions` have
+ *    anything here to apply to.
+ *
+ * 4. **What leaves the plan leaves Notion.** A removal pass diffs the plan
+ *    against the link table and archives what is left over, with one exception
+ *    the calendar lane paid for first: a study session the student already sat
+ *    is absent from the plan because the day is over, not because it stopped
+ *    mattering. See `removeStalePages`.
+ *
+ * 5. **Bodies are written once.** The class-page body is appended only when
  *    the Courses row is created. Re-writing it would mean deleting and
  *    re-appending blocks around whatever the student has added below the
  *    divider, which is exactly how software loses somebody's notes. Dates that
@@ -49,9 +61,13 @@ import {
 } from "@/lib/notion/client";
 import { ensureWorkspace } from "@/lib/notion/workspace";
 import { log, logApiError } from "@/lib/log";
-import { store } from "@/lib/store";
+import { buildSemesterPlan } from "@/lib/plan";
+import { notionSessionLinkPrefix, store } from "@/lib/store";
+import type { OrphanedNotionPage } from "@/lib/store";
+import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
 import type {
   Assessment,
+  CalendarPrefs,
   Course,
   NotionConnection,
   NotionLink,
@@ -64,6 +80,18 @@ export interface NotionSyncOptions {
   courses: Course[];
   assessments: Assessment[];
   studyBlocks?: StudyBlock[];
+  /**
+   * What to write into Notion. Defaults to the user's stored preferences, and
+   * to `DEFAULT_CALENDAR_PREFS` when they have none -- the same resolution
+   * order `syncToCalendar` uses, because the setting is one setting: a student
+   * who unticks "Study sessions" means it everywhere, not only on Google.
+   *
+   * Only the two preferences Notion can act on are read here: `deadlines`
+   * (the Coursework rows) and `studySessions`. Class meetings are not synced to
+   * Notion at all, so `classes` / `recitations` / `officeHours` have nothing to
+   * apply to -- see the note on `applicablePrefs`.
+   */
+  prefs?: CalendarPrefs;
   /** Compute the plan and the counts without touching the network. Powers demo mode. */
   dryRun?: boolean;
 }
@@ -158,6 +186,36 @@ export async function chooseParent(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Preferences                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything about the *user* this sync depends on, read in one go.
+ *
+ * Same resolution order as `resolveSyncContext` in `@/lib/google/calendar`: an
+ * explicit `opts.prefs` beats the stored preferences, which beat the defaults.
+ * The panel says the setting applies to the syncs; it now does.
+ *
+ * The zone is only ever used to answer "has this study session already
+ * happened" (see `pastStudySessionIds`), which is a question no server zone can
+ * answer for a student in another one.
+ */
+async function resolveSyncContext(
+  userId: string,
+  opts: NotionSyncOptions,
+): Promise<{ timeZone: string; prefs: CalendarPrefs }> {
+  const user = await store.getUser(userId).catch(() => null);
+  return {
+    timeZone: user?.timezone ?? serverTimeZone(),
+    prefs: opts.prefs ?? user?.calendarPrefs ?? DEFAULT_CALENDAR_PREFS,
+  };
+}
+
+function serverTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Planning -- shared by the real and dry-run paths                            */
 /* -------------------------------------------------------------------------- */
 
@@ -195,7 +253,7 @@ interface SyncPlan {
  * writes we intend to make. The only I/O is the link lookup, which a dry run
  * needs too -- it is what decides create versus update.
  */
-async function planOps(opts: NotionSyncOptions): Promise<SyncPlan> {
+async function planOps(opts: NotionSyncOptions, prefs: CalendarPrefs): Promise<SyncPlan> {
   const errors: string[] = [];
   const courseById = new Map(opts.courses.map((c) => [c.id, c]));
 
@@ -211,8 +269,10 @@ async function planOps(opts: NotionSyncOptions): Promise<SyncPlan> {
     });
   }
 
+  // Preferences gate the rows, not the class pages: a Courses row is the hub
+  // itself, not one of the categories the student can switch off.
   const assessments: PlannedOp[] = [];
-  for (const a of opts.assessments) {
+  for (const a of prefs.deadlines ? opts.assessments : []) {
     const course = courseById.get(a.courseId) ?? null;
     assessments.push({
       kind: "assessment",
@@ -226,7 +286,7 @@ async function planOps(opts: NotionSyncOptions): Promise<SyncPlan> {
   }
 
   const sessions: PlannedOp[] = [];
-  for (const b of opts.studyBlocks ?? []) {
+  for (const b of prefs.studySessions ? (opts.studyBlocks ?? []) : []) {
     const course = courseById.get(b.courseId) ?? null;
     sessions.push({
       kind: "session",
@@ -365,6 +425,7 @@ export async function syncToNotion(
   const result: NotionSyncResult = {
     created: { courses: 0, assignments: 0, sessions: 0 },
     updated: { courses: 0, assignments: 0, sessions: 0 },
+    removed: 0,
     skipped: 0,
     hubUrl: null,
     coursePages: {},
@@ -397,7 +458,8 @@ export async function syncToNotion(
     }
   }
 
-  const plan = await planOps(opts);
+  const { timeZone, prefs } = await resolveSyncContext(userId, opts);
+  const plan = await planOps(opts, prefs);
   result.errors.push(...plan.errors);
 
   let client: NotionClient | null = null;
@@ -476,6 +538,22 @@ export async function syncToNotion(
     }
 
     for (const op of plan.sessions) await apply(op);
+
+    // Computed from the plan and the clock alone -- no network -- so the dry
+    // run and the real run protect exactly the same sessions. Lazy because most
+    // syncs have no stale session at all and never need to ask.
+    let past: ReadonlySet<string> | null = null;
+    await removeStalePages(
+      userId,
+      opts,
+      plan,
+      {
+        client,
+        comprehensive: await coversEveryCourse(userId, opts),
+        pastSessions: () => (past ??= pastStudySessionIds(opts, timeZone, prefs)),
+      },
+      result,
+    );
   } catch (err) {
     if (!isRevoked(err)) throw err;
     return await markRevoked(userId, activeConn, result);
@@ -489,13 +567,312 @@ export async function syncToNotion(
   log.info("notion.sync", {
     userId,
     dryRun,
+    prefs: { deadlines: prefs.deadlines, studySessions: prefs.studySessions },
     created: result.created,
     updated: result.updated,
+    removed: result.removed,
     skipped: result.skipped,
     errors: result.errors.length,
   });
 
   return result;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Reconciliation                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The links this sync is allowed to archive: everything that could belong to
+ * the courses being synced, and nothing else.
+ *
+ * Mirrors `reconciliationScope` in `@/lib/google/calendar`, one entity kind at
+ * a time instead of one key shape at a time:
+ *
+ *  - a course link, keyed by the course's own id;
+ *  - an assessment link, keyed by the assessment's own id;
+ *  - a session link, whose id is `sb_<assessmentId>_<n>` and can only be
+ *    matched by prefix, because the planner mints sessions and never stores
+ *    them.
+ *
+ * A course absent from `opts.courses` contributes no id and no prefix, so
+ * syncing one class cannot touch another class's pages.
+ *
+ * `comprehensive` is the one widening: when this sync covers every course the
+ * user has, a link whose entity is nowhere in the input describes something
+ * that no longer exists at all -- a deleted assessment, a deleted course --
+ * and there is no other sync that could ever claim it. A single-course sync
+ * leaves those alone, because it cannot tell an orphan from another class's row.
+ */
+function reconciliationScope(opts: NotionSyncOptions, comprehensive: boolean) {
+  const courseIds = new Set(opts.courses.map((c) => c.id));
+  const mine = opts.assessments.filter((a) => courseIds.has(a.courseId));
+  const assessmentIds = new Set(mine.map((a) => a.id));
+  const sessionPrefixes = mine.map((a) => notionSessionLinkPrefix(a.id));
+
+  return (link: NotionLink): boolean => {
+    if (link.kind === "course") return courseIds.has(link.entityId) || comprehensive;
+    if (link.kind === "assessment") return assessmentIds.has(link.entityId) || comprehensive;
+    return (
+      sessionPrefixes.some((prefix) => link.entityId.startsWith(prefix)) || comprehensive
+    );
+  };
+}
+
+/**
+ * Today, as the student's calendar shows it. Copied from the calendar sync
+ * because "in the past" is a question only a zone can answer: on a UTC host, a
+ * New York student's Tuesday evening is already Wednesday.
+ */
+function todayIn(timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * The earliest day the semester touches, minus a month of runway. Null when
+ * there is no dated work at all, in which case there is nothing to protect.
+ */
+function semesterStart(opts: NotionSyncOptions): Date | null {
+  const days = [
+    ...opts.courses.map((c) => c.startDate),
+    ...opts.assessments.map((a) => a.dueDate),
+  ].filter((d): d is string => typeof d === "string" && d.length >= 10);
+  if (days.length === 0) return null;
+
+  const earliest = days.reduce((a, b) => (a < b ? a : b));
+  const ms = Date.parse(`${earliest.slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms - 30 * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * The study sessions the student has already sat.
+ *
+ * The calendar lane learned this the hard way and the lesson transfers exactly:
+ * `buildStudyBlocks` refuses to schedule a day that has passed, so a session
+ * planned in week 2 is simply absent from the plan by week 3 -- and a
+ * reconciliation pass reads "absent from the plan" as "delete it". Over a
+ * semester that quietly erases the record of twenty to forty sessions the
+ * student actually worked through.
+ *
+ * A session's date is nowhere in its id (`sb_<assessmentId>_<n>`) and nowhere
+ * in the link row, so it is recovered the only honest way there is: by running
+ * the same planner against a clock set before the semester started, which
+ * yields the whole ladder, past sessions included, with their dates. Pure and
+ * offline, so a dry run protects exactly the same pages with no calls.
+ *
+ * Two cases deliberately fall through to archiving, as on the calendar side:
+ * an assessment that no longer exists contributes no sessions here, so its
+ * orphans are still cleaned up; and study sessions switched off in preferences
+ * are not protected either -- "stop putting these in Notion" means all of them.
+ */
+function pastStudySessionIds(
+  opts: NotionSyncOptions,
+  timeZone: string,
+  prefs: CalendarPrefs,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!prefs.studySessions) return ids;
+
+  const before = semesterStart(opts);
+  if (!before) return ids;
+
+  const today = todayIn(timeZone);
+  const asPlannedThen = buildSemesterPlan(opts.courses, opts.assessments, {
+    now: before,
+    timeZone,
+  });
+  for (const block of asPlannedThen.studyBlocks) {
+    if (block.start.slice(0, 10) < today) ids.add(block.id);
+  }
+  return ids;
+}
+
+/**
+ * Archives the pages this sync's plan no longer contains.
+ *
+ * Runs after the writes, over the links belonging to the courses in this sync
+ * (see `reconciliationScope`). A link whose entity is not in the plan describes
+ * a page whose reason to exist is gone: an assessment the student deleted, a
+ * study session the planner dropped, a category they switched off. Archiving is
+ * Notion's delete -- `pages.update` with `archived: true` -- and it is
+ * deliberately not destructive: the page moves to the trash, where a student
+ * who disagrees can restore it.
+ *
+ * Notion first, then the link: an orphaned link is recoverable (the next sync
+ * archives it again, and archiving twice is a no-op) while an orphaned page
+ * would be unreachable, which is the bug this exists to fix.
+ *
+ * A dry run walks the identical diff and reports the identical `removed`
+ * without one network call, because the diff comes from the plan and the store
+ * and the network is used solely to carry it out.
+ */
+async function removeStalePages(
+  userId: string,
+  opts: NotionSyncOptions,
+  plan: SyncPlan,
+  args: {
+    client: NotionClient | null;
+    comprehensive: boolean;
+    pastSessions: () => ReadonlySet<string>;
+  },
+  result: NotionSyncResult,
+): Promise<void> {
+  // Nothing in scope: no course means no id and no prefix, and "archive
+  // everything" is never the right reading of an empty input.
+  if (opts.courses.length === 0) return;
+
+  const desired = new Set<string>();
+  for (const op of [...plan.courses, ...plan.assessments, ...plan.sessions]) {
+    desired.add(`${op.kind}:${op.entityId}`);
+  }
+
+  let links: NotionLink[];
+  try {
+    links = await store.listNotionLinks(userId);
+  } catch (err) {
+    // Never fatal: the pages just written are correct either way, and a cleanup
+    // that cannot read its own links simply has nothing to do.
+    result.errors.push(`Could not list existing Notion pages: ${describeLocal(err)}`);
+    return;
+  }
+
+  const inScope = reconciliationScope(opts, args.comprehensive);
+
+  for (const link of links) {
+    if (desired.has(`${link.kind}:${link.entityId}`)) continue;
+    if (!inScope(link)) continue;
+    // A session the student already sat is not stale, it is history. The link
+    // stays too, so a later sync still knows the page is ours.
+    if (link.kind === "session" && args.pastSessions().has(link.entityId)) continue;
+
+    if (args.client === null) {
+      // Dry run: same diff, no calls, no link touched.
+      result.removed += 1;
+      continue;
+    }
+
+    const client = args.client;
+    try {
+      try {
+        // Notion's delete. `archived` (not `in_trash`) is what the write side
+        // of the API takes, in every version the SDK speaks.
+        await client.pages.update({ page_id: link.pageId, archived: true });
+      } catch (err) {
+        // 404: already gone -- the student deleted it themselves, or a previous
+        // run got as far as Notion and no further. The end state is the one we
+        // wanted, so this counts as removed and the link still goes.
+        if (!isNotFound(err)) throw err;
+      }
+      await store.deleteNotionLink(link.kind, link.entityId);
+      result.removed += 1;
+    } catch (err) {
+      if (isRevoked(err)) throw err;
+      // The link is deliberately left in place so the next sync retries it.
+      result.errors.push(
+        `${describeStale(link, opts)}: ${client.describeError(err)}`,
+      );
+    }
+  }
+}
+
+/** What `archiveNotionPages` managed to do, and what it could not. */
+export interface NotionPageRemoval {
+  removed: number;
+  errors: string[];
+}
+
+/**
+ * Archives specific pages we created, given the links that named them.
+ *
+ * The counterpart to `removeStalePages` for the one case that pass cannot
+ * reach. It reconciles against the courses being synced; a course the student
+ * deleted is in no sync's scope, and its link rows -- the only record of the
+ * page ids -- went with it. So `deleteCourse` and `deleteAssessment` hand the
+ * rows back on their way out and they land here, exactly as their calendar
+ * links land in `deleteCalendarEvents`.
+ *
+ * Only ever the generated rows: coursework and study sessions. The class page
+ * is not in what the store returns, and this function is not the place that
+ * decision gets revisited (see `CourseDeletion.notionPages`).
+ *
+ * Best effort by construction. It never throws: the student asked for the
+ * course to go, and Notion being down is not a reason to refuse them. What is
+ * lost then is the tidy-up, not the delete -- and archiving is Notion's trash,
+ * so nothing here is unrecoverable in either direction.
+ */
+export async function archiveNotionPages(
+  userId: string,
+  pages: readonly OrphanedNotionPage[],
+): Promise<NotionPageRemoval> {
+  const result: NotionPageRemoval = { removed: 0, errors: [] };
+  // Before the connection is read, so the overwhelmingly common case -- a
+  // student who never connected Notion, and so has no links -- costs nothing
+  // and reports nothing.
+  if (pages.length === 0) return result;
+
+  let client: NotionClient;
+  try {
+    const conn = await store.getNotionConnection(userId);
+    if (!conn || conn.status !== "connected") {
+      result.errors.push("Notion is not connected.");
+      return result;
+    }
+    client = getNotionClient(conn.accessToken);
+  } catch (err) {
+    result.errors.push(`Notion unavailable: ${describeLocal(err)}`);
+    return result;
+  }
+
+  for (const page of pages) {
+    try {
+      await client.pages.update({ page_id: page.pageId, archived: true });
+      result.removed += 1;
+    } catch (err) {
+      // 404: already gone, which is the end state that was asked for.
+      if (isNotFound(err)) {
+        result.removed += 1;
+        continue;
+      }
+      // Collected, never thrown -- including a revoked token, which the
+      // removal pass rethrows because it has a sync to abort and this has not.
+      result.errors.push(
+        `${page.kind} ${page.entityId}: ${client.describeError(err)}`,
+      );
+    }
+  }
+  return result;
+}
+
+/**
+ * Turns a stale link back into something a person recognises. "9 removed" gives
+ * a student no way to tell a tidy-up from a mistake. Derived from the input
+ * where possible and from the id where not, because the whole point is that
+ * these entities may no longer exist.
+ */
+function describeStale(link: NotionLink, opts: NotionSyncOptions): string {
+  if (link.kind === "course") {
+    const course = opts.courses.find((c) => c.id === link.entityId);
+    return course ? courseTitle(course) : "A course page";
+  }
+  if (link.kind === "assessment") {
+    const a = opts.assessments.find((x) => x.id === link.entityId);
+    if (!a) return "A deleted item";
+    const code = opts.courses.find((c) => c.id === a.courseId)?.code;
+    return code ? `${code}: ${a.title}` : a.title;
+  }
+  const owner = /^sb_(.+)_\d+$/.exec(link.entityId)?.[1];
+  const a = owner ? opts.assessments.find((x) => x.id === owner) : undefined;
+  return a ? `Study session — ${a.title}` : "A study session";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -522,6 +899,24 @@ const EMPTY_CONNECTION: NotionConnection = {
   status: "needs_parent",
   connectedAt: "",
 };
+
+/**
+ * True when this sync's input is the user's whole set of courses.
+ *
+ * Only then can a link whose entity is nowhere in the input be read as an
+ * orphan rather than as another sync's business -- see `reconciliationScope`.
+ * A store that cannot answer means "assume not", which narrows the cleanup
+ * rather than widening it: the wrong answer here archives someone's pages.
+ */
+async function coversEveryCourse(userId: string, opts: NotionSyncOptions): Promise<boolean> {
+  try {
+    const all = await store.listCourses(userId);
+    const synced = new Set(opts.courses.map((c) => c.id));
+    return all.every((c) => synced.has(c.id));
+  } catch {
+    return false;
+  }
+}
 
 function describeLocal(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

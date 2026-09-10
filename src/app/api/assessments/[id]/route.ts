@@ -1,5 +1,7 @@
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
+import { archiveNotionPages } from "@/lib/notion/sync";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
@@ -101,10 +103,15 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
  * Removes one item the extractor invented, or one the student dropped.
  *
  * The store does the cascade -- calendar link, Notion link, and the links for
- * the study sessions the planner minted from this deadline -- so a deleted item
- * cannot leave a synced page behind describing work for a deadline that no
- * longer exists. The plan itself needs no cleanup: study blocks are generated
- * per request, so they simply stop being generated.
+ * the study sessions the planner minted from this deadline -- and hands the
+ * dropped links back, because they are the last record of the event and page
+ * ids they name. This is `DELETE /api/courses/[id]` narrowed to one row, and
+ * it has the same reason to exist: once the links are gone, nothing in the app
+ * can reach that deadline's calendar event or its Notion rows again, and a
+ * deleted item would keep its 9pm reminder for the rest of the term.
+ *
+ * The plan itself needs no cleanup: study blocks are generated per request, so
+ * they simply stop being generated.
  */
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { userId } = await resolveSession();
@@ -117,9 +124,47 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   try {
     // Scoped by userId in the store, so a stranger's id 404s here rather than
     // deleting someone else's item -- and a second delete of your own 404s too.
-    const deleted = await store.deleteAssessment(userId, id);
-    if (!deleted) return fail("Assessment not found.", 404);
-    return ok({ deleted: true });
+    const deletion = await store.deleteAssessment(userId, id);
+    if (!deletion) return fail("Assessment not found.", 404);
+
+    // Best effort, both of them, and reported rather than thrown: the item is
+    // already gone, and an outage at Google or Notion is not a reason to tell
+    // the student otherwise.
+    let calendarEventsRemoved = 0;
+    try {
+      const removal = await deleteCalendarEvents(userId, deletion.calendarLinks);
+      calendarEventsRemoved = removal.removed;
+      if (removal.errors.length > 0) {
+        logApiError("assessment.calendar_cleanup_failed", removal.errors[0], {
+          userId,
+          assessmentId: id,
+        });
+      }
+    } catch (err) {
+      logApiError("assessment.calendar_cleanup_failed", err, {
+        userId,
+        assessmentId: id,
+      });
+    }
+
+    let notionPagesRemoved = 0;
+    try {
+      const removal = await archiveNotionPages(userId, deletion.notionPages);
+      notionPagesRemoved = removal.removed;
+      if (removal.errors.length > 0) {
+        logApiError("assessment.notion_cleanup_failed", removal.errors[0], {
+          userId,
+          assessmentId: id,
+        });
+      }
+    } catch (err) {
+      logApiError("assessment.notion_cleanup_failed", err, {
+        userId,
+        assessmentId: id,
+      });
+    }
+
+    return ok({ deleted: true, calendarEventsRemoved, notionPagesRemoved });
   } catch (err) {
     logApiError("assessment.delete_failed", err, { userId, assessmentId: id });
     return fail("Could not delete that item.", 500, messageOf(err));

@@ -32,6 +32,7 @@ import type {
   CalendarLink,
   CalendarLinkQuery,
   KeyedCalendarLink,
+  OrphanedNotionPage,
   Store,
   UserUpsert,
 } from "@/lib/store";
@@ -602,7 +603,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     userId: string,
     courseId: string,
     assessmentIds: string[],
-  ): Promise<void> {
+  ): Promise<OrphanedNotionPage[]> {
     const { error: courseError } = await client
       .from("notion_links")
       .delete()
@@ -610,20 +611,42 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       .eq("kind", "course")
       .eq("entity_id", courseId);
     if (courseError) fail("deleteCourse notion course link", courseError);
+    // Not selected back, unlike the two below: the class page is the one the
+    // student's own notes live on, so its pointer goes and the page stays
+    // (see `CourseDeletion.notionPages`).
 
-    if (assessmentIds.length === 0) return;
+    if (assessmentIds.length === 0) return [];
 
-    const { error: assessmentError } = await client
+    const { data, error: assessmentError } = await client
       .from("notion_links")
       .delete()
       .eq("user_id", userId)
       .eq("kind", "assessment")
-      .in("entity_id", assessmentIds);
+      .in("entity_id", assessmentIds)
+      .select("kind, entity_id, page_id");
     if (assessmentError) {
       fail("deleteCourse notion assessment links", assessmentError);
     }
 
-    await deleteNotionSessionLinks(userId, assessmentIds);
+    return [
+      ...orphanedPages(data),
+      ...(await deleteNotionSessionLinks(userId, assessmentIds)),
+    ];
+  }
+
+  /**
+   * The deleted `notion_links` rows, as the pages they named.
+   *
+   * `kind` is narrowed the same way every read of the table narrows it: a row
+   * carrying a kind this build does not know is dropped rather than guessed at.
+   */
+  function orphanedPages(rows: unknown): OrphanedNotionPage[] {
+    return ((rows ?? []) as NotionLinkRow[]).flatMap((row) => {
+      const kind = toNotionLinkKind(row.kind);
+      return kind === null
+        ? []
+        : [{ kind, entityId: row.entity_id, pageId: row.page_id }];
+    });
   }
 
   /**
@@ -641,8 +664,8 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
   async function deleteNotionSessionLinks(
     userId: string,
     assessmentIds: string[],
-  ): Promise<void> {
-    if (assessmentIds.length === 0) return;
+  ): Promise<OrphanedNotionPage[]> {
+    if (assessmentIds.length === 0) return [];
 
     const { data, error } = await client
       .from("notion_links")
@@ -655,31 +678,37 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     const orphaned = ((data ?? []) as { entity_id: string }[])
       .map((r) => r.entity_id)
       .filter((id) => prefixes.some((prefix) => id.startsWith(prefix)));
-    if (orphaned.length === 0) return;
+    if (orphaned.length === 0) return [];
 
-    const { error: sessionError } = await client
+    const { data: deleted, error: sessionError } = await client
       .from("notion_links")
       .delete()
       .eq("user_id", userId)
       .eq("kind", "session")
-      .in("entity_id", orphaned);
+      .in("entity_id", orphaned)
+      .select("kind, entity_id, page_id");
     if (sessionError) fail("notion session links", sessionError);
+    return orphanedPages(deleted);
   }
 
   /** The single-assessment half of `deleteNotionLinksForCourse`. */
   async function deleteNotionLinksForAssessment(
     userId: string,
     assessmentId: string,
-  ): Promise<void> {
-    const { error } = await client
+  ): Promise<OrphanedNotionPage[]> {
+    const { data, error } = await client
       .from("notion_links")
       .delete()
       .eq("user_id", userId)
       .eq("kind", "assessment")
-      .eq("entity_id", assessmentId);
+      .eq("entity_id", assessmentId)
+      .select("kind, entity_id, page_id");
     if (error) fail("deleteAssessment notion assessment link", error);
 
-    await deleteNotionSessionLinks(userId, [assessmentId]);
+    return [
+      ...orphanedPages(data),
+      ...(await deleteNotionSessionLinks(userId, [assessmentId])),
+    ];
   }
 
   return {
@@ -1066,14 +1095,18 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
 
       // Only after the delete succeeded: a caller who does not own the course
       // must not be able to clear anyone's links.
-      await deleteNotionLinksForCourse(userId, courseId, assessmentIds);
+      const notionPages = await deleteNotionLinksForCourse(
+        userId,
+        courseId,
+        assessmentIds,
+      );
       // The course's own class series (`mt_<courseId>_*`) as well as its
       // assessments' deadlines and study sessions. A class meeting is not a
       // row, so nothing else would ever find those links again -- which is why
       // the rows are returned rather than just dropped: the caller deletes the
       // Google events they name.
       const calendarLinks = await deleteCalendarLinksFor(userId, assessmentIds, [courseId]);
-      return { calendarLinks };
+      return { calendarLinks, notionPages };
     },
 
     async listAssessments(userId) {
@@ -1147,7 +1180,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     async deleteAssessment(userId, id) {
       const owned = await ownedAssessment(userId, id);
       // Not-yours and not-there are the same answer, as everywhere else.
-      if (!owned) return false;
+      if (!owned) return null;
 
       const { data, error } = await client
         .from("assessments")
@@ -1155,16 +1188,16 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .eq("id", id)
         .select("id");
       if (error) fail("deleteAssessment", error);
-      if (((data ?? []) as { id: string }[]).length === 0) return false;
+      if (((data ?? []) as { id: string }[]).length === 0) return null;
 
       // Neither `calendar_links.key` nor `notion_links.entity_id` carries a
       // foreign key -- each mixes assessment ids with planner-minted session
       // ids (and, for calendar links, generated class-series ids) in one
       // column -- so nothing cascades and both are cleared by hand, only after
       // the delete succeeded.
-      await deleteNotionLinksForAssessment(userId, id);
-      await deleteCalendarLinksFor(userId, [id], []);
-      return true;
+      const notionPages = await deleteNotionLinksForAssessment(userId, id);
+      const calendarLinks = await deleteCalendarLinksFor(userId, [id], []);
+      return { calendarLinks, notionPages };
     },
 
     async getCalendarLink(key) {
@@ -1297,6 +1330,15 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return ((data ?? []) as NotionLinkRow[])
         .map(notionLinkToDomain)
         .filter((link): link is NotionLink => link !== null);
+    },
+
+    async deleteNotionLink(kind, entityId) {
+      const { error } = await client
+        .from("notion_links")
+        .delete()
+        .eq("kind", kind)
+        .eq("entity_id", entityId);
+      if (error) fail("deleteNotionLink", error);
     },
   };
 }

@@ -331,6 +331,12 @@ export type NotionLinkKind = "course" | "assessment" | "session";
 export interface NotionSyncResult {
   created: { courses: number; assignments: number; sessions: number };
   updated: { courses: number; assignments: number; sessions: number };
+  /**
+   * Pages archived because the thing they described is gone from the plan.
+   * Counted like `CalendarSyncResult.removed`, and a dry run reports the same
+   * number it would really archive.
+   */
+  removed: number;
   skipped: number;
   hubUrl: string | null;
   /** courseId -> Notion page URL, for "Open in Notion" links. */

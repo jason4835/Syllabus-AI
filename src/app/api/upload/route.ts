@@ -4,7 +4,7 @@ import { fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
-import { syncToNotion } from "@/lib/notion/sync";
+import { archiveNotionPages, syncToNotion } from "@/lib/notion/sync";
 import { buildSemesterPlan } from "@/lib/plan";
 import { parseSyllabus } from "@/lib/parse";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
@@ -125,6 +125,26 @@ export async function POST(req: Request) {
           }
         } catch (err) {
           logApiError("upload.calendar_cleanup_failed", err, {
+            userId,
+            courseId: replacing,
+          });
+        }
+      }
+      // And the old course's Notion rows, for the identical reason: the new
+      // course's ids are all fresh, so the rows this upload writes sit beside
+      // the old ones rather than on top of them, and a re-upload would double
+      // the Coursework database the same way it would double the calendar.
+      if (deletion && deletion.notionPages.length > 0) {
+        try {
+          const removal = await archiveNotionPages(userId, deletion.notionPages);
+          if (removal.errors.length > 0) {
+            logApiError("upload.notion_cleanup_failed", removal.errors[0], {
+              userId,
+              courseId: replacing,
+            });
+          }
+        } catch (err) {
+          logApiError("upload.notion_cleanup_failed", err, {
             userId,
             courseId: replacing,
           });
