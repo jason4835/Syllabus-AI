@@ -7,7 +7,7 @@ import { syncToNotion } from "@/lib/notion/sync";
 import { buildSemesterPlan } from "@/lib/plan";
 import { parseSyllabus } from "@/lib/parse";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Assessment, Course } from "@/lib/types";
 import { attachWeights } from "@/lib/weights";
@@ -22,7 +22,7 @@ export const maxDuration = 120;
 const MAX_BYTES = 15 * 1024 * 1024;
 
 export async function POST(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "upload:user");

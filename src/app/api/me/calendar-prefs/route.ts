@@ -1,6 +1,6 @@
 import { fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { CalendarPrefs } from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
@@ -15,7 +15,7 @@ const KEYS = Object.keys(DEFAULT_CALENDAR_PREFS) as (keyof CalendarPrefs)[];
  * time, can honour it too.
  */
 export async function PATCH(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   let body: Record<string, unknown>;

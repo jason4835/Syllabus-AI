@@ -1,6 +1,6 @@
 import { fail, messageOf, ok, publicOrigin } from "@/lib/api";
 import { logApiError } from "@/lib/log";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +22,7 @@ function urlsFor(req: Request, token: string | null): FeedUrls {
 }
 
 export async function GET(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   try {
     const user = await store.getUser(userId);
@@ -34,7 +34,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   let reset = false;

@@ -9,11 +9,17 @@ import { Button, Spinner } from "@/components/ui/button";
 import { ChatIcon, SendIcon } from "@/components/icons";
 import { ErrorState } from "@/components/ui/states";
 
+/**
+ * These are the first thing a new user clicks, so every one has to return a
+ * real answer. Three of the previous four fell through to a generic overview
+ * because their phrasing missed the intent matcher -- offering a question the
+ * assistant cannot answer is worse than offering none.
+ */
 const EXAMPLES = [
   "When should I start studying for Calc midterm?",
-  "Which week of the semester is worst?",
-  "What is due in the next ten days?",
-  "How much of my grade is still up for grabs?",
+  "What's due this week?",
+  "Which is my heaviest week?",
+  "Am I behind on anything?",
 ];
 
 interface Message extends ChatTurn {

@@ -1,7 +1,7 @@
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Course } from "@/lib/types";
 import { Invalid, validateCoursePatch } from "@/lib/validation";
@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
  * `term.source` to `"syllabus"` and renumbers the weeks.
  */
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");
@@ -62,7 +62,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   const { id } = await ctx.params;
   try {

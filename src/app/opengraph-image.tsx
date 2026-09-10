@@ -191,7 +191,7 @@ export default function OpengraphImage() {
                 color: MUTED,
               }}
             >
-              Workload forecast · 14 weeks
+              Workload heatmap · 14 weeks
             </div>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
               {WEEKS.map((week, i) => (

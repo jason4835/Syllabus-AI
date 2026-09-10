@@ -1,14 +1,14 @@
 import { fail, messageOf, ok } from "@/lib/api";
 import { ensureDemoSeed } from "@/lib/demo";
 import { log, logApiError } from "@/lib/log";
-import { DEMO_USER_ID, destroySession, readSession } from "@/lib/session";
+import { DEMO_USER_ID, destroySession, readSession, resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { User } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return ok<User | null>(null);
   await ensureDemoSeed(userId);
   return ok<User | null>(await store.getUser(userId));
@@ -41,17 +41,12 @@ export async function DELETE(req: Request) {
   const userId = await readSession();
   if (!userId) return fail("Sign in first.", 401);
 
-  // In demo mode every visitor IS this account -- there is no sign-in to tell
-  // them apart. Deleting it would wipe the shared demo out from under everyone
-  // else currently reading it. It re-seeds on the next read, so this is rude
-  // rather than fatal, which still is not a call one visitor gets to make on
-  // behalf of the rest.
-  if (userId === DEMO_USER_ID) {
-    return fail(
-      "The demo account cannot be deleted -- everyone viewing the demo shares it. Sign in with Google to manage a real account.",
-      403,
-    );
-  }
+  // A demo sandbox used to be shared by every visitor, so one person deleting
+  // it wiped it out from under everyone else -- hence the old refusal. Sandboxes
+  // are per-visitor now, so this data really is theirs and deleting it is an
+  // ordinary, harmless act: they get a fresh sandbox on their next visit. No
+  // special case is needed, and refusing to delete someone's own data would be
+  // the surprising behaviour.
 
   let confirm = "";
   let removeGoogleCalendar = false;

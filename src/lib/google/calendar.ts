@@ -446,6 +446,7 @@ export async function syncToCalendar(
     skipped: plan.skipped,
     classSeries: 0,
     removed: 0,
+    removedItems: [],
     // Straight through from the planner: the UI's prompt to pick a section is
     // driven by the same pass that withheld the meetings.
     needsSection: [...plan.needsSection],
@@ -578,12 +579,46 @@ async function removeStaleEvents(
     return;
   }
 
+  /**
+   * Turns a stale key back into something a person recognises. "9 removed"
+   * gives a student no way to tell a tidy-up from a mistake; a list of titles
+   * does. Derived from the key rather than the planner, because the whole
+   * point is that these events are no longer in the plan.
+   */
+  const describe = (key: string): CalendarSyncResult["removedItems"][number] => {
+    const assessmentTitle = (id: string) => {
+      const a = opts.assessments.find((x) => x.id === id);
+      if (!a) return null;
+      const code = opts.courses.find((c) => c.id === a.courseId)?.code;
+      return {
+        title: code ? `${code}: ${a.title}` : a.title,
+        start: a.dueDate,
+      };
+    };
+
+    const session = /^sb_(.+)_\d+$/.exec(key);
+    if (session) {
+      const found = assessmentTitle(session[1]);
+      return { key, title: found ? `Study session — ${found.title}` : "Study session", start: found?.start ?? null };
+    }
+
+    const meeting = /^mt_(.+)_\d+$/.exec(key);
+    if (meeting) {
+      const course = opts.courses.find((c) => c.id === meeting[1]);
+      return { key, title: course ? `${course.code} class meetings` : "Class meetings", start: null };
+    }
+
+    const found = assessmentTitle(key);
+    return { key, title: found?.title ?? key, start: found?.start ?? null };
+  };
+
   for (const link of links) {
     if (desired.has(link.key)) continue;
 
     if (api === null) {
       // Dry run: same diff, no calls.
       result.removed += 1;
+      result.removedItems.push(describe(link.key));
       continue;
     }
 
@@ -605,6 +640,7 @@ async function removeStaleEvents(
       }
       await store.deleteCalendarLink(link.key);
       result.removed += 1;
+      result.removedItems.push(describe(link.key));
     } catch (err) {
       // The link is deliberately left in place so the next sync retries it.
       result.errors.push(

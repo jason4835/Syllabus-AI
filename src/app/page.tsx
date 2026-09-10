@@ -101,17 +101,17 @@ export default function LandingPage() {
                 six documents you never open again.
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <LinkButton href="/api/auth/google" size="lg">
+                <LinkButton href="/dashboard" size="lg">
+                  Try it — no account
+                  <ArrowRightIcon width={16} height={16} />
+                </LinkButton>
+                <LinkButton href="/api/auth/google" variant="secondary" size="lg">
                   <GoogleMark />
                   Sign in with Google
                 </LinkButton>
-                <LinkButton href="/dashboard" variant="secondary" size="lg">
-                  Try the demo
-                  <ArrowRightIcon width={16} height={16} />
-                </LinkButton>
               </div>
               <p className="mt-4 text-[0.8125rem] text-muted">
-                The demo runs on sample syllabi — no account, no calendar access.
+                Starts on a sample semester you can upload over — no account, no calendar access until you ask for it.
               </p>
             </div>
 
@@ -216,12 +216,13 @@ export default function LandingPage() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
-                <LinkButton href="/api/auth/google" size="lg">
+                <LinkButton href="/dashboard" size="lg">
+                  Try it — no account
+                  <ArrowRightIcon width={16} height={16} />
+                </LinkButton>
+                <LinkButton href="/api/auth/google" variant="secondary" size="lg">
                   <GoogleMark />
                   Sign in with Google
-                </LinkButton>
-                <LinkButton href="/dashboard" variant="secondary" size="lg">
-                  Try the demo
                 </LinkButton>
               </div>
             </div>

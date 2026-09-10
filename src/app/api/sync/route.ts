@@ -5,7 +5,7 @@ import { syncToCalendar } from "@/lib/google/calendar";
 import { buildSemesterPlan } from "@/lib/plan";
 import { ensureDemoSeed } from "@/lib/demo";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function POST(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);
 

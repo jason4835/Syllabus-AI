@@ -451,7 +451,13 @@ function FeedSection({ demoMode }: { demoMode: boolean }) {
   }
 
   const feed = state.kind === "ready" ? state.feed : null;
-  const address = feed?.webcal ?? feed?.url ?? null;
+  /**
+   * The https form is what goes in the box, because Google Calendar's
+   * "From URL" rejects a webcal: address outright -- handing it out was
+   * breaking the one path built for people who do not connect Google.
+   * webcal: stays on the Apple Calendar link, where it opens the app directly.
+   */
+  const address = feed?.url ?? feed?.webcal ?? null;
 
   return (
     <section
@@ -475,8 +481,9 @@ function FeedSection({ demoMode }: { demoMode: boolean }) {
 
       {demoMode ? (
         <Note>
-          This is the shared demo feed — everyone trying the demo subscribes to
-          the same one. Sign in and it becomes yours alone.
+          You&rsquo;re on a sample semester, so this feed carries the sample
+          courses. Upload your own syllabus and it updates. Sign in to keep it
+          past this visit.
         </Note>
       ) : null}
 

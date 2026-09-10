@@ -1,7 +1,7 @@
 import { fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Assessment } from "@/lib/types";
 import {
@@ -58,7 +58,7 @@ function validate(body: Record<string, unknown>, current: Assessment): Partial<A
 }
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");
@@ -107,7 +107,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
  * per request, so they simply stop being generated.
  */
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");

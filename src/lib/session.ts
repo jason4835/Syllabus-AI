@@ -11,8 +11,15 @@
  * Server-only: `next/headers` throws outside a request scope.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
+import { DEMO_USER_PREFIX, isDemoUser } from "@/lib/types";
+
+/**
+ * Re-exported so a route that already imports from here does not need a second
+ * import just to ask "is this visitor on a throwaway account?".
+ */
+export { isDemoUser };
 
 /** Name is short and app-scoped so it cannot collide with a host app's cookies. */
 export const SESSION_COOKIE_NAME = "sylb_session";
@@ -21,9 +28,14 @@ export const SESSION_COOKIE_NAME = "sylb_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
 /**
- * Stable id for the seeded demo account. Demo mode has to work with zero
- * config, so this id is a constant rather than something generated at boot --
- * seeded fixtures in the store can reference it directly.
+ * The old single, server-wide demo account.
+ *
+ * @deprecated Demo is now one ephemeral account per visitor (see
+ * `resolveSession`), so nothing mints this id any more. It survives only
+ * because `DELETE /api/me` still refuses it by name, and rows written under it
+ * by an older deploy are still out there. Note it does NOT match
+ * `isDemoUser()` -- "demo-user" has no underscore -- which is deliberate: the
+ * shared account is a legacy row, not a sandbox anyone should be seeded into.
  */
 export const DEMO_USER_ID = "demo-user";
 
@@ -86,17 +98,6 @@ function getSecret(): string {
   return DEV_ONLY_SECRET;
 }
 
-/**
- * Google credentials are read directly here instead of importing
- * `isGoogleConfigured()` from ./google/oauth. Session reading happens on every
- * request, and that import would pull the (large) googleapis module into paths
- * that never talk to Google. The two checks read the same variables -- keep
- * them in step.
- */
-export function isDemoMode(): boolean {
-  return !process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET;
-}
-
 function base64url(input: Buffer): string {
   return input.toString("base64url");
 }
@@ -148,15 +149,16 @@ export async function createSession(userId: string): Promise<void> {
 }
 
 /**
- * Resolves to the signed-in user id, or null.
+ * Resolves to the user id in the cookie, or null. Pure: no writes, no minting.
  *
- * A valid cookie always wins. Only when there is no usable cookie does demo
- * mode kick in, so a developer who *has* signed in with real credentials is
- * never silently downgraded to the demo account.
+ * A valid cookie always wins, and a tampered one is treated exactly like no
+ * cookie at all -- this is the fail-closed read that ~18 routes call on every
+ * request, so it stays cheap and side-effect-free. A caller that WANTS to hand
+ * a cookieless visitor a sandbox asks for `resolveSession()` instead.
  */
 export async function readSession(): Promise<string | null> {
   // Called for its validation side effect: without this, a production deploy
-  // missing SESSION_SECRET would happily serve the demo path and only blow up
+  // missing SESSION_SECRET would serve requests happily and only blow up
   // later, when someone finally arrived holding a cookie.
   getSecret();
 
@@ -170,7 +172,53 @@ export async function readSession(): Promise<string | null> {
     // like no cookie at all.
   }
 
-  return isDemoMode() ? DEMO_USER_ID : null;
+  return null;
+}
+
+/**
+ * A fresh, unguessable id for one visitor's throwaway sandbox.
+ *
+ * 24 random bytes encode to exactly 32 unpadded base64url characters. The id
+ * travels inside a signed cookie, so it does not have to be secret -- but it
+ * does have to be unguessable, because two sandboxes sharing an id would share
+ * a workspace, which is the exact bug this whole file is here to end.
+ */
+function mintDemoUserId(): string {
+  return DEMO_USER_PREFIX + randomBytes(24).toString("base64url");
+}
+
+export interface ResolvedSession {
+  userId: string;
+  /** True for an ephemeral sandbox account, false for a signed-in user. */
+  isDemo: boolean;
+  /** True only on the request that minted the sandbox and set its cookie. */
+  created: boolean;
+}
+
+/**
+ * The cookie's user when there is one, otherwise a brand-new demo sandbox.
+ *
+ * Demo used to be a server-wide flag -- `!GOOGLE_CLIENT_ID` -- which made a
+ * working demo and working Google sign-in mutually exclusive: the live site,
+ * where Google IS configured, answered "Try the demo" with a wall of 401s. And
+ * when Google was NOT configured, every cookieless visitor resolved to one
+ * shared id, so strangers landed in the same workspace and could delete each
+ * other's uploads. A per-visitor account fixes both at once, and is orthogonal
+ * to whether sign-in works.
+ *
+ * ONLY CALL THIS FROM A ROUTE HANDLER. It sets the session cookie, and Next
+ * throws if you write cookies from a Server Component, a layout, or a page.
+ * `readSession()` is the read for everywhere else.
+ */
+export async function resolveSession(): Promise<ResolvedSession> {
+  const existing = await readSession();
+  if (existing) {
+    return { userId: existing, isDemo: isDemoUser(existing), created: false };
+  }
+
+  const userId = mintDemoUserId();
+  await createSession(userId);
+  return { userId, isDemo: true, created: true };
 }
 
 /**

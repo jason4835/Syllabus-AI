@@ -65,7 +65,9 @@ export const REVIEW_CONFIDENCE_THRESHOLD = 0.6;
 
 /** Single source of truth for "does this row need the user's eyes". */
 export function needsReview(a: Pick<Assessment, "confidence" | "reviewedAt">): boolean {
-  return !a.reviewedAt && a.confidence < REVIEW_CONFIDENCE_THRESHOLD;
+  // `<=`, not `<`: the heuristic parser's ceiling is exactly the threshold, so a
+  // strict comparison left 48 of 56 items silently unflagged.
+  return !a.reviewedAt && a.confidence <= REVIEW_CONFIDENCE_THRESHOLD;
 }
 
 /** A grading-scheme row, e.g. "Homework -- 30%". */
@@ -217,6 +219,11 @@ export interface CalendarSyncResult {
   classSeries: number;
   /** Events removed because their source no longer exists or is deselected. */
   removed: number;
+  /**
+   * What was removed, so the UI can show it rather than a bare count. A student
+   * who reads "9 removed" has no way to tell a tidy-up from a mistake.
+   */
+  removedItems: { key: string; title: string; start: string | null }[];
   /** Course ids whose syllabus lists several sections and none is chosen yet. */
   needsSection: string[];
   calendarId: string;
@@ -257,6 +264,18 @@ export interface CalendarPrefs {
   officeHours: boolean;
   deadlines: boolean;    // assessments: assignments, exams, ...
   studySessions: boolean;
+}
+
+/**
+ * Prefix for an ephemeral per-visitor demo account. Demo used to be a
+ * server-wide flag, which meant a deployment with Google configured had no
+ * demo at all -- the live site answered "Try the demo" with a wall of 401s.
+ * Every cookieless visitor now gets their own sandbox instead.
+ */
+export const DEMO_USER_PREFIX = "demo_";
+
+export function isDemoUser(userId: string): boolean {
+  return userId.startsWith(DEMO_USER_PREFIX);
 }
 
 export const DEFAULT_CALENDAR_PREFS: CalendarPrefs = {

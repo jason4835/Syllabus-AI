@@ -334,14 +334,13 @@ export function AccountPanel({
             ) : null}
           </Section>
 
-          <Section title="Delete account">
-            {demoMode ? (
-              <Note>
-                This is the shared demo account, so it can&rsquo;t be deleted —
-                there is nothing personal in it to remove. On a real account,
-                this is where you erase everything, permanently.
-              </Note>
-            ) : deletion.kind === "confirming" ||
+          {/*
+            No demo special case any more. A sandbox belongs to the one visitor
+            who has it, and they may well have uploaded their real syllabus into
+            it, so deleting it has to be offered here like any other account.
+          */}
+          <Section title={demoMode ? "Delete this sandbox" : "Delete account"}>
+            {deletion.kind === "confirming" ||
               deletion.kind === "deleting" ||
               deletion.kind === "error" ? (
               <div className="rise space-y-3.5 rounded-lg border border-danger-line bg-danger-soft px-3.5 py-3.5">

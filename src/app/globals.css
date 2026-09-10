@@ -133,6 +133,23 @@
   :root {
     color-scheme: light;
     --grain: color-mix(in srgb, var(--color-ink) 3%, transparent);
+
+    /*
+     * The workload ramp, restated as plain CSS.
+     *
+     * Tailwind v4 tree-shakes an `@theme` token that never appears literally in
+     * the source, and these are only ever built as `var(--color-load-${n})`.
+     * `load-1/2/3` survived by accident -- they appear verbatim in icons.tsx and
+     * hero-preview.tsx -- while `load-0` was dropped entirely, so every calm week
+     * rendered as a transparent bar and the legend swatch was invisible in light
+     * mode. Declaring them here puts them beyond the shaker's reach. The dark
+     * block above is unlayered, so it still wins in dark mode.
+     */
+    --color-track: #f2efe8;
+    --color-load-0: #bfb9a6;
+    --color-load-1: #8fb99c;
+    --color-load-2: #dda94f;
+    --color-load-3: #bd5540;
   }
   @media (prefers-color-scheme: dark) {
     :root {

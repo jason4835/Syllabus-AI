@@ -1,19 +1,22 @@
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { fail } from "@/lib/api";
+import { publicOrigin } from "@/lib/api";
 import { getAuthUrl, isGoogleConfigured } from "@/lib/google/oauth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
+  // This route is reached by a browser navigation, not by fetch, so a JSON
+  // error body is a dead end: the user is left staring at raw text in a tab
+  // with nothing to click. Send them back to the landing page with a reason
+  // the page can phrase in English -- same contract as /api/auth/callback.
   if (!isGoogleConfigured()) {
-    return fail(
-      "Google sign-in is not configured on this server.",
-      503,
-      "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then restart. The demo at /dashboard works without them.",
-    );
+    const url = new URL("/", publicOrigin(req));
+    url.searchParams.set("auth_error", "google_not_configured");
+    return NextResponse.redirect(url);
   }
+
   // CSRF: the state we hand Google must come back unchanged, so stash it in a
   // short-lived cookie the callback compares against.
   const state = randomBytes(16).toString("hex");

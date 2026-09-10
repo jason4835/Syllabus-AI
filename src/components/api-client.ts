@@ -26,6 +26,26 @@ function isApiResult(value: unknown): value is ApiResult<unknown> {
   return record.ok === false && typeof record.error === "string";
 }
 
+/**
+ * There used to be three of these -- "unexpected response", "unexpected
+ * response shape", "unreadable response" -- and no reader could act on the
+ * difference between them. One sentence, because from the outside it is one
+ * situation: the server said something this app cannot use.
+ */
+const WIRE_FAILURE = "The server sent a reply this app could not read";
+
+/**
+ * A response body is only shown to a person when it reads like a message. A
+ * gateway answers a 502 with a full HTML page, and pasting `<html><head><title>`
+ * into the error box tells a student nothing and looks broken -- so any body
+ * carrying markup is dropped and the status line stands alone.
+ */
+function readableDetail(body: string): string | undefined {
+  const trimmed = body.slice(0, 180).trim();
+  if (!trimmed || trimmed.includes("<")) return undefined;
+  return trimmed;
+}
+
 async function envelope<T>(request: Promise<Response>): Promise<ApiResult<T>> {
   let response: Response;
   try {
@@ -42,7 +62,7 @@ async function envelope<T>(request: Promise<Response>): Promise<ApiResult<T>> {
   try {
     body = await response.text();
   } catch {
-    return { ok: false, error: "The server sent an unreadable response" };
+    return { ok: false, error: WIRE_FAILURE };
   }
 
   let parsed: unknown;
@@ -52,14 +72,14 @@ async function envelope<T>(request: Promise<Response>): Promise<ApiResult<T>> {
     return {
       ok: false,
       error: response.ok
-        ? "The server sent an unexpected response"
+        ? WIRE_FAILURE
         : `Request failed (${response.status})`,
-      detail: body.slice(0, 180).trim() || undefined,
+      detail: readableDetail(body),
     };
   }
 
   if (isApiResult(parsed)) return parsed as ApiResult<T>;
-  return { ok: false, error: "The server sent an unexpected response shape" };
+  return { ok: false, error: WIRE_FAILURE };
 }
 
 export function apiGet<T>(path: string): Promise<ApiResult<T>> {
@@ -156,14 +176,14 @@ export function apiUpload<T>(
           ok: false,
           error:
             xhr.status >= 200 && xhr.status < 300
-              ? "The server sent an unexpected response"
+              ? WIRE_FAILURE
               : `Upload failed (${xhr.status || "no response"})`,
-          detail: xhr.responseText.slice(0, 180).trim() || undefined,
+          detail: readableDetail(xhr.responseText),
         });
         return;
       }
       if (isApiResult(parsed)) settle(parsed as ApiResult<T>);
-      else settle({ ok: false, error: "The server sent an unexpected response shape" });
+      else settle({ ok: false, error: WIRE_FAILURE });
     });
 
     xhr.addEventListener("error", () =>

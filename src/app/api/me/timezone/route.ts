@@ -1,6 +1,6 @@
 import { fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
-import { readSession } from "@/lib/session";
+import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { User } from "@/lib/types";
 
@@ -30,7 +30,7 @@ function isValidTimezone(value: string): boolean {
  * host's zone -- 23:59 in New York became 19:59 on a UTC box.
  */
 export async function POST(req: Request) {
-  const userId = await readSession();
+  const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   let timezone = "";
