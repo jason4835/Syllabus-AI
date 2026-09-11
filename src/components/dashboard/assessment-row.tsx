@@ -311,7 +311,7 @@ export function AssessmentRow({
           noValidate
           onSubmit={(event) => void save(event)}
           onKeyDown={onFormKeyDown}
-          aria-label={`Edit ${assessment.title}`}
+          aria-label={`Edit ${courseCode} ${assessment.title}`}
           className="rounded-lg border border-line bg-raised p-3"
           style={{ borderLeft: `3px solid ${color}` }}
         >
@@ -605,7 +605,7 @@ export function AssessmentRow({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  aria-label={`Edit ${assessment.title}`}
+                  aria-label={`Edit ${courseCode} ${assessment.title}`}
                   disabled={pending !== null}
                   onClick={openEditor}
                 >
@@ -655,7 +655,7 @@ export function AssessmentRow({
           <div className="mt-1">
             <button
               type="button"
-              aria-label={`Edit ${assessment.title}`}
+              aria-label={`Edit ${courseCode} ${assessment.title}`}
               onClick={openEditor}
               className={`-ml-1.5 inline-flex items-center justify-center rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:opacity-100 ${TOUCH_TARGET} ${
                 coarsePointer

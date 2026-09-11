@@ -297,6 +297,7 @@ export function RoadmapPanel({
                     <button
                       type="button"
                       onClick={() => onEditCourse?.(course.id)}
+                      aria-label={`Edit ${course.code}`}
                       className="rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-surface hover:text-ink"
                     >
                       Edit course
@@ -314,6 +315,7 @@ export function RoadmapPanel({
                           confirmingDelete === course.id ? null : course.id,
                         );
                       }}
+                      aria-label={`Delete ${course.code}`}
                       className="rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted transition-colors hover:bg-danger-soft hover:text-danger"
                     >
                       Delete

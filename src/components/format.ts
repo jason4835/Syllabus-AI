@@ -57,6 +57,24 @@ export function formatDateShort(value: string | Date | null): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}`;
 }
 
+/**
+ * A timestamp a person would say out loud: "Sep 10, 12:12 PM".
+ *
+ * Deliberately NOT built on `parseDate`, which reads only the date half of an
+ * ISO string on purpose -- passing a full timestamp through it would print
+ * every time as 12:00 AM. Months come from the same table as the rest of this
+ * file, and seconds are dropped because they were never information.
+ */
+export function formatDateTime(value: string | Date | null): string {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const hour = date.getHours();
+  const display = hour % 12 === 0 ? 12 : hour % 12;
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${display}:${minute} ${hour >= 12 ? "PM" : "AM"}`;
+}
+
 export function formatWeekday(value: string | Date | null): string {
   const date = value instanceof Date ? value : parseDate(value);
   return date ? DAYS_LONG[date.getDay()] : "";

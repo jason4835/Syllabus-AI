@@ -15,7 +15,7 @@ import type {
 import { apiGet, apiPost } from "@/components/api-client";
 import type { AppConfig } from "@/components/api-client";
 import { accentVar, buildAccentMap } from "@/components/course-accents";
-import { pluralize } from "@/components/format";
+import { formatDateTime, pluralize } from "@/components/format";
 import { Logo, RefreshIcon } from "@/components/icons";
 import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
@@ -602,7 +602,10 @@ export function DashboardShell() {
       <footer className="border-t border-line">
         <div className="mx-auto w-full max-w-7xl px-4 py-6 text-[0.75rem] text-muted sm:px-6">
           {plan?.generatedAt ? (
-            <>Plan generated {new Date(plan.generatedAt).toLocaleString()}. </>
+            // Every other date in the app goes through `format.ts`; this one
+            // printed a raw `toLocaleString()` -- "9/10/2026, 12:12:22 PM",
+            // seconds and all. The seconds were never information.
+            <>Plan generated {formatDateTime(plan.generatedAt)}. </>
           ) : null}
           Syllabus Center keeps your roadmap in step with the semester.
         </div>

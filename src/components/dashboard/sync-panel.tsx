@@ -164,7 +164,7 @@ export function SyncPanel({
             ) : (
               <>
                 <CalendarIcon width={16} height={16} />
-                {demoMode ? "Preview the sync" : "Sync to Google Calendar"}
+                {demoMode ? "Preview the calendar sync" : "Sync to Google Calendar"}
               </>
             )}
           </Button>

@@ -67,6 +67,15 @@ export function AccountPanel({
   /** `POST /api/me/timezone` answers with a fresh user — adopt it upstream. */
   onUser: (user: User) => void;
 }) {
+  /**
+   * What this thing is called, everywhere in the delete section.
+   *
+   * A demo visitor does not have an "account" -- they never made one -- so
+   * calling it a sandbox is the honest word for them. The important part is
+   * that one request uses one word from heading to confirm button.
+   */
+  const noun = demoMode ? "sandbox" : "account";
+
   const confirmId = useId();
   const warningId = useId();
   const triggerId = useId();
@@ -172,7 +181,7 @@ export function AccountPanel({
       omitted,
     };
 
-    const filename = `syllabus-ai-export-${localDateStamp()}.json`;
+    const filename = `syllabus-center-export-${localDateStamp()}.json`;
     saveJson(payload, filename);
     setExported({ kind: "done", filename, omitted });
   }
@@ -339,6 +348,12 @@ export function AccountPanel({
             who has it, and they may well have uploaded their real syllabus into
             it, so deleting it has to be offered here like any other account.
           */}
+          {/*
+            One word throughout. The heading switched on demo mode while the
+            body and both buttons always said "account", so a visitor was
+            offered a sandbox to delete and then asked to confirm deleting their
+            account -- two things, as far as they knew.
+          */}
           <Section title={demoMode ? "Delete this sandbox" : "Delete account"}>
             {deletion.kind === "confirming" ||
               deletion.kind === "deleting" ||
@@ -348,7 +363,7 @@ export function AccountPanel({
                   id={warningId}
                   className="text-[0.875rem] leading-relaxed text-ink"
                 >
-                  This deletes your account and everything in it: every course,
+                  This deletes your {noun} and everything in it: every course,
                   every deadline extracted from your syllabi, your semester
                   plan, and the links to the calendar events and Notion pages
                   Syllabus Center created. <strong>It cannot be undone.</strong>
@@ -399,12 +414,12 @@ export function AccountPanel({
                   >
                     {deleting ? (
                       <>
-                        <Spinner label="Deleting your account" />
+                        <Spinner label={`Deleting your ${noun}`} />
                         Deleting…
                       </>
                     ) : (
                       <span className="text-danger">
-                        Delete my account permanently
+                        Delete my {noun} permanently
                       </span>
                     )}
                   </Button>
@@ -414,7 +429,7 @@ export function AccountPanel({
                     onClick={cancelDelete}
                     disabled={deleting}
                   >
-                    Keep my account
+                    Keep my {noun}
                   </Button>
                 </div>
 
@@ -425,7 +440,7 @@ export function AccountPanel({
             ) : (
               <div className="space-y-2.5">
                 <p className="text-[0.875rem] leading-relaxed text-ink-soft">
-                  Erase your account and every course, deadline, plan and
+                  Erase your {noun} and every course, deadline, plan and
                   connection stored with it. Your Notion pages stay where they
                   are.
                 </p>
@@ -435,7 +450,7 @@ export function AccountPanel({
                   size="sm"
                   onClick={askToDelete}
                 >
-                  <span className="text-danger">Delete my account</span>
+                  <span className="text-danger">Delete my {noun}</span>
                 </Button>
               </div>
             )}

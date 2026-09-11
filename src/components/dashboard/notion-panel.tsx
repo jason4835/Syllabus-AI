@@ -260,7 +260,7 @@ export function NotionPanel({
                   ) : (
                     <>
                       <NotionIcon width={16} height={16} />
-                      {configured ? "Sync to Notion" : "Preview the sync"}
+                      {configured ? "Sync to Notion" : "Preview the Notion sync"}
                     </>
                   )}
                 </Button>

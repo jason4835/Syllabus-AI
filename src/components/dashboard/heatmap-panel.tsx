@@ -352,7 +352,10 @@ function WeekDetail({
             {formatWeekRange(week.weekStart)}
           </span>
           {isCurrent ? (
-            <span className="ml-2 rounded-full border border-accent-line bg-accent-soft px-2 py-0.5 align-middle font-sans text-[0.6875rem] font-medium text-accent">
+            // `whitespace-nowrap`: at 320px this wrapped between the two
+            // words, and a pill with a border and a background does not wrap
+            // gracefully -- it became two half-pills on two lines.
+            <span className="ml-2 rounded-full border border-accent-line bg-accent-soft px-2 py-0.5 align-middle font-sans text-[0.6875rem] font-medium whitespace-nowrap text-accent">
               This week
             </span>
           ) : null}

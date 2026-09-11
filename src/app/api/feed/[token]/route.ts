@@ -52,7 +52,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
       status: 200,
       headers: {
         "Content-Type": "text/calendar; charset=utf-8",
-        "Content-Disposition": 'inline; filename="syllabus-ai.ics"',
+        // A display filename only. The UID domain inside the file is what
+        // calendar clients match on, and that one is deliberately frozen.
+        "Content-Disposition": 'inline; filename="syllabus-center.ics"',
         // Clients poll on their own schedule; five minutes keeps a manual
         // refresh honest without hammering the store.
         "Cache-Control": "private, max-age=300",
