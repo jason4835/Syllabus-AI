@@ -253,7 +253,11 @@ interface SyncPlan {
  * writes we intend to make. The only I/O is the link lookup, which a dry run
  * needs too -- it is what decides create versus update.
  */
-async function planOps(opts: NotionSyncOptions, prefs: CalendarPrefs): Promise<SyncPlan> {
+async function planOps(
+  userId: string,
+  opts: NotionSyncOptions,
+  prefs: CalendarPrefs,
+): Promise<SyncPlan> {
   const errors: string[] = [];
   const courseById = new Map(opts.courses.map((c) => [c.id, c]));
 
@@ -264,7 +268,7 @@ async function planOps(opts: NotionSyncOptions, prefs: CalendarPrefs): Promise<S
       entityId: course.id,
       courseId: course.id,
       label: courseTitle(course),
-      link: await store.getNotionLink("course", course.id),
+      link: await store.getNotionLink(userId, "course", course.id),
       properties: () => courseProperties(course),
     });
   }
@@ -279,7 +283,7 @@ async function planOps(opts: NotionSyncOptions, prefs: CalendarPrefs): Promise<S
       entityId: a.id,
       courseId: a.courseId,
       label: course ? `${course.code}: ${a.title}` : a.title,
-      link: await store.getNotionLink("assessment", a.id),
+      link: await store.getNotionLink(userId, "assessment", a.id),
       properties: (ctx, initial) =>
         assessmentProperties(a, ctx.coursePages.get(a.courseId) ?? null, { initial }),
     });
@@ -293,7 +297,7 @@ async function planOps(opts: NotionSyncOptions, prefs: CalendarPrefs): Promise<S
       entityId: b.id,
       courseId: b.courseId,
       label: course ? `${course.code}: ${b.title}` : b.title,
-      link: await store.getNotionLink("session", b.id),
+      link: await store.getNotionLink(userId, "session", b.id),
       properties: (ctx, initial) =>
         sessionProperties(
           b,
@@ -459,7 +463,7 @@ export async function syncToNotion(
   }
 
   const { timeZone, prefs } = await resolveSyncContext(userId, opts);
-  const plan = await planOps(opts, prefs);
+  const plan = await planOps(userId, opts, prefs);
   result.errors.push(...plan.errors);
 
   let client: NotionClient | null = null;

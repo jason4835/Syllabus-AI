@@ -449,7 +449,13 @@ export interface Store {
    * `mt_<courseId>_<n>` for a class series -- only the first is a row id, which
    * is why this table has no foreign key to join through.
    */
-  getCalendarLink(key: string): Promise<CalendarLink | null>;
+  /**
+   * Scoped by owner. The key space makes cross-tenant collision unlikely rather
+   * than impossible -- an assessment id is a randomUUID, but `sb_<id>_<n>` and
+   * `mt_<id>_<n>` are constructed strings -- and "unlikely" is the wrong
+   * guarantee for the function that decides which Google event to overwrite.
+   */
+  getCalendarLink(userId: string, key: string): Promise<CalendarLink | null>;
   /**
    * Records an event without an owner. Kept for callers that predate
    * `user_id`; new code should use `setCalendarLinkForUser`, because a link
@@ -499,7 +505,13 @@ export interface Store {
   /** Also removes that user's notion links. False when there was nothing to delete. */
   deleteNotionConnection(userId: string): Promise<boolean>;
 
+  /**
+   * Scoped by owner, for the same reason `getCalendarLink` is: this decides
+   * which Notion page a sync patches, and `entityId` for a study session is a
+   * constructed string rather than a row id.
+   */
   getNotionLink(
+    userId: string,
     kind: NotionLinkKind,
     entityId: string,
   ): Promise<NotionLink | null>;
@@ -569,7 +581,7 @@ export const store: Store = {
   updateAssessment: (userId, id, patch) =>
     getStore().updateAssessment(userId, id, patch),
   deleteAssessment: (userId, id) => getStore().deleteAssessment(userId, id),
-  getCalendarLink: (key) => getStore().getCalendarLink(key),
+  getCalendarLink: (userId, key) => getStore().getCalendarLink(userId, key),
   setCalendarLink: (key, googleEventId, calendarId) =>
     getStore().setCalendarLink(key, googleEventId, calendarId),
   setCalendarLinkForUser: (userId, key, googleEventId, calendarId) =>
@@ -579,7 +591,8 @@ export const store: Store = {
   getNotionConnection: (userId) => getStore().getNotionConnection(userId),
   setNotionConnection: (conn) => getStore().setNotionConnection(conn),
   deleteNotionConnection: (userId) => getStore().deleteNotionConnection(userId),
-  getNotionLink: (kind, entityId) => getStore().getNotionLink(kind, entityId),
+  getNotionLink: (userId, kind, entityId) =>
+    getStore().getNotionLink(userId, kind, entityId),
   setNotionLink: (link) => getStore().setNotionLink(link),
   listNotionLinks: (userId) => getStore().listNotionLinks(userId),
   deleteNotionLink: (kind, entityId) => getStore().deleteNotionLink(kind, entityId),

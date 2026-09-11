@@ -1223,11 +1223,12 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return { calendarLinks, notionPages };
     },
 
-    async getCalendarLink(key) {
+    async getCalendarLink(userId, key) {
       const { data, error } = await client
         .from("calendar_links")
         .select("*")
         .eq("key", key)
+        .eq("user_id", userId)
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("getCalendarLink", error);
       return data ? calendarLinkToDomain(data as CalendarLinkRow) : null;
@@ -1323,12 +1324,13 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       );
     },
 
-    async getNotionLink(kind, entityId) {
+    async getNotionLink(userId, kind, entityId) {
       const { data, error } = await client
         .from("notion_links")
         .select("*")
         .eq("kind", kind)
         .eq("entity_id", entityId)
+        .eq("user_id", userId)
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("getNotionLink", error);
       return data ? notionLinkToDomain(data as NotionLinkRow) : null;

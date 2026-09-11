@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { ApiResult } from "@/lib/types";
+import { redactSecrets } from "@/lib/log";
 
 /**
  * Every route answers in one envelope so the client has a single shape to
@@ -90,8 +91,18 @@ export function rateLimited(denial: {
 
 /** Turns an unknown thrown value into a message safe to show a user. */
 export function messageOf(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return typeof err === "string" ? err : "Unexpected error";
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "Unexpected error";
+  /**
+   * Redacted on the way out, because this text is not ours.
+   *
+   * It goes into a `detail` field on roughly ten routes and into a query
+   * parameter on two OAuth callbacks, and it comes from Google, Notion, OpenAI
+   * and Supabase clients, which are entitled to put whatever they like in an
+   * error message. The log path has always been careful about that; this one was
+   * not, and a redirect parameter is worse than a log line -- it survives in
+   * browser history and in any proxy that records URLs.
+   */
+  return redactSecrets(raw);
 }
 
 /**

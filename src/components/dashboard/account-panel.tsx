@@ -373,16 +373,24 @@ export function AccountPanel({
                   workspace exactly as they are.
                 </p>
 
-                <label className="flex items-start gap-2.5 text-[0.8125rem] leading-relaxed text-ink">
-                  <input
-                    type="checkbox"
-                    checked={removeCalendar}
-                    onChange={(event) => setRemoveCalendar(event.target.checked)}
-                    disabled={deleting}
-                    className="mt-0.5 h-4 w-4 shrink-0 accent-[color:var(--color-accent)]"
-                  />
-                  Also remove the Syllabus Center calendar from Google
-                </label>
+                {/*
+                  Only when there is a calendar to remove. The same panel says
+                  "Google Calendar: Not connected" a few rows up, so offering to
+                  delete one from Google read as though the app had been writing
+                  somewhere the student had not agreed to.
+                */}
+                {user?.googleRefreshToken !== null ? (
+                  <label className="flex items-start gap-2.5 text-[0.8125rem] leading-relaxed text-ink">
+                    <input
+                      type="checkbox"
+                      checked={removeCalendar}
+                      onChange={(event) => setRemoveCalendar(event.target.checked)}
+                      disabled={deleting}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[color:var(--color-accent)]"
+                    />
+                    Also remove the Syllabus Center calendar from Google
+                  </label>
+                ) : null}
 
                 <div>
                   <label

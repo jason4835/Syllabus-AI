@@ -616,7 +616,7 @@ export async function syncToCalendar(
       // a class series is linked, patched and re-created exactly like a
       // deadline, so recurring events inherit the whole idempotency story for
       // free instead of growing a second one.
-      const link = await store.getCalendarLink(event.key);
+      const link = await store.getCalendarLink(userId, event.key);
 
       if (link) {
         let relinked = false;

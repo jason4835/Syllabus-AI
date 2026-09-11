@@ -853,9 +853,14 @@ export function createLocalStore(): Store {
       });
     },
 
-    async getCalendarLink(key) {
+    async getCalendarLink(userId, key) {
       return readOnly((db) => {
-        const found = db.calendarLinks.find((l) => l.key === key);
+        // A link written by the ownerless `setCalendarLink` overload has a null
+        // userId; it is still this caller's to read, because only they can know
+        // the key. A link owned by SOMEONE ELSE is not.
+        const found = db.calendarLinks.find(
+          (l) => l.key === key && (l.userId == null || l.userId === userId),
+        );
         return found
           ? { googleEventId: found.googleEventId, calendarId: found.calendarId }
           : null;
@@ -945,10 +950,10 @@ export function createLocalStore(): Store {
       });
     },
 
-    async getNotionLink(kind, entityId) {
+    async getNotionLink(userId, kind, entityId) {
       return readOnly((db) => {
         const found = db.notionLinks.find(
-          (l) => l.kind === kind && l.entityId === entityId,
+          (l) => l.kind === kind && l.entityId === entityId && l.userId === userId,
         );
         return found ? clone(found) : null;
       });

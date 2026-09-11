@@ -55,7 +55,16 @@ type Phase =
   | { kind: "done"; result: UploadResult }
   /** The file is held here, so answering the question never means re-picking it. */
   | { kind: "duplicate"; file: File; duplicate: DuplicateCourse }
-  | { kind: "error"; error: string; detail?: string };
+  /**
+   * `file` is the one that failed, when there was one and retrying it makes
+   * sense. "Try again" only reset the panel, so the student had to find and
+   * re-pick the same file -- a retry button that does not retry.
+   *
+   * Absent for the validation failures that would simply fail again (wrong
+   * type, too large, empty); there the fix is a different file, and the message
+   * already says so.
+   */
+  | { kind: "error"; error: string; detail?: string; file?: File; fields?: Record<string, string> };
 
 /**
  * The upload route answers a duplicate with a 409 carrying `duplicateOf`. The
@@ -230,7 +239,13 @@ export function UploadPanel({
           setPhase({ kind: "duplicate", file, duplicate });
           return;
         }
-        setPhase({ kind: "error", error: result.error, detail: result.detail });
+        setPhase({
+          kind: "error",
+          error: result.error,
+          detail: result.detail,
+          file,
+          fields,
+        });
         return;
       }
       setPhase({ kind: "done", result: result.data });
@@ -399,7 +414,11 @@ export function UploadPanel({
             <ErrorState
               error={phase.error}
               detail={phase.detail}
-              onRetry={() => setPhase({ kind: "idle" })}
+              onRetry={
+                phase.file
+                  ? () => void send(phase.file as File, phase.fields)
+                  : () => setPhase({ kind: "idle" })
+              }
             />
           ) : null}
         </div>

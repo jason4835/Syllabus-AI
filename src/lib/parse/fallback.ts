@@ -277,6 +277,21 @@ const MEETING_KIND_RULES: Array<{ re: RegExp; kind: MeetingKind }> = [
   // "OH" only where it is used as a label; the word boundary and the colon keep
   // it away from ordinary prose.
   { re: /\bOH\b\s*[:\-]/, kind: "office_hours" },
+  /**
+   * A TA's help session is help, not a graded meeting.
+   *
+   * Ordered before the recitation rule because "problem session" matches both,
+   * and the consequence of getting it wrong is not cosmetic: a recitation is
+   * synced as a class the student is expected at -- this very fixture says
+   * attendance at "lectures and recitations" is worth 3% -- and it is governed
+   * by the recitations sync preference rather than the opt-in office-hours one.
+   * A drop-in session a TA runs is the second of those, so it is classified with
+   * office hours.
+   */
+  {
+    re: /\b(?:TA|teaching\s+assistant)\b[^.\n]*\b(?:problem|help|review|study|practice)\s+session/i,
+    kind: "office_hours",
+  },
   {
     re: /\b(?:recitation|discussion|section\s+meetings?|problem\s+sessions?|tutorial|workshop)\b/i,
     kind: "recitation",

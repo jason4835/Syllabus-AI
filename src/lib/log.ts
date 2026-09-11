@@ -107,6 +107,19 @@ function looksLikeOpaqueSecret(value: string): boolean {
   return /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
 }
 
+/**
+ * Strips credential-shaped substrings out of free text.
+ *
+ * Exported because the log is not the only place upstream error text is
+ * repeated: `messageOf` in `@/lib/api` puts it in a response body, and two
+ * OAuth callbacks put it in a redirect URL, where it lands in browser history
+ * and any URL-logging proxy. One definition of "this looks like a secret" for
+ * both, so the two cannot drift.
+ */
+export function redactSecrets(value: string): string {
+  return sanitizeString(value);
+}
+
 function sanitizeString(value: string): string {
   if (looksLikeOpaqueSecret(value)) return REDACTED;
   let out = value;
