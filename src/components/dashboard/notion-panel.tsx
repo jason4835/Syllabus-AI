@@ -322,21 +322,35 @@ export function NotionPanel({
 /**
  * Not an error: a server without Notion credentials is a perfectly valid way to
  * run this app, so it reads like the demo banner rather than a failure.
+ *
+ * Two audiences, and only one of them is usually looking. A student cannot act
+ * on the names of two environment variables, and being shown them reads as the
+ * app being broken -- so they are told what is true for them and nothing more.
+ * The operator instruction still appears, but only where an operator is: a
+ * development build.
  */
 function UnconfiguredState() {
   return (
     <Note>
-      Notion isn&rsquo;t set up on this server, so sync is a dry run — it reports
-      exactly what <em>would</em> be created without touching a workspace. To go
-      live, set{" "}
-      <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.75rem] text-ink">
-        NOTION_CLIENT_ID
-      </code>{" "}
-      and{" "}
-      <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.75rem] text-ink">
-        NOTION_CLIENT_SECRET
-      </code>{" "}
-      and restart the server.
+      Notion isn&rsquo;t available here yet, so sync is a dry run — it reports
+      exactly what <em>would</em> be created without touching a workspace.
+      Everything else on this page works as normal.
+      {process.env.NODE_ENV !== "production" ? (
+        <>
+          {" "}
+          <span className="text-muted">
+            (Developer note: set{" "}
+            <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.75rem] text-ink">
+              NOTION_CLIENT_ID
+            </code>{" "}
+            and{" "}
+            <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.75rem] text-ink">
+              NOTION_CLIENT_SECRET
+            </code>
+            , then restart.)
+          </span>
+        </>
+      ) : null}
     </Note>
   );
 }

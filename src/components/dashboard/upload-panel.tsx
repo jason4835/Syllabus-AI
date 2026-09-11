@@ -160,11 +160,20 @@ export function UploadPanel({
 
   const send = useCallback(
     async (file: File, fields?: Record<string, string>) => {
-      if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
+      /**
+       * PDF or plain text. Three layers used to disagree about the second one:
+       * the server accepted `.txt`, this check refused it, the description said
+       * "PDF only", and the file dialog would not offer it -- while the parser's
+       * own error messages suggested pasting text that had nowhere to go. Text
+       * is the honest answer for the case that most needs one: a scanned
+       * syllabus has no text layer, and copying it into a .txt file is something
+       * a student can actually do.
+       */
+      if (!/\.(pdf|txt)$/i.test(file.name) && file.type !== "application/pdf") {
         setPhase({
           kind: "error",
-          error: "That file is not a PDF",
-          detail: `“${file.name}” could not be read. Export your syllabus as a PDF and try again.`,
+          error: "That file is not a PDF or a text file",
+          detail: `“${file.name}” could not be read. Export your syllabus as a PDF, or paste its text into a .txt file, and try again.`,
         });
         return;
       }
@@ -251,7 +260,7 @@ export function UploadPanel({
       description={
         demoMode
           ? "Demo mode parses your PDF with the built-in fixture extractor."
-          : "PDF only. One course per file."
+          : "PDF or .txt. One course per file."
       }
       action={
         busy ? (
@@ -354,7 +363,7 @@ export function UploadPanel({
                     ref={inputRef}
                     id={inputId}
                     type="file"
-                    accept="application/pdf,.pdf"
+                    accept="application/pdf,.pdf,text/plain,.txt"
                     className="sr-only"
                     onChange={(event) => {
                       const file = event.target.files?.[0];

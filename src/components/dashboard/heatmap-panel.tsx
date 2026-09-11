@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import type { Assessment, Course, SemesterPlan, WeekLoad } from "@/lib/types";
 import { Panel } from "@/components/ui/panel";
@@ -75,7 +75,15 @@ export function HeatmapPanel({
     weeks.find((week) => week.weekStart === currentWeek) ??
     weeks[0];
 
-  const warnedCount = weeks.filter((week) => week.warning).length;
+  /**
+   * Heavy means heavy, not "carries a warning".
+   *
+   * The badge counted every week with any warning attached, which includes a
+   * light week flagged for some other reason -- so a 9-hour `Calm` week was
+   * being tallied as heavy and the badge over-reported. Intensity is the thing
+   * the word describes: 2 is Busy, 3 is Crunch.
+   */
+  const heavyCount = weeks.filter((week) => week.intensity >= 2).length;
 
   // "October 5th isn't week 1" -- a real student, looking at a heatmap numbered
   // from their first deadline. The numbering is only meaningful next to where
@@ -130,10 +138,10 @@ export function HeatmapPanel({
         )
       }
       action={
-        warnedCount > 0 ? (
+        heavyCount > 0 ? (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-warn-line bg-warn-soft px-2.5 py-1 text-[0.75rem] font-medium text-warn">
             <AlertIcon width={13} height={13} />
-            {pluralize(warnedCount, "heavy week")}
+            {pluralize(heavyCount, "heavy week")}
           </span>
         ) : null
       }
@@ -243,6 +251,8 @@ export function HeatmapPanel({
 
           <Legend />
 
+          {activeWeek ? <WeekAnnouncer week={activeWeek} /> : null}
+
           {activeWeek ? (
             <WeekDetail
               week={activeWeek}
@@ -289,6 +299,32 @@ function Legend() {
   );
 }
 
+/**
+ * Announces the selected week to a screen reader, once the selection settles.
+ *
+ * The visible detail used to be the live region itself, so every
+ * `mouseenter` on the 17-week strip queued a full heading, intensity, hours,
+ * warning and item list -- a pointer sweep produced seventeen announcements
+ * back to back. This waits for the selection to stop moving, and says the
+ * short version; the detail panel below carries the rest for anyone reading it.
+ */
+function WeekAnnouncer({ week }: { week: WeekLoad }) {
+  const [settled, setSettled] = useState<WeekLoad | null>(week);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(week), 300);
+    return () => window.clearTimeout(timer);
+  }, [week]);
+
+  if (!settled) return null;
+  return (
+    <p role="status" aria-live="polite" className="sr-only">
+      {`Week ${settled.weekNumber}, ${intensityLabel(settled.intensity)}, about ${settled.estimatedHours} hours.`}
+      {settled.warning ? ` ${settled.warning}` : ""}
+    </p>
+  );
+}
+
 function WeekDetail({
   week,
   isCurrent,
@@ -305,10 +341,10 @@ function WeekDetail({
   const split = splitHours(week);
 
   return (
-    <div
-      aria-live="polite"
-      className="rounded-lg border border-line bg-sunken/60 p-4"
-    >
+    // Deliberately not a live region: see the debounced announcer in the panel.
+    // A pointer crossing the strip changes the selection once per week button,
+    // and a polite queue read every one of them in full.
+    <div className="rounded-lg border border-line bg-sunken/60 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h3 className="text-[1rem] leading-tight text-ink">
           Week {week.weekNumber}

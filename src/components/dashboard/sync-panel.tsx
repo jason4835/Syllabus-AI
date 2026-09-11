@@ -96,6 +96,17 @@ export function SyncPanel({
     cooldownUntil === null
       ? 0
       : Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+  /**
+   * A rate-limit denial is shown as the countdown and nothing else.
+   *
+   * Two problems came from rendering both. While waiting, the countdown said
+   * "in 57s" and the error box underneath said "in 1 minute" -- two different
+   * answers to one question. And once the wait elapsed the countdown vanished
+   * while the box stayed, so the panel sat there insisting sync was rate limited
+   * with a live "Try again" beneath it. The countdown is the better of the two:
+   * it is accurate, it ticks, and it disappears when it stops being true.
+   */
+  const rateLimited = state.kind === "error" && cooldownUntil !== null;
   const running = state.kind === "running";
   const blocked = running || cooldownLeft > 0 || !hasCourses;
 
@@ -185,7 +196,7 @@ export function SyncPanel({
             role="status"
             className="text-[0.8125rem] leading-relaxed text-muted"
           >
-            Too many syncs in a row — you can sync again in{" "}
+            Too many syncs in a row — nothing was written. You can sync again in{" "}
             <span className="font-mono text-ink tabular-nums">
               {formatWait(cooldownLeft)}
             </span>
@@ -200,13 +211,11 @@ export function SyncPanel({
           isn&rsquo;t happening.
         </p>
 
-        {state.kind === "error" ? (
+        {state.kind === "error" && !rateLimited ? (
           <ErrorState
             error={state.error}
             detail={state.detail}
-            onRetry={
-              cooldownLeft > 0 ? undefined : () => void sync(state.dry)
-            }
+            onRetry={() => void sync(state.dry)}
           />
         ) : null}
 

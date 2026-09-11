@@ -167,7 +167,7 @@ export async function extractText(buf: Buffer, filename: string): Promise<string
     // A .doc/.docx/.pages upload lands here, and so does a PDF that got
     // truncated in transit. Naming both possibilities saves a support round-trip.
     throw new Error(
-      "That file doesn't look like a PDF. Upload a PDF or a .txt file, or paste the syllabus text.",
+      "That file doesn't look like a PDF. Upload a PDF, or paste the syllabus into a .txt file and upload that.",
     );
   }
 
@@ -184,7 +184,7 @@ export async function extractText(buf: Buffer, filename: string): Promise<string
       );
     }
     throw new Error(
-      "We couldn't read that PDF -- it may be damaged. Try re-exporting it, or paste the syllabus text instead.",
+      "We couldn’t read that PDF — it may be damaged. Try re-exporting it, or copy the text into a .txt file and upload that.",
     );
   }
 
@@ -208,7 +208,7 @@ export async function extractText(buf: Buffer, filename: string): Promise<string
   const text = tidy(result.text ?? "");
   if (text.replace(/\s/g, "").length < MIN_MEANINGFUL_CHARS) {
     throw new Error(
-      "This PDF looks scanned -- no text layer found. Try a text PDF or paste the syllabus.",
+      "This PDF is a scan, so there is no text in it to read. If you can select the text in your PDF reader, copy it into a .txt file and upload that instead.",
     );
   }
 
