@@ -1,4 +1,4 @@
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { archiveNotionPages } from "@/lib/notion/sync";
 import { logApiError } from "@/lib/log";
@@ -26,6 +26,9 @@ export const dynamic = "force-dynamic";
  * fact about THIS syllabus. See `reconcileSections` below.
  */
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
@@ -98,7 +101,10 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
  * smaller `calendarEventsRemoved` / `notionPagesRemoved`, never as a failed
  * delete: the student asked for the course to go, and it is already gone.
  */
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   const { id } = await ctx.params;

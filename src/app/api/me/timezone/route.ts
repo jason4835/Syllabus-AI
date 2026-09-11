@@ -1,4 +1,4 @@
-import { fail, messageOf, ok } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
@@ -30,6 +30,9 @@ function isValidTimezone(value: string): boolean {
  * host's zone -- 23:59 in New York became 19:59 on a UTC box.
  */
 export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 

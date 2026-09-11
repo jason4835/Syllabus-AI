@@ -6,6 +6,56 @@ import type { ApiResult } from "@/lib/types";
  * branch on -- including failures, which still return 200-shaped JSON bodies
  * with the real status code attached.
  */
+/**
+ * Rejects a state-changing request that a different site caused the browser to
+ * send. Returns a response to hand straight back, or null when the request is
+ * fine.
+ *
+ * `SameSite=Lax` on the session cookie is what actually stops cross-site CSRF
+ * today: a cross-origin `fetch` or form POST does not get the cookie, and a
+ * `DELETE` would be preflighted and blocked because no CORS headers are sent.
+ * That is one control, though, and it is the kind that stops being true
+ * quietly -- `SameSite` relaxed to `None` for some future embed, or a
+ * side-effecting handler added to a GET, which Lax *does* send the cookie on.
+ * The routes behind it delete every course a student owns.
+ *
+ * So: a second, independent check. `Origin` is set by the browser and cannot be
+ * altered by page script, and it is compared against the host the request
+ * actually arrived on rather than a configured origin -- that way apex and www
+ * both work, and it keeps working the day the domain changes. A request with no
+ * `Origin` at all is allowed: curl and the ICS-feed pollers send none, and they
+ * are not the threat this addresses, since an attacker's lever is a browser
+ * that always sends one.
+ */
+export function crossSiteDenied(req: Request): Response | null {
+  const origin = req.headers.get("origin");
+  if (!origin) return null;
+
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "")
+    .split(",")[0]
+    .trim();
+
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return fail("That request did not come from this site.", 403);
+  }
+
+  const configured = (() => {
+    const explicit = (process.env.APP_URL ?? "").trim();
+    if (!explicit) return null;
+    try {
+      return new URL(explicit).host;
+    } catch {
+      return null;
+    }
+  })();
+
+  if (originHost === host || (configured && originHost === configured)) return null;
+  return fail("That request did not come from this site.", 403);
+}
+
 export function ok<T>(data: T, status = 200) {
   return NextResponse.json<ApiResult<T>>({ ok: true, data }, { status });
 }
@@ -57,6 +107,20 @@ export function publicOrigin(req: Request): string {
   const explicit = (process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
   if (explicit) return explicit;
 
+  /**
+   * Past this point the origin is taken from a request header, which the client
+   * may have chosen. That matters because two of the things built on it are
+   * sensitive: the calendar feed URL, which embeds the student's live feed
+   * token, and the OAuth return redirect. A forged `X-Forwarded-Host` turns the
+   * feed panel's "Open in Apple Calendar" link into a subscription to someone
+   * else's host, handing them a credential that reads the whole semester on
+   * every poll.
+   *
+   * Railway overwrites the header, so this is a fallback rather than the live
+   * path -- but the protection should not be "the host happens to be careful".
+   * `APP_URL` is the fix and is documented in .env.example and docs/DEPLOY.md;
+   * set it and this branch is never reached.
+   */
   const headers = req.headers;
   // X-Forwarded-Host may carry a comma-separated chain; the first is the edge.
   const host = (headers.get("x-forwarded-host") ?? headers.get("host") ?? "")

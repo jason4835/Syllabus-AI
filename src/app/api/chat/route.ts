@@ -1,4 +1,4 @@
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { answerQuestion, buildSemesterPlan } from "@/lib/plan";
 import { ensureDemoSeed } from "@/lib/demo";
@@ -10,6 +10,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);

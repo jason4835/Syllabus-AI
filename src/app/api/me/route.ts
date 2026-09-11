@@ -1,4 +1,4 @@
-import { fail, messageOf, ok } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { ensureDemoSeed } from "@/lib/demo";
 import { log, logApiError } from "@/lib/log";
 import { DEMO_USER_ID, destroySession, readSession, resolveSession } from "@/lib/session";
@@ -38,6 +38,9 @@ export interface AccountDeletion {
  * fail.
  */
 export async function DELETE(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const userId = await readSession();
   if (!userId) return fail("Sign in first.", 401);
 

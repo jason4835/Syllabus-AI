@@ -1,4 +1,4 @@
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { isGoogleConfigured } from "@/lib/google/oauth";
 import { syncToCalendar } from "@/lib/google/calendar";
@@ -14,6 +14,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);

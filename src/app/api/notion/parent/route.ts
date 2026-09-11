@@ -1,4 +1,4 @@
-import { fail, messageOf, ok } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { buildNotionStatus } from "@/lib/notion-status";
 import { chooseParent } from "@/lib/notion/sync";
@@ -10,6 +10,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const userId = await readSession();
   if (!userId) return fail("Sign in first.", 401);
 

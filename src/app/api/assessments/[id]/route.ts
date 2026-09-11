@@ -1,4 +1,4 @@
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { archiveNotionPages } from "@/lib/notion/sync";
@@ -60,6 +60,9 @@ function validate(body: Record<string, unknown>, current: Assessment): Partial<A
 }
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
@@ -113,7 +116,10 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
  * The plan itself needs no cleanup: study blocks are generated per request, so
  * they simply stop being generated.
  */
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 

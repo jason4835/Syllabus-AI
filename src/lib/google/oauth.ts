@@ -119,6 +119,20 @@ export async function exchangeCode(code: string): Promise<CodeExchangeResult> {
   if (!payload?.sub || !payload.email) {
     throw new Error("Google id_token is missing the subject or email claim.");
   }
+  /**
+   * The email must be one Google has verified, because the callback matches an
+   * existing account by email (`getUserByEmail`). An unverified claim is a
+   * string the identity's owner chose, so accepting it would let someone who
+   * controls a Workspace domain mint an identity carrying another user's
+   * address and be handed that account. The signature and audience are already
+   * checked above, which is why this is the remaining gap rather than the whole
+   * problem.
+   */
+  if (payload.email_verified !== true) {
+    throw new Error(
+      "Google has not verified that email address, so it cannot be used to sign in.",
+    );
+  }
 
   return {
     profile: {

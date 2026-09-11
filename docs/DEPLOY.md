@@ -50,6 +50,7 @@ the rest are yours.
 
 | Variable | Required in prod | What breaks without it |
 |---|---|---|
+| `APP_URL` | **Yes** | Absolute URLs fall back to the request's `Host`/`X-Forwarded-Host` header. On a host that forwards a client-supplied value, a forged header rewrites the calendar-feed URL the panel shows — and that URL carries the student's feed token, so the link would hand their semester to whoever chose the host. Also what makes link previews resolve. No trailing slash. |
 | `SESSION_SECRET` | **Yes — app refuses to serve** | In production, every request throws. See below. |
 | `GOOGLE_CLIENT_ID` | **Yes** | `/api/auth/google` returns 503. The app decides it is in demo mode and hands every anonymous visitor the shared `demo-user` account. |
 | `GOOGLE_CLIENT_SECRET` | **Yes** | Same as above — `isDemoMode()` in `src/lib/session.ts` checks both. |

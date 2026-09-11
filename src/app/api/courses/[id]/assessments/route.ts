@@ -1,4 +1,4 @@
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { resolveSession } from "@/lib/session";
@@ -27,6 +27,9 @@ const ALLOWED_KEYS = new Set<string>(ASSESSMENT_FIELD_KEYS);
  * "show source" correctly has nothing to show.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 

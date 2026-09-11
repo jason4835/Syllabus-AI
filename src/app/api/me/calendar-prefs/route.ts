@@ -1,4 +1,4 @@
-import { fail, messageOf, ok } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
@@ -15,6 +15,9 @@ const KEYS = Object.keys(DEFAULT_CALENDAR_PREFS) as (keyof CalendarPrefs)[];
  * time, can honour it too.
  */
 export async function PATCH(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 

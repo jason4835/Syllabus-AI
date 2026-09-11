@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
@@ -23,12 +23,31 @@ export const maxDuration = 120;
 const MAX_BYTES = 15 * 1024 * 1024;
 
 export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const { userId } = await resolveSession();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "upload:user");
   if (!limit.allowed) return rateLimited(describeLimit(limit));
 
+
+  /**
+   * The declared length first, before `formData()` reads the body into memory.
+   *
+   * The size check below is the real one -- `Content-Length` is a claim, and a
+   * chunked request carries none -- but without this a 60 MB body was fully
+   * buffered only to be rejected for being 60 MB. Checking the claim costs
+   * nothing and turns the common case of an oversized upload into a header read.
+   */
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_BYTES) {
+    return fail(
+      `That file is ${(declared / 1048576).toFixed(1)} MB. The limit is 15 MB.`,
+      413,
+    );
+  }
 
   let file: File | null = null;
   // Both duplicate answers ride on the same multipart body as the file: the

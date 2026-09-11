@@ -1,4 +1,4 @@
-import { fail, messageOf, ok } from "@/lib/api";
+import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { readSession } from "@/lib/session";
 import { store } from "@/lib/store";
@@ -10,7 +10,10 @@ export const dynamic = "force-dynamic";
  * Notion: the pages are the student's notes now, and deleting them is not a
  * decision this app gets to make.
  */
-export async function POST() {
+export async function POST(req: Request) {
+  const denied = crossSiteDenied(req);
+  if (denied) return denied;
+
   const userId = await readSession();
   if (!userId) return fail("Sign in first.", 401);
   try {
