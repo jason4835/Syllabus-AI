@@ -161,20 +161,30 @@ export function DashboardShell() {
 
   const loadIdentity = useCallback(async () => {
     setConfigLoading(true);
-    const [configResult, meResult] = await Promise.all([
-      apiGet<AppConfig>("/api/config"),
-      apiGet<User | null>("/api/me"),
-    ]);
+    // `/api/config` first and alone. A visitor with no cookie yet has no
+    // sandbox either, and every route creates one when it does not find one --
+    // so five requests fired in the same tick used to mint five sandboxes and
+    // seed five sample semesters, of which one survived the race to set the
+    // cookie. The visible symptom was the heatmap: `/api/courses` answered from
+    // one sandbox while `/api/plan` answered from another, so the week detail
+    // resolved none of its own assessment ids and told a brand-new visitor that
+    // nothing was due all term. It healed on reload, which is why it never
+    // showed up in testing -- a second visit already has a cookie.
+    const configResult = await apiGet<AppConfig>("/api/config");
     if (configResult.ok) setConfig(configResult.data);
+    const meResult = await apiGet<User | null>("/api/me");
     if (meResult.ok) setUser(meResult.data);
     setConfigLoading(false);
   }, []);
 
   useEffect(() => {
-    void loadIdentity();
-    void loadCourses();
-    void loadPlan();
-    void loadNotion();
+    // Everything else waits for that cookie. Sequencing this costs one round
+    // trip on a first visit and nothing on any later one, which is a great deal
+    // cheaper than the data it used to hand back.
+    void (async () => {
+      await loadIdentity();
+      await Promise.all([loadCourses(), loadPlan(), loadNotion()]);
+    })();
   }, [loadIdentity, loadCourses, loadPlan, loadNotion]);
 
   // StrictMode runs effects twice; the OAuth return must be handled once.

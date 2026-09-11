@@ -14,8 +14,21 @@ export async function POST(req: Request) {
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);
 
+  /**
+   * Two denials with opposite meanings come out of one call.
+   *
+   * `chat:user:*` means THIS visitor is asking too fast -- their own doing, and
+   * a 429 is the honest answer. `global:openai:*` means someone else exhausted
+   * the shared model budget, and answering a stranger's question with "try
+   * again in 45 seconds" punishes them for traffic they never generated. The
+   * app can already answer without the model: `answerLocally` is a complete
+   * deterministic answerer, and it is what runs for every visitor when no API
+   * key is configured at all. So a global denial degrades to it instead of
+   * failing -- one heavy user can no longer take chat away from everyone.
+   */
   const limit = checkLimit(`user:${userId}`, "chat:user");
-  if (!limit.allowed) return rateLimited(describeLimit(limit));
+  const budgetSpent = !limit.allowed && limit.rule.startsWith("global:");
+  if (!limit.allowed && !budgetSpent) return rateLimited(describeLimit(limit));
 
 
   let message = "";
@@ -35,7 +48,13 @@ export async function POST(req: Request) {
     ]);
     const timeZone = (await store.getUser(userId))?.timezone ?? undefined;
     const plan = buildSemesterPlan(courses, assessments, { timeZone });
-    const reply = await answerQuestion(message, { courses, assessments, plan }, { timeZone });
+    const reply = await answerQuestion(
+      message,
+      { courses, assessments, plan },
+      // An empty key is `answerQuestion`'s documented way to force the local
+      // path; it never reaches the network, so it spends nothing.
+      { timeZone, ...(budgetSpent ? { apiKey: "" } : {}) },
+    );
     return ok({ reply });
   } catch (err) {
     logApiError("chat.failed", err, { userId });

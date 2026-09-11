@@ -241,16 +241,38 @@ export function buildPlanContext(
     lines.push(`- ${c.code} ${c.title}${meets ? ` | meets ${meets}` : ""}${term}`);
   }
 
-  const dated = assessments
+  const datedAll = assessments
     .filter((a): a is Assessment & { dueDate: string } => Boolean(a.dueDate))
     .slice()
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  // A window around today rather than the whole term.
+  //
+  // Adding an item is free and unmetered (`edit:user` has no daily rule,
+  // deliberately, because an edit spends nothing) while every chat answer that
+  // follows pays to read it. Uncapped, a few minutes of scripted edits could
+  // inflate this prompt to ~100k tokens and make every later question cost a
+  // hundred times what it should. No real semester comes close to these limits,
+  // and past items are kept because "am I behind?" is a question about them.
+  const firstUpcoming = datedAll.findIndex((a) => a.dueDate >= todayIso);
+  const from =
+    firstUpcoming === -1
+      ? Math.max(0, datedAll.length - MAX_DATED_IN_CONTEXT)
+      : Math.max(0, firstUpcoming - MAX_PAST_IN_CONTEXT);
+  const dated = datedAll.slice(from, from + MAX_DATED_IN_CONTEXT);
+  const omitted = datedAll.length - dated.length;
 
   // No ids: nothing downstream parses this back, and an id that leaks into an
   // answer ("assessment a3f9c1 is due...") is exactly the machine voice we are
   // trying to get rid of. Course code plus title is how the student names it.
   // "when it happens", not "when it's due": exams, quizzes and presentations are
   // written as happening ON a day, and the model copies the shape it is given.
+  if (omitted > 0) {
+    lines.push(
+      "",
+      `NOTE: this student has ${datedAll.length} dated items; only the ${dated.length} nearest today are listed. Do not state totals or claim this is everything.`,
+    );
+  }
   lines.push("", "ASSESSMENTS (soonest first: course | title | kind | weight | when it happens — 'on' for a sitting you attend, 'due' for a deadline | prep estimate)");
   for (const a of dated) {
     const code = courseById.get(a.courseId)?.code ?? "?";
@@ -265,7 +287,7 @@ export function buildPlanContext(
     );
   }
 
-  const undated = assessments.filter((a) => !a.dueDate);
+  const undated = assessments.filter((a) => !a.dueDate).slice(0, MAX_UNDATED_IN_CONTEXT);
   if (undated.length) {
     lines.push("", "UNDATED (no resolvable date in the syllabus — never claim a date for these)");
     for (const a of undated) {
@@ -275,7 +297,7 @@ export function buildPlanContext(
   }
 
   lines.push("", "WEEKLY LOAD (week | dates | estimated hours | how heavy | warning)");
-  for (const w of plan.weeks) {
+  for (const w of plan.weeks.slice(0, MAX_WEEKS_IN_CONTEXT)) {
     if (w.assessmentIds.length === 0 && w.estimatedHours === 0) continue; // empty weeks say nothing
     lines.push(
       `- Week ${w.weekNumber} | ${shortDayDate(w.weekStart)} to ${shortDayDate(addDays(w.weekStart, 6))} | about ${w.estimatedHours}h | ${INTENSITY_LABELS[w.intensity]} | ${w.warning ?? "-"}`,
@@ -1102,6 +1124,16 @@ function intensityWord(i: WeekLoad["intensity"]): string {
 }
 
 /** Same scale as `intensityWord`, but as a tag for a context line. */
+/**
+ * Ceilings on how much of a semester reaches the prompt. Sized well past any
+ * real course load -- six courses of weekly work is roughly 150 items a term --
+ * so they bound an abusive input without truncating an honest one.
+ */
+const MAX_DATED_IN_CONTEXT = 150;
+const MAX_PAST_IN_CONTEXT = 20;
+const MAX_UNDATED_IN_CONTEXT = 50;
+const MAX_WEEKS_IN_CONTEXT = 60;
+
 const INTENSITY_LABELS = ["calm", "normal", "busy", "crunch"] as const;
 
 function pad2(n: number): string {

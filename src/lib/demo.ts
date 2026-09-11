@@ -13,6 +13,10 @@ import { attachWeights } from "@/lib/weights";
  * pipeline, which also means the demo exercises the same code path as a real
  * upload instead of hard-coded JSON that can drift from the parser.
  *
+ * Through the pattern-matching half of that pipeline, never the model: see the
+ * `offline` call below for why paying per visitor to re-derive a fixed answer
+ * was indefensible.
+ *
  * Three courses rather than one, deliberately: the workload heatmap and its
  * heavy-week warnings are the product's whole argument, and a single course
  * never collides with itself. The fixtures are dated so that two exams and a
@@ -87,7 +91,11 @@ async function seed(userId: string): Promise<void> {
 
   for (const name of FIXTURES) {
     const buf = await readFile(path.join(process.cwd(), "fixtures", name));
-    const parsed = attachWeights(await parseSyllabus(buf, name));
+    // Never the model, however the server is configured. The fixtures are
+    // static, so the model's answer for them is the same every time -- and this
+    // runs once per visitor, on routes that do not and should not charge anyone
+    // for showing them a sample. It was the only unmetered spend in the app.
+    const parsed = attachWeights(await parseSyllabus(buf, name, { offline: true }));
     await store.createCourse(userId, parsed);
   }
 }

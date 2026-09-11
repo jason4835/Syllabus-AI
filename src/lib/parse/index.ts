@@ -45,9 +45,29 @@ function describeFailure(err: unknown): string {
  * @param filename Original filename -- the `.txt` suffix selects the plain-text path.
  * @throws Error with user-facing wording when the file itself cannot be read.
  */
-export async function parseSyllabus(buf: Buffer, filename: string): Promise<ParsedSyllabus> {
+export interface ParseOptions {
+  /**
+   * Skip the model and use pattern matching, even when a key is configured.
+   *
+   * For input whose parse is not worth paying for. The sample semester is the
+   * only caller: its three fixtures never change, so a model call would buy an
+   * identical result every time at full price -- and because a fresh sandbox is
+   * created for every visitor, that price was being paid per visitor.
+   */
+  offline?: boolean;
+}
+
+export async function parseSyllabus(
+  buf: Buffer,
+  filename: string,
+  opts: ParseOptions = {},
+): Promise<ParsedSyllabus> {
   // Unreadable input is the one failure the user can act on, so it stays fatal.
   const text = await extractText(buf, filename);
+
+  if (opts.offline) {
+    return fallbackParse(text, { reason: "pattern matching (the model was not asked)" });
+  }
 
   if (!isConfigured()) {
     return fallbackParse(text, {
