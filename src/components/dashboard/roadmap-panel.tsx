@@ -10,6 +10,7 @@ import type {
 } from "@/lib/types";
 import { needsReview } from "@/lib/types";
 import { apiDelete, apiPost } from "@/components/api-client";
+import { useIsNarrow } from "@/components/use-narrow";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { Button, Spinner } from "@/components/ui/button";
@@ -124,7 +125,19 @@ export function RoadmapPanel({
   editFocusField?: "code" | "startDate";
   onEditCourse?: (courseId: string | null) => void;
 }) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  /**
+   * Per-course open/closed, `undefined` meaning "whatever the viewport implies".
+   *
+   * On a phone every course being open made this panel about thirteen thousand
+   * pixels tall, which pushed Upload and Calendar sync -- the two things a
+   * student actually came to do -- roughly sixteen screens below the fold, with
+   * no in-page nav to skip them. Open is still right on a wide screen, where
+   * the panel sits in a column beside everything else and scanning the term at
+   * a glance is the point. So the default follows the viewport, and an explicit
+   * tap still wins over it for that course.
+   */
+  const [collapsed, setCollapsed] = useState<Record<string, boolean | undefined>>({});
+  const narrow = useIsNarrow();
   const [adding, setAdding] = useState<string | null>(null);
   /** The course whose "are you sure?" is open, and the one being deleted. */
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -194,7 +207,7 @@ export function RoadmapPanel({
             const color = accentFor(accents, course.id);
             const items = byCourse.get(course.id) ?? [];
             const { weeks, undated } = groupByWeek(items);
-            const isCollapsed = collapsed[course.id] === true;
+            const isCollapsed = collapsed[course.id] ?? narrow;
             const unreviewed = items.filter(needsReview).length;
             const bodyId = `roadmap-course-${course.id}`;
             const notionUrl = coursePages[course.id];

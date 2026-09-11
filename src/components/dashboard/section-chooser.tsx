@@ -271,6 +271,22 @@ export function SectionChooser({
     setSaving({ kind: group.kind, label });
     setStatus(`Saving your ${group.label.toLowerCase()}…`);
     const fold = viaPointer.current;
+    /**
+     * A keyboard answer must not pull the radio group out from under the walk.
+     *
+     * The card is mounted while `open` holds, and `open` is
+     * `chosen === null || reopened.includes(kind)`. Re-answering a group that
+     * was opened with "Change" is safe, because "Change" put it in `reopened`.
+     * A FIRST answer never did -- so the instant `chosen` stopped being null the
+     * fieldset unmounted mid-arrow-walk, taking the focused radio with it and
+     * leaving focus on <body>, at the top of a document with 140 tab stops.
+     * Marking it reopened keeps it mounted; the blur handler still folds it.
+     */
+    if (!fold) {
+      setReopened((prev) =>
+        prev.includes(group.kind) ? prev : [...prev, group.kind],
+      );
+    }
     if (pendingSave.current) clearTimeout(pendingSave.current);
     pendingSave.current = setTimeout(() => void save(group, label, fold), KEY_WALK_MS);
   }

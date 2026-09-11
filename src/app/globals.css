@@ -152,6 +152,24 @@
     --color-load-1: #6a9a7a;
     --color-load-2: #b8842e;
     --color-load-3: #bd5540;
+
+    /*
+     * The course accents, for the same reason and with the same fix.
+     *
+     * These are only ever read as `var(--color-course-${slot + 1})` in
+     * course-accents.ts, so the shaker treats every one of them as unused. Slots
+     * 1-4 survived by appearing verbatim elsewhere; 5 and 6 did not, and their
+     * only surviving definition was inside the dark media query -- so a student
+     * with five or six syllabi lost the colour tying their heatmap, roadmap and
+     * Upcoming list together, for exactly the two courses that make the colour
+     * coding worth having, in the default theme.
+     */
+    --color-course-1: #1e5f4e;
+    --color-course-2: #3a5ba0;
+    --color-course-3: #b0523c;
+    --color-course-4: #75487a;
+    --color-course-5: #8f6a24;
+    --color-course-6: #23768a;
   }
   @media (prefers-color-scheme: dark) {
     :root {

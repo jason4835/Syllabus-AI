@@ -25,7 +25,14 @@ type State =
   /** `dry` is what was asked for; the result says what actually ran. */
   | { kind: "running"; dry: boolean }
   | { kind: "done"; dry: boolean; result: SyncResponse }
-  | { kind: "error"; error: string; detail?: string };
+  /**
+   * `dry` is carried here too, so a retry repeats what was asked for. Without
+   * it the retry always ran the real sync -- so a student who deliberately
+   * chose the read-only preview, hit a rate limit and pressed "Try again"
+   * wrote the whole term to their calendar. The preview I measured reported
+   * 131 events it *would* create.
+   */
+  | { kind: "error"; dry: boolean; error: string; detail?: string };
 
 /**
  * Shape of `GET /api/me/feed`. Declared here rather than in `src/lib/types.ts`
@@ -99,7 +106,7 @@ export function SyncPanel({
       dry ? { dryRun: true } : {},
     );
     if (!result.ok) {
-      setState({ kind: "error", error: result.error, detail: result.detail });
+      setState({ kind: "error", dry, error: result.error, detail: result.detail });
       const seconds = parseRetryAfterSeconds(result.error, result.detail);
       if (seconds !== null) {
         setNow(Date.now());
@@ -198,7 +205,7 @@ export function SyncPanel({
             error={state.error}
             detail={state.detail}
             onRetry={
-              cooldownLeft > 0 ? undefined : () => void sync(false)
+              cooldownLeft > 0 ? undefined : () => void sync(state.dry)
             }
           />
         ) : null}
@@ -757,7 +764,7 @@ function FeedAddress({ address }: { address: string }) {
           value={address}
           aria-label="Your calendar feed URL"
           onFocus={(event) => event.currentTarget.select()}
-          className="min-w-0 flex-1 overflow-x-auto rounded-lg border border-line bg-sunken/60 px-3 py-1.5 font-mono text-[0.75rem] text-ink-soft outline-none focus:border-accent-line"
+          className="min-w-0 flex-1 overflow-x-auto rounded-lg border border-line bg-sunken/60 px-3 py-1.5 font-mono text-[0.75rem] text-ink-soft focus:border-accent-line"
         />
         <Button variant="secondary" size="sm" onClick={() => void copy()}>
           Copy
