@@ -61,7 +61,11 @@ export interface ChatTurn {
 export interface ChatOptions {
   /** Defaults to `process.env.OPENAI_API_KEY`. Pass "" to force the local path. */
   apiKey?: string;
-  /** Defaults to `process.env.OPENAI_MODEL` then a small, cheap chat model. */
+  /**
+   * Defaults to `OPENAI_CHAT_MODEL`, then the shared `OPENAI_MODEL`, then a
+   * small, cheap chat model. Chat is the high-frequency, low-value call -- it
+   * should not be dragged up to the parser's model by one shared variable.
+   */
   model?: string;
   /** Injectable clock, so "this week" is testable. */
   now?: Date;
@@ -172,8 +176,20 @@ async function answerWithModel(
   // Imported lazily so the module stays usable (and cheap) in demo mode, where
   // the SDK is never touched.
   const { default: OpenAI } = await import("openai");
-  const client = new OpenAI({ apiKey: opts.apiKey });
-  const model = opts.model ?? process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
+  const client = new OpenAI({
+    // Matching `extract.ts`. The SDK defaults are 2 retries and a ten-minute
+    // timeout, against a route whose `maxDuration` is 60 -- so one question
+    // could become three billed attempts, and could be billed for a response
+    // that arrived after Next had already abandoned the handler.
+    apiKey: opts.apiKey,
+    maxRetries: 1,
+    timeout: 45_000,
+  });
+  const model =
+    opts.model ??
+    process.env.OPENAI_CHAT_MODEL?.trim() ??
+    process.env.OPENAI_MODEL ??
+    DEFAULT_MODEL;
 
   const history = (opts.history ?? []).slice(-6).map((t) => ({
     role: t.role,

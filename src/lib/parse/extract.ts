@@ -550,7 +550,14 @@ export async function extractWithAi(text: string, signal?: AbortSignal): Promise
     timeout: REQUEST_TIMEOUT_MS,
     maxRetries: 1,
   });
-  const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_MODEL;
+  // `OPENAI_PARSE_MODEL` first, then the shared `OPENAI_MODEL` for anyone whose
+  // deployment already sets it. One knob for both call sites meant an operator
+  // upgrading the parser to gpt-4o silently upgraded chat from mini too, at
+  // sixteen times the price per token, with no local test that would show it.
+  const model =
+    process.env.OPENAI_PARSE_MODEL?.trim() ||
+    process.env.OPENAI_MODEL?.trim() ||
+    DEFAULT_MODEL;
   const responseFormat = zodResponseFormat(ParsedSyllabusSchema, "parsed_syllabus");
 
   const { chunks, truncated } = chunkText(text);

@@ -27,6 +27,9 @@ interface PdfParseResult {
  */
 const MIN_MEANINGFUL_CHARS = 40;
 
+/** See the check in `extractText` for why a ceiling exists at all. */
+const MAX_PAGES = 60;
+
 /**
  * pdf-parse@1's package entry (index.js) checks `module.parent` and, when it is
  * falsy, synchronously reads `./test/data/05-versions-space.pdf` off disk --
@@ -182,6 +185,23 @@ export async function extractText(buf: Buffer, filename: string): Promise<string
     }
     throw new Error(
       "We couldn't read that PDF -- it may be damaged. Try re-exporting it, or paste the syllabus text instead.",
+    );
+  }
+
+  /**
+   * A syllabus is not a book.
+   *
+   * `numpages` was declared on the result type and never read, so a 15 MB PDF
+   * of anything at all went straight to the model and was parsed as four full
+   * chunks -- the most expensive request the app can be made to serve, for
+   * input nobody was ever going to get a semester out of. The cap is well past
+   * any real syllabus (the longest bundled fixture is three pages, and a
+   * heavily-appendixed graduate syllabus runs to twenty or thirty), so it costs
+   * no honest upload anything, and the message says what to do about it.
+   */
+  if (result.numpages > MAX_PAGES) {
+    throw new Error(
+      `That PDF is ${result.numpages} pages. Upload just the syllabus -- if it is part of a larger packet, export those pages on their own.`,
     );
   }
 

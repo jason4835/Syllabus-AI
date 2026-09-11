@@ -610,9 +610,26 @@ export function weekStartsBetween(termStart: string, termEnd: string): string[] 
   const first = mondayOf(termStart);
   const last = mondayOf(termEnd);
   const out: string[] = [];
-  for (let w = first; w <= last; w = addDays(w, 7)) out.push(w);
+  for (let w = first; w <= last && out.length < MAX_TERM_WEEKS; w = addDays(w, 7)) {
+    out.push(w);
+  }
   return out;
 }
+
+/**
+ * A ceiling on how many weeks a "term" may have.
+ *
+ * Term dates are user-editable and only validated as real dates, so
+ * `0001-01-01` to `9999-12-31` was an accepted term -- about 4.17 million
+ * iterations, each allocating a week object and a map entry, on two of the
+ * hottest routes in the app. One cheap request could exhaust the process, and
+ * because the rate limiter's counters live in memory, the restart that followed
+ * reset the global budget that is supposed to be the backstop.
+ *
+ * 80 weeks is roughly eighteen months: past any real semester or year-long
+ * course, and short enough that hitting the cap costs nothing worth having.
+ */
+const MAX_TERM_WEEKS = 80;
 
 /**
  * Runs of >= 3 deadlines packed into any 48-hour window.

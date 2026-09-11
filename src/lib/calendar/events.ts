@@ -401,6 +401,37 @@ function whenLine(a: Assessment): string | null {
     : `${clockText(start)}–${clockText(end)}`;
 }
 
+/**
+ * Strips web addresses out of syllabus-derived text, leaving the host behind.
+ *
+ * A syllabus is a document the student did not necessarily write -- shared in a
+ * group chat, downloaded from a notes site -- and its text reaches the model,
+ * which copies it into `notes`, which lands in the body of a calendar event.
+ * Google linkifies URLs in descriptions, so a hostile PDF could put a live,
+ * clickable link next to a real deadline in the student's own calendar, under a
+ * line saying we created it. That is a good place to phish from: the
+ * surroundings are all genuine.
+ *
+ * The host is kept rather than the text being deleted, so a legitimate note
+ * still reads sensibly ("submit on canvas.university.edu"). The tradeoff is
+ * real and worth naming: a student who wanted to tap a real submission link
+ * from their calendar now has to open the syllabus for it. A phishing link that
+ * looks like it came from us is the worse of the two.
+ *
+ * The other surfaces need no equivalent: Notion's `richText` emits no `link`
+ * field, so a URL there renders as inert text, and chat replies are plain React
+ * children with no markdown.
+ */
+function defangUrls(text: string): string {
+  return text.replace(
+    /\b(?:https?:\/\/|www\.)([^\s<>()\[\]"']+)/gi,
+    (_match, rest: string) => {
+      const host = String(rest).split("/")[0];
+      return `${host} (link in your syllabus)`;
+    },
+  );
+}
+
 function describeAssessment(a: Assessment, courseTitle: string | null): string {
   const lines: string[] = [];
   lines.push(`Type: ${a.kind}`);
@@ -410,7 +441,7 @@ function describeAssessment(a: Assessment, courseTitle: string | null): string {
   if (a.weightPercent !== null) {
     lines.push(`Worth: ${a.weightPercent}% of the final grade`);
   }
-  if (a.notes) lines.push("", a.notes);
+  if (a.notes) lines.push("", defangUrls(a.notes));
   // An item the extractor is unsure about and nobody has confirmed is still put
   // on the calendar -- withholding it is how a real deadline goes missing -- but
   // it must not read as settled fact. The note goes in the body, never the
