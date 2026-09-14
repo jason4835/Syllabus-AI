@@ -200,7 +200,9 @@ RULES
    - reason is a short label copied from the syllabus's own wording ("Labor Day", "Thanksgiving recess"), or null when it gives none.
    - Return [] when the syllabus mentions no breaks at all. Never add a holiday because your calendar knowledge says one falls in that week -- only what the document states.
 
-Return only what the syllabus supports. Use warnings for anything ambiguous, missing, or that you had to reason around.`;
+Return only what the syllabus supports. Use warnings for anything ambiguous, missing, or that you had to reason around.
+
+WARNINGS ARE NOT OPTIONAL when a date could honestly be two things. If a derived or resolved date has two defensible values -- "one week after the lab" says October 13 but "at the start of the next lab" says October 20 because a break sits between them -- you must (a) pick one, (b) put the reason in that item's notes, and (c) add a warning that names the item AND BOTH dates, so the student can check. A silently chosen date looks exactly like a certain one, and that is the failure this whole format exists to prevent.`;
 
 function userPrompt(text: string, chunkIndex: number, chunkCount: number): string {
   const header =
