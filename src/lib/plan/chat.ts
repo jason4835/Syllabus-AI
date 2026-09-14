@@ -398,8 +398,13 @@ function studyPlanSummaries(
       return sum + (Number.isFinite(ms) && ms > 0 ? ms / 3_600_000 : 0);
     }, 0);
     const code = courseById.get(a.courseId)?.code ?? "?";
+    // To the nearest half hour, not the nearest tenth. These are estimates and
+    // a student reads them as "about two evenings" -- and a tidy number is one
+    // the model quotes back rather than rounding for itself, which is how
+    // "11.3h" came out of the assistant as "11.5h".
+    const rounded = Math.round(hours * 2) / 2;
     out.push(
-      `- ${code} ${a.title} | ${ahead.length} session${ahead.length === 1 ? "" : "s"} | first ${friendlyDate(first, todayIso)} (${relativeDay(todayIso, first)}) | about ${Math.round(hours * 10) / 10}h total`,
+      `- ${code} ${a.title} | ${ahead.length} session${ahead.length === 1 ? "" : "s"} | first ${friendlyDate(first, todayIso)} (${relativeDay(todayIso, first)}) | about ${rounded}h total`,
     );
   }
   return out;
