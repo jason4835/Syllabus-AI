@@ -168,7 +168,7 @@ RULES
    - A GRADING ROW IS A LIST, NOT A SUMMARY. "Problem Sets (10) — 30%" with the ten dates in the schedule is ten assessments named as the schedule names them, never one item called "Problem Sets". Never collapse a series into a single entry when the individual deadlines are anywhere in the document.
    - A RECURRENCE RULE IS ALSO A LIST. "Reading responses are due every Monday at 9 AM from Week 2 through Week 14" states thirteen deadlines, so emit thirteen assessments, numbered in order, each on its own date, at confidence ~0.6 and with a note saying they were expanded from the rule. Skip any date the syllabus excludes (a break, a holiday, "except Week 8"). A rule that gives a weekday but no range, or a range but no weekday, cannot be expanded honestly -- emit ONE undated item and a warning instead.
    - A DERIVED DEADLINE ("reports due one week after each lab") is computed from the meeting schedule the same way, at confidence ~0.6 with the derivation in notes. When two stated rules give different dates for the same item ("one week after" vs "at the next lab" across a break), pick one, say which in notes, and add a warning naming the conflict -- never silently choose.
-   - A GRADED CATEGORY WITH NO DATES ("Homework (weekly, online) — 15%", "Quizzes (5, unannounced)", "Lab grade 15%", "Labs") is still part of the grade. This includes labs, lab reports and lab grades when no lab dates are listed -- a lab is graded work, not only a meeting. Emit ONE undated assessment for it, titled with the syllabus's own words, at confidence ~0.5, with a warning that the dates are not in the document -- the student needs to know it exists and where to look. Never give it a date.
+   - A GRADED CATEGORY WITH NO DATES ("Homework (weekly, online) — 15%", "Quizzes (5, unannounced)", "Lab grade 15%", "Labs") is still part of the grade. This includes labs, lab reports and lab grades when no lab dates are listed -- a lab is graded work, not only a meeting. Emit ONE undated assessment for it, titled with the syllabus's own words ("Quizzes (weekly)", "WebAssign homework", "Lab grade"), NEVER numbered -- "Quiz 1" or "Problem Set 1" claims a first item the document does not list -- at confidence ~0.5, with a warning that the dates are not in the document -- the student needs to know it exists and where to look. Never give it a date.
 
 2. DATES. dueDate must be ISO YYYY-MM-DD or null.
    - Resolve relative references ("Week 3", "the Friday before spring break", "the last day of class") against the term start and end dates whenever the syllabus gives you enough to do so, and say how you resolved it in notes.
@@ -178,8 +178,8 @@ RULES
    - When an item gives a time range, \`dueTime\` is the START and \`endTime\` the END, both 24h HH:MM. Exams and quizzes usually do.
 
 3. GRADING. Copy the grading-weight table into course.gradeWeights, one row per category, using the syllabus's own category names. If the weights do not sum to 100, record them as written and add a warning saying so. Put a per-item percentage in assessment.weightPercent only when the syllabus states one for that specific item.
-   - RANK-BASED WEIGHTS ARE NOT PER-ITEM WEIGHTS. "35% for the exam with the highest grade, 25% for the second highest, 15% for the lowest" or "the highest of the four exams counts 45%" assigns weight by SCORE, not by exam. Keep those rows verbatim in gradeWeights ("Exam with highest grade 35%") and leave weightPercent NULL on every exam, because no exam has a weight until grades exist. Never rewrite them as "Exam 1 45%, Exam 2 25%". Never give the final exam the top-ranked weight.
-   - A SERIES SHARES ITS CATEGORY'S WEIGHT; it never inherits a neighbouring row's. If "Quizzes 12%" sits beside "Exam 1 25%", a quiz item is worth 12% for the whole category (or null), never 25%. When a category is a series with no per-item split stated, leave weightPercent null and put the category total in notes.
+   - weightPercent IS A COPIED NUMBER OR NULL. NOTHING ELSE. It is the percentage the syllabus states for that exact item ("Essay 1 — 20%"), or the per-item figure it states for that item's series ("Quizzes (8 @ 2.5% each)" makes every quiz 2.5; "10 @ 1% each" makes every one 1). If neither is written, it is null. You never divide a category total across items, never average, never take a figure from a neighbouring row ("Quizzes 12%" beside "Exam 1 25%" does not make a quiz 25), and never turn a category total into a per-item number. The category total already lives in gradeWeights; it is not repeated on items.
+   - RANK-BASED WEIGHTS ("35% for the exam with the highest grade, 25% for the second, 15% for the lowest"; "the highest of the four exams counts 45%") assign weight by SCORE, so no exam has a weight until grades exist. Copy the rows verbatim into gradeWeights and set weightPercent null on EVERY exam including the final. Never rewrite them as "Exam 1 45%". Never average them. Never give the final the top-ranked figure.
 
 4. POLICIES. Capture late-work / make-up, attendance, and academic-integrity policies into course.policies, plus grading-scale rules as "grading" and anything else notable as "other". summary is 1-3 sentences in your own words; sourceText is the verbatim passage.
 
@@ -194,7 +194,7 @@ RULES
    - LOCATION is the room or building string stated for THAT meeting, copied verbatim ("2MTC 907", "Hayes Hall 210"). Never carry a location over from a different line or a different section, never expand an abbreviation, never turn it into an address. Null when that meeting states none.
 
 8. course.startDate and course.endDate are the term bounds, ISO, and only when the syllabus states or clearly implies them. Otherwise null.
-   - A DATED SCHEDULE IMPLIES THEM. If the document lists dated class meetings ("Fri., Sept 4 ... Fri., Dec 11" or a week-by-week table with dates), startDate is the first listed meeting and endDate is the last listed meeting or exam, and you say so in a warning. Only leave both null when the document contains no dates that bound the term at all.
+   - A DATED SCHEDULE IMPLIES THEM. If the document lists dated class meetings ("Fri., Sept 4 ... Fri., Dec 11" or a week-by-week table with dates), startDate is the first listed meeting and endDate is the last listed meeting or exam, and you say so in a warning. Only leave both null when the document contains no dates that bound the term at all. This bounds the TERM only: it never dates an item. A "FINAL EXAM" printed under the last dated row with no date of its own stays undated -- it is not on the last listed day just because it is printed after it.
 
 9. NO-CLASS PERIODS. course.noClass lists every stretch of the term when this class does NOT meet, as inclusive ISO date ranges ({ start, end, reason }); a single day has start === end. It decides which class meetings are left off the student's calendar, so both directions are errors: a missed break puts a class on the calendar that does not happen, and an invented one deletes a class that does.
    - Take them from explicit statements: "no class", "no classes", "class cancelled", "university closed", a named holiday, a recess, a break, reading days. A weekday named inside a week row resolves against that row's dates -- "No class Mon" in a "Week 3 | Sep 7 - Sep 11" row is 2026-09-07.
@@ -347,6 +347,38 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
   const gradeWeights = raw.course.gradeWeights
     .map((w) => ({ category: collapse(w.category), weightPercent: Number(w.weightPercent) }))
     .filter((w) => w.category.length > 0 && Number.isFinite(w.weightPercent) && w.weightPercent > 0);
+
+  /**
+   * Rank-based exam weighting is enforced here, not only asked for above.
+   *
+   * "35% for the exam with the highest grade, 25% for the second, 15% for the
+   * lowest" assigns weight by score, so no exam has a weight until the grades
+   * exist. Two of the first four real syllabi tested used it, and across three
+   * revisions of the prompt the model kept putting a number on the exams
+   * anyway -- the top figure on the final, then the figures in exam order,
+   * then an average of them. Every one of those is a fact a student cannot
+   * check against their syllabus, because the syllabus does not say it. A rule
+   * the model keeps breaking is not a rule; it is a guarantee this code has to
+   * make. The category rows stay exactly as written, which is where the truth
+   * lives.
+   */
+  const rankBased = gradeWeights.some((w) =>
+    /\b(highest|second[\s-]?highest|third[\s-]?highest|lowest)\b/i.test(w.category),
+  );
+  if (rankBased) {
+    let cleared = 0;
+    for (const a of assessments) {
+      if (a.kind === "exam" && a.weightPercent !== null) {
+        a.weightPercent = null;
+        cleared += 1;
+      }
+    }
+    if (cleared > 0) {
+      warnings.push(
+        "Exams are weighted by rank (highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned.",
+      );
+    }
+  }
 
   // Meetings are re-checked field by field, and the new ones matter as much as
   // the times: a meeting with no `kind` would default to nothing downstream,
