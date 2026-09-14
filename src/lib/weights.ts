@@ -140,10 +140,15 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
   // Rank-based from the document itself, or from a row worded that way. Either
   // means no exam has a fixed weight, and this function is the last thing to
   // write one -- so it is where that has to be guaranteed, not merely asked for.
-  const rankBased = opts.rankBasedExams === true || gradeWeights.some((w) => RANK_BASED_ROW.test(w.category));
+  const rowsSayRank = gradeWeights.some((w) => RANK_BASED_ROW.test(w.category));
+  const rankBased = opts.rankBasedExams === true || rowsSayRank;
   if (rankBased && warnings && assessments.some((a) => a.kind === "exam")) {
-    const message =
-      "Exams are weighted by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned.";
+    // When the rows are worded by rank they are the reference. When the
+    // document says rank but the rows came back as "Exam 1 5%", the rows are
+    // the thing to distrust, and the warning must not send the student to them.
+    const message = rowsSayRank
+      ? "Exams are weighted by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned."
+      : "This syllabus weights exams by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank. The grading table's exam rows are by rank of score, not by exam number -- check the syllabus for the exact rule.";
     if (!warnings.includes(message)) warnings.push(message);
   }
   if (gradeWeights.length === 0 && !rankBased) return assessments;

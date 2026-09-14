@@ -64,10 +64,60 @@ export async function parseSyllabus(
 ): Promise<ParsedSyllabus> {
   // Unreadable input is the one failure the user can act on, so it stays fatal.
   const text = await extractText(buf, filename);
-  const parsed = await parseFromText(text, opts);
+  const parsed = collapseInventedSeries(await parseFromText(text, opts));
   // Decided from the document, once, for every extraction path -- see the
   // field's own comment for why the grading rows cannot be trusted with this.
   return { ...parsed, rankBasedExamWeights: RANK_BASED_EXAMS.test(text) };
+}
+
+/**
+ * "Quiz 1" through "Quiz 10", none of them dated, from a syllabus that says
+ * "weekly quizzes" and never says how many. The number is the invention: the
+ * document supports one undated fact -- there are quizzes -- and the extractor
+ * turned it into ten. It did that in one run out of three on the same file,
+ * after being told in two different places not to, so this is enforced here
+ * rather than asked for again.
+ *
+ * Only undated items are touched. A dated series is the extractor doing its
+ * job; a lone undated "Exam 1 (TBD)" is a real item with a real number. Two or
+ * more undated titles that differ only by a trailing number are the pattern.
+ */
+export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
+  const stemOf = (title: string) => title.replace(/\s*(?:#|no\.?\s*)?\d{1,3}\s*$/i, "").trim();
+  const groups = new Map<string, number[]>();
+  parsed.assessments.forEach((a, i) => {
+    if (a.dueDate !== null) return;
+    const stem = stemOf(a.title);
+    if (!stem || stem === a.title.trim()) return;
+    const key = `${a.kind}|${stem.toLowerCase()}`;
+    groups.set(key, [...(groups.get(key) ?? []), i]);
+  });
+
+  const drop = new Set<number>();
+  const warnings = [...parsed.warnings];
+  const assessments = parsed.assessments.map((a) => ({ ...a }));
+  for (const indices of groups.values()) {
+    if (indices.length < 2) continue;
+    const first = assessments[indices[0]];
+    const stem = stemOf(first.title);
+    // Name it the way the grading table does when a row plainly names this
+    // series ("Quizzes" for "Quiz", "Problem Sets" for "Problem Set"); else a
+    // plain plural, which is still a category and no longer a count.
+    const row = parsed.course.gradeWeights.find((w) =>
+      w.category.toLowerCase().replace(/\([^)]*\)/g, "").trim().startsWith(stem.toLowerCase()),
+    );
+    const title = row ? row.category.replace(/\s*\([^)]*\)\s*/g, " ").trim() : /(s|x|z|ch|sh)$/i.test(stem) ? `${stem}es` : `${stem}s`;
+    first.title = title;
+    // The join assigns the category's weight to the one item that stands for it.
+    first.weightPercent = null;
+    first.confidence = Math.min(...indices.map((i) => assessments[i].confidence));
+    for (const i of indices.slice(1)) drop.add(i);
+    warnings.push(
+      `${indices.length} undated "${stem}" items were listed but the syllabus gives no dates and no count, so they are shown as one entry, "${title}", until the dates are known.`,
+    );
+  }
+  if (drop.size === 0) return parsed;
+  return { ...parsed, assessments: assessments.filter((_, i) => !drop.has(i)), warnings };
 }
 
 /**
