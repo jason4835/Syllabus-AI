@@ -29,11 +29,24 @@ export async function GET(req: Request) {
   await resolveSession();
 
   const requested = new URL(req.url).searchParams.get("next");
-  return NextResponse.redirect(new URL(safeNext(requested), req.url), {
+  /**
+   * A RELATIVE Location, deliberately -- and not `new URL(path, req.url)`.
+   *
+   * Behind a proxy `req.url` is the internal address, so that form sent every
+   * brand-new visitor to `https://localhost:8080/dashboard` on their own
+   * machine: the first-visit flow, broken in production and working perfectly
+   * in dev. `publicOrigin(req)` is the house fix for this and would work, but a
+   * relative redirect is better still -- the browser resolves it against the
+   * address it actually asked for, so it needs no header to be trustworthy and
+   * no APP_URL to be set.
+   *
+   * `NextResponse.redirect` requires an absolute URL, hence the manual response.
+   */
+  return new NextResponse(null, {
     // 303: the browser must GET the destination, and this answer is specific to
     // one visitor's brand-new cookie -- it must never be cached or replayed.
     status: 303,
-    headers: { "Cache-Control": "no-store" },
+    headers: { Location: safeNext(requested), "Cache-Control": "no-store" },
   });
 }
 
