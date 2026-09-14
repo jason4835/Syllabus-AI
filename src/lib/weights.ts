@@ -54,6 +54,14 @@ function tokens(s: string): string[] {
     .filter((t) => t.length > 0 && !STOPWORDS.has(t));
 }
 
+/**
+ * A grading row that assigns weight by score, not by item. "Exam with highest
+ * grade 35%" is not a category any single exam belongs to until the grades are
+ * in, so it can never be joined onto one -- doing so handed the final 35% in
+ * one real syllabus and rewrote another's four exams as 45/25/25/5.
+ */
+const RANK_BASED_ROW = /\b(highest|second[\s-]?highest|third[\s-]?highest|lowest)\b/i;
+
 /** "problem sets" -> "problem set", so it prefixes "problem set 3". */
 function singularStem(s: string): string {
   const n = normalize(s);
@@ -74,17 +82,27 @@ function score(category: string, a: Assessment): number {
   const catTokens = tokens(category);
   const titleTokens = new Set(tokens(a.title));
   const shared = catTokens.filter((t) => titleTokens.has(t));
-  if (shared.length === 0) return 0;
+  // A bare number is not a shared word. "Quiz 1" and "Exam 1" have "1" in
+  // common and nothing else, and that once joined a 12% quiz to a 25% exam
+  // row. A number still counts when it rides alongside a real word -- "Exam 2"
+  // against "Midterm Exam 2" -- which is what tells two exam rows apart.
+  const meaningful = shared.some((t) => !/^\d+$/.test(t)) ? shared.length : 0;
+
+  // A category naming the item's kind ("Quizzes" for a quiz, "Modeling
+  // Project" for a project) is a match on its own, before any shared word:
+  // "Quizzes" and "Quiz 1" share no token, because no stemmer here turns
+  // "quizzes" into "quiz", and that left every quiz unweighted or worse.
+  const kindWords = KIND_WORDS[a.kind];
+  const namesKind = catTokens.some((t) => kindWords.includes(t));
+  if (meaningful === 0 && !namesKind) return 0;
 
   // "Problem Sets" -> "Problem Set 4": the category names the whole series.
   const stem = singularStem(category);
-  let s = stem && title.startsWith(stem) ? 50 : shared.length * 10;
+  let s = stem && title.startsWith(stem) ? 50 : meaningful * 10;
 
-  // A category naming the item's kind ("Modeling Project" for a project)
-  // outranks one that merely shares a word ("Final Exam" vs "Project final
-  // report", which collide on "final").
-  const kindWords = KIND_WORDS[a.kind];
-  if (catTokens.some((t) => kindWords.includes(t))) s += 25;
+  // ...and it outranks one that merely shares a word ("Final Exam" vs
+  // "Project final report", which collide on "final").
+  if (namesKind) s += 25;
 
   return s;
 }
@@ -115,8 +133,20 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
   assessments: T[],
   gradeWeights: GradeWeight[],
   warnings?: string[],
+  opts: { rankBasedExams?: boolean } = {},
 ): T[] {
-  if (gradeWeights.length === 0 || assessments.length === 0) return assessments;
+  if (assessments.length === 0) return assessments;
+
+  // Rank-based from the document itself, or from a row worded that way. Either
+  // means no exam has a fixed weight, and this function is the last thing to
+  // write one -- so it is where that has to be guaranteed, not merely asked for.
+  const rankBased = opts.rankBasedExams === true || gradeWeights.some((w) => RANK_BASED_ROW.test(w.category));
+  if (rankBased && warnings && assessments.some((a) => a.kind === "exam")) {
+    const message =
+      "Exams are weighted by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned.";
+    if (!warnings.includes(message)) warnings.push(message);
+  }
+  if (gradeWeights.length === 0 && !rankBased) return assessments;
 
   // Which assessments picked which category.
   const claimed = new Map<number, number[]>();
@@ -124,10 +154,12 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
   assessments.forEach((a, index) => {
     // An extractor that already found a per-item weight knows better than we do.
     if (a.weightPercent !== null) return;
+    if (rankBased && a.kind === "exam") return;
 
     let bestScore = 0;
     let bestCategory = -1;
     gradeWeights.forEach((w, wi) => {
+      if (RANK_BASED_ROW.test(w.category)) return; // never split a rank row across items
       const s = score(w.category, a as unknown as Assessment);
       if (s > bestScore) {
         bestScore = s;
@@ -141,7 +173,10 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
     else claimed.set(bestCategory, [index]);
   });
 
-  const out = assessments.map((a) => ({ ...a }));
+  const out = assessments.map((a) =>
+    // Whatever the extractor put there: a rank-weighted exam has no number.
+    rankBased && a.kind === "exam" ? { ...a, weightPercent: null } : { ...a },
+  );
   for (const [categoryIndex, indices] of claimed) {
     const category = gradeWeights[categoryIndex];
     const weight = category?.weightPercent;
@@ -173,6 +208,8 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
 /** Applies the join to a freshly parsed syllabus, before it is persisted. */
 export function attachWeights(parsed: ParsedSyllabus): ParsedSyllabus {
   const warnings = [...parsed.warnings];
-  const assessments = applyGradeWeights(parsed.assessments, parsed.course.gradeWeights, warnings);
+  const assessments = applyGradeWeights(parsed.assessments, parsed.course.gradeWeights, warnings, {
+    rankBasedExams: parsed.rankBasedExamWeights === true,
+  });
   return { ...parsed, assessments, warnings };
 }

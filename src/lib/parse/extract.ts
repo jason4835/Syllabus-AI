@@ -348,37 +348,6 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
     .map((w) => ({ category: collapse(w.category), weightPercent: Number(w.weightPercent) }))
     .filter((w) => w.category.length > 0 && Number.isFinite(w.weightPercent) && w.weightPercent > 0);
 
-  /**
-   * Rank-based exam weighting is enforced here, not only asked for above.
-   *
-   * "35% for the exam with the highest grade, 25% for the second, 15% for the
-   * lowest" assigns weight by score, so no exam has a weight until the grades
-   * exist. Two of the first four real syllabi tested used it, and across three
-   * revisions of the prompt the model kept putting a number on the exams
-   * anyway -- the top figure on the final, then the figures in exam order,
-   * then an average of them. Every one of those is a fact a student cannot
-   * check against their syllabus, because the syllabus does not say it. A rule
-   * the model keeps breaking is not a rule; it is a guarantee this code has to
-   * make. The category rows stay exactly as written, which is where the truth
-   * lives.
-   */
-  const rankBased = gradeWeights.some((w) =>
-    /\b(highest|second[\s-]?highest|third[\s-]?highest|lowest)\b/i.test(w.category),
-  );
-  if (rankBased) {
-    let cleared = 0;
-    for (const a of assessments) {
-      if (a.kind === "exam" && a.weightPercent !== null) {
-        a.weightPercent = null;
-        cleared += 1;
-      }
-    }
-    if (cleared > 0) {
-      warnings.push(
-        "Exams are weighted by rank (highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned.",
-      );
-    }
-  }
 
   // Meetings are re-checked field by field, and the new ones matter as much as
   // the times: a meeting with no `kind` would default to nothing downstream,

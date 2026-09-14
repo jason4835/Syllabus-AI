@@ -64,6 +64,22 @@ export async function parseSyllabus(
 ): Promise<ParsedSyllabus> {
   // Unreadable input is the one failure the user can act on, so it stays fatal.
   const text = await extractText(buf, filename);
+  const parsed = await parseFromText(text, opts);
+  // Decided from the document, once, for every extraction path -- see the
+  // field's own comment for why the grading rows cannot be trusted with this.
+  return { ...parsed, rankBasedExamWeights: RANK_BASED_EXAMS.test(text) };
+}
+
+/**
+ * "Exam with the highest grade", "the highest score will receive 45%", "your
+ * lowest exam is dropped": exam weight assigned by rank rather than by exam.
+ * Either order, within one sentence, so "the highest grade in last year's
+ * class" three paragraphs from any exam does not trip it.
+ */
+const RANK_BASED_EXAMS =
+  /\b(?:exams?|tests?|midterms?)\b[^.\n]{0,80}\b(?:highest|lowest)\b|\b(?:highest|lowest)\b[^.\n]{0,80}\b(?:exams?|tests?|scores?|grades?)\b/i;
+
+async function parseFromText(text: string, opts: ParseOptions): Promise<ParsedSyllabus> {
 
   if (opts.offline) {
     return fallbackParse(text, { reason: "pattern matching (the model was not asked)" });

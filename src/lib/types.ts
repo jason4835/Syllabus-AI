@@ -160,6 +160,14 @@ export interface ParsedSyllabus {
   assessments: Omit<Assessment, "id" | "courseId">[];
   /** Extractor-level warnings: ambiguous dates, missing weights, low OCR quality. */
   warnings: string[];
+  /**
+   * True when the document weights exams by rank -- "35% for the exam with the
+   * highest grade, 15% for the lowest". Read from the source text, not from the
+   * model's grading rows, because the model rewrote those rows as "Exam 1 45%"
+   * in one run out of three even while warning that they were rank-based. When
+   * this is set no exam can carry a fixed percentage, whatever the rows say.
+   */
+  rankBasedExamWeights?: boolean;
 }
 
 /** A recommended study session the planner generates (not from the syllabus). */
