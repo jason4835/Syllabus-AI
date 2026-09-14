@@ -8,10 +8,10 @@ import { archiveNotionPages, syncToNotion } from "@/lib/notion/sync";
 import { buildSemesterPlan } from "@/lib/plan";
 import { parseSyllabus } from "@/lib/parse";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Assessment, Course } from "@/lib/types";
 import { attachWeights } from "@/lib/weights";
+import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 // Parsing a long syllabus through an LLM comfortably exceeds the default.
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "upload:user");

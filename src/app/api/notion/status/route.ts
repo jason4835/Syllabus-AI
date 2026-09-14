@@ -1,12 +1,12 @@
 import { ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { buildNotionStatus, type NotionStatus } from "@/lib/notion-status";
-import { resolveSession } from "@/lib/session";
+import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return ok<NotionStatus | null>(null);
   try {
     return ok<NotionStatus | null>(await buildNotionStatus(userId));

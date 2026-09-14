@@ -1,11 +1,10 @@
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
-import { ensureDemoSeed } from "@/lib/demo";
+import { ensureDemoSeed, resolveVisitor } from "@/lib/demo";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
 import { syncToNotion } from "@/lib/notion/sync";
 import { buildSemesterPlan } from "@/lib/plan";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +14,7 @@ export async function POST(req: Request) {
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);
 

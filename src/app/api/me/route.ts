@@ -1,14 +1,14 @@
 import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
-import { ensureDemoSeed } from "@/lib/demo";
+import { ensureDemoSeed, resolveVisitor } from "@/lib/demo";
 import { log, logApiError } from "@/lib/log";
-import { DEMO_USER_ID, destroySession, readSession, resolveSession } from "@/lib/session";
+import { DEMO_USER_ID, destroySession, readSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { User } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return ok<User | null>(null);
   await ensureDemoSeed(userId);
   return ok<User | null>(await store.getUser(userId));

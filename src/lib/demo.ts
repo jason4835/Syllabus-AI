@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseSyllabus } from "@/lib/parse";
-import { isDemoUser } from "@/lib/session";
+import { isDemoUser, resolveSession } from "@/lib/session";
+import type { ResolvedSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import { attachWeights } from "@/lib/weights";
 
@@ -77,7 +78,34 @@ function demoEmail(userId: string): string {
   return `demo+${tag}@syllabuscenter.com`;
 }
 
-async function seed(userId: string): Promise<void> {
+/**
+ * The identity a route should act as -- and the ONLY way a route gets one.
+ *
+ * `resolveSession` mints a demo id and sets the cookie, and that is all it can
+ * do: it is a pure leaf that must not know about the store. But every table has
+ * a foreign key to `users`, so an id with no row behind it is an identity that
+ * cannot own anything. Ten routes reached that state -- they minted and then
+ * wrote a course, a timezone, a feed token -- and the first write failed with a
+ * constraint violation. It never showed on the JSON store, which has no keys.
+ *
+ * Wrapping the two steps here, and having routes call this instead, makes the
+ * invariant structural: there is no path to a userId that skips the row. The
+ * row is written only when the id is fresh; an existing cookie was minted
+ * through here already, and the seeding routes self-heal the rest.
+ */
+export async function resolveVisitor(): Promise<ResolvedSession> {
+  const session = await resolveSession();
+  if (session.created) await ensureDemoUser(session.userId);
+  return session;
+}
+
+/**
+ * The user row and nothing else. Split from `seed` so a fresh identity can be
+ * made real without parsing three syllabi, and so the two cannot drift: the
+ * seed calls this rather than writing the row itself.
+ */
+export async function ensureDemoUser(userId: string): Promise<void> {
+  if (!isDemoUser(userId)) return;
   await store.upsertUser({
     id: userId,
     email: demoEmail(userId),
@@ -85,6 +113,10 @@ async function seed(userId: string): Promise<void> {
     picture: null,
     googleRefreshToken: null,
   });
+}
+
+async function seed(userId: string): Promise<void> {
+  await ensureDemoUser(userId);
 
   const existing = await store.listCourses(userId);
   if (existing.length > 0) return;

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { resolveVisitor } from "@/lib/demo";
 
-import { resolveSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +26,7 @@ export const dynamic = "force-dynamic";
  * Costs one redirect, on a first visit only.
  */
 export async function GET(req: Request) {
-  await resolveSession();
+  await resolveVisitor();
 
   const requested = new URL(req.url).searchParams.get("next");
   /**

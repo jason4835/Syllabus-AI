@@ -1,7 +1,7 @@
 import { ok } from "@/lib/api";
 import { isGoogleConfigured } from "@/lib/google/oauth";
 import { isAiParsingAvailable } from "@/lib/parse";
-import { resolveSession } from "@/lib/session";
+import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
@@ -16,11 +16,11 @@ export const dynamic = "force-dynamic";
  * offer both at once.
  *
  * This is also where a first-time visitor's sandbox is minted, which is why it
- * calls `resolveSession()`: it is a route handler, so it may set the session
+ * calls `resolveVisitor()`: it is a route handler, so it may set the session
  * cookie, and it is the first request the dashboard makes.
  */
 export async function GET() {
-  const { isDemo } = await resolveSession();
+  const { isDemo } = await resolveVisitor();
   return ok({
     demoMode: isDemo,
     googleReady: isGoogleConfigured(),

@@ -3,9 +3,9 @@ import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { archiveNotionPages } from "@/lib/notion/sync";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Assessment } from "@/lib/types";
+import { resolveVisitor } from "@/lib/demo";
 import {
   ASSESSMENT_FIELD_KEYS,
   Invalid,
@@ -63,7 +63,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");
@@ -120,7 +120,7 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");

@@ -1,8 +1,8 @@
 import { crossSiteDenied, fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
-import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { User } from "@/lib/types";
+import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   let timezone = "";

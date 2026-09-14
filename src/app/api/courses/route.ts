@@ -1,13 +1,12 @@
 import { fail, messageOf, ok } from "@/lib/api";
 import { logApiError } from "@/lib/log";
-import { ensureDemoSeed } from "@/lib/demo";
-import { resolveSession } from "@/lib/session";
+import { ensureDemoSeed, resolveVisitor } from "@/lib/demo";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
   await ensureDemoSeed(userId);
   try {

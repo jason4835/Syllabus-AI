@@ -3,11 +3,11 @@ import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { archiveNotionPages } from "@/lib/notion/sync";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { resolveSession } from "@/lib/session";
 import { reconcileSections } from "@/lib/sections";
 import { store } from "@/lib/store";
 import type { Course } from "@/lib/types";
 import { Invalid, validateCoursePatch } from "@/lib/validation";
+import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +29,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");
@@ -105,7 +105,7 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
   const { id } = await ctx.params;
   try {

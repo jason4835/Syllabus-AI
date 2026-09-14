@@ -1,9 +1,9 @@
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
-import { resolveSession } from "@/lib/session";
 import { store } from "@/lib/store";
 import type { Assessment } from "@/lib/types";
+import { resolveVisitor } from "@/lib/demo";
 import {
   ASSESSMENT_FIELD_KEYS,
   Invalid,
@@ -30,7 +30,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const denied = crossSiteDenied(req);
   if (denied) return denied;
 
-  const { userId } = await resolveSession();
+  const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
   const limit = checkLimit(`user:${userId}`, "edit:user");
