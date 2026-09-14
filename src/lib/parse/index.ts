@@ -67,7 +67,45 @@ export async function parseSyllabus(
   const parsed = collapseInventedSeries(await parseFromText(text, opts));
   // Decided from the document, once, for every extraction path -- see the
   // field's own comment for why the grading rows cannot be trusted with this.
-  return { ...parsed, rankBasedExamWeights: RANK_BASED_EXAMS.test(text) };
+  const rankBasedExamWeights = RANK_BASED_EXAMS.test(text);
+  return { ...relabelRankRows(parsed, rankBasedExamWeights), rankBasedExamWeights };
+}
+
+/**
+ * "Exam 1 5%, Exam 2 25%, Exam 3 25%, Exam 4 45%" from a syllabus that says
+ * the highest score counts 45% and the lowest 5%. The percentages are the
+ * document's own; only the labels are wrong, and they are wrong in a way that
+ * tells a student their first exam barely matters. When the document says rank
+ * and the rows say exam numbers, the rows are relabelled by rank -- highest
+ * first -- with the numbers untouched and a warning saying so. Rows already
+ * worded by rank are left alone; so is everything when the document does not
+ * say rank at all.
+ */
+export function relabelRankRows(parsed: ParsedSyllabus, rankBased: boolean): ParsedSyllabus {
+  if (!rankBased) return parsed;
+  const rows = parsed.course.gradeWeights;
+  if (rows.some((w) => /\b(highest|lowest)\b/i.test(w.category))) return parsed;
+  const numbered = rows
+    .map((w, i) => (/^(?:exam|test|midterm)s?\s*#?\d{1,2}$/i.test(w.category.trim()) ? i : -1))
+    .filter((i) => i >= 0);
+  if (numbered.length < 2) return parsed;
+
+  const byWeight = numbered.slice().sort((a, b) => rows[b].weightPercent - rows[a].weightPercent);
+  const ordinal = ["highest", "second highest", "third highest", "fourth highest", "fifth highest", "sixth highest"];
+  const label = (rank: number) =>
+    rank === byWeight.length - 1 ? "Exam with lowest grade" : `Exam with ${ordinal[rank] ?? `${rank + 1}th highest`} grade`;
+  const gradeWeights = rows.map((w, i) => {
+    const rank = byWeight.indexOf(i);
+    return rank < 0 ? w : { ...w, category: label(rank) };
+  });
+  return {
+    ...parsed,
+    course: { ...parsed.course, gradeWeights },
+    warnings: [
+      ...parsed.warnings,
+      "The grading table listed exam percentages by exam number, but this syllabus assigns them by rank of score (the highest score counts most). The rows have been relabelled by rank; the percentages are unchanged.",
+    ],
+  };
 }
 
 /**
@@ -96,9 +134,31 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
   const drop = new Set<number>();
   const warnings = [...parsed.warnings];
   const assessments = parsed.assessments.map((a) => ({ ...a }));
+  // A lone retitle drops nothing, so "nothing dropped" is not "nothing changed".
+  let changed = false;
   for (const indices of groups.values()) {
-    if (indices.length < 2) continue;
     const first = assessments[indices[0]];
+    if (indices.length < 2) {
+      // One undated "Quiz 1" is the same invention at n=1, but only when the
+      // grading table names the series ("Quizzes") and nothing dated shares
+      // the stem -- a dated "Quiz 2" would make "Quiz 1" a real first quiz.
+      // Exams are exempt: "Exam 1 (TBD)" is a specific exam by convention.
+      const stem = stemOf(first.title);
+      const siblings = parsed.assessments.some((a) => a !== parsed.assessments[indices[0]] && stemOf(a.title).toLowerCase() === stem.toLowerCase());
+      const row = first.kind !== "exam" && !siblings
+        ? parsed.course.gradeWeights.find((w) => {
+            const c = w.category.toLowerCase().replace(/\([^)]*\)/g, "").trim();
+            return c.startsWith(stem.toLowerCase()) && c !== stem.toLowerCase() && !/\d\s*$/.test(c);
+          })
+        : undefined;
+      if (!row) continue;
+      const title = row.category.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+      warnings.push(`"${first.title}" has no date and the syllabus lists no individual ${stem.toLowerCase()}s, so it is shown as the category "${title}".`);
+      first.title = title;
+      first.weightPercent = null;
+      changed = true;
+      continue;
+    }
     const stem = stemOf(first.title);
     // Name it the way the grading table does when a row plainly names this
     // series ("Quizzes" for "Quiz", "Problem Sets" for "Problem Set"); else a
@@ -112,11 +172,12 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
     first.weightPercent = null;
     first.confidence = Math.min(...indices.map((i) => assessments[i].confidence));
     for (const i of indices.slice(1)) drop.add(i);
+    changed = true;
     warnings.push(
       `${indices.length} undated "${stem}" items were listed but the syllabus gives no dates and no count, so they are shown as one entry, "${title}", until the dates are known.`,
     );
   }
-  if (drop.size === 0) return parsed;
+  if (!changed) return parsed;
   return { ...parsed, assessments: assessments.filter((_, i) => !drop.has(i)), warnings };
 }
 
