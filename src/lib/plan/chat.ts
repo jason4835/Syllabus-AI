@@ -160,7 +160,8 @@ const SYSTEM_PROMPT = [
   "When the student asks when to start studying for something:",
   "The planner already answered it — the first scheduled study session for that item IS the start date. So:",
   "1. Lead with that day and how far off it is. ('Start Tuesday, September 22nd — that's two weeks out.')",
-  "2. List the sessions it scheduled: day, start time, how long.",
+  "   Take it from the FIRST session on that item's STUDY PLAN PER ITEM line. It is NEVER the item's own due or sitting date — that is the day you hand it in or sit it, not the day you start.",
+  "2. List the sessions it scheduled: day, start time, how long. List ONLY sessions written in SCHEDULED STUDY SESSIONS. That list stops after three weeks, so if the item's session count is higher than the number you can see, say how many there are in total and list the ones you have — never fill the gap with dates you worked out yourself.",
   "3. Give the total hours and tie them to what the item is worth.",
   "4. At most one sentence of advice.",
   "Never answer that question with 'as soon as possible'. You have a date. Use it.",
@@ -326,7 +327,26 @@ export function buildPlanContext(
   const upcoming = plan.studyBlocks
     .filter((b) => b.start.slice(0, 10) >= todayIso && b.start.slice(0, 10) <= horizon)
     .slice(0, 40);
-  lines.push("", "SCHEDULED STUDY SESSIONS (next three weeks)");
+  /**
+   * One line per item that has a study plan, whatever the horizon.
+   *
+   * The session list below is capped at three weeks, which is right for "what
+   * is coming up" and wrong for "when do I start studying for X" -- an exam five
+   * weeks out had exactly one of its six sessions inside the window, and the
+   * model answered by inventing the other five and leading with the exam's own
+   * date as the start. Everything needed to answer that question truthfully is
+   * a per-item summary, and it costs one line each.
+   */
+  const plans = studyPlanSummaries(plan, assessments, courseById, todayIso);
+  if (plans.length > 0) {
+    lines.push(
+      "",
+      "STUDY PLAN PER ITEM (item | sessions | FIRST session = the day to start | total hours)",
+    );
+    for (const line of plans) lines.push(line);
+  }
+
+  lines.push("", "SCHEDULED STUDY SESSIONS (next three weeks only — there may be more after this window; never invent or extrapolate one)");
   if (upcoming.length === 0) lines.push("- none scheduled in this window");
   for (const b of upcoming) {
     const day = b.start.slice(0, 10);
@@ -339,6 +359,50 @@ export function buildPlanContext(
   }
 
   return lines.join("\n");
+}
+
+/**
+ * "PSYC 240 Midterm Exam | 6 sessions | first Monday, October 5th (three weeks
+ * out) | about 9h total" -- one line per item the planner scheduled work for.
+ *
+ * Bounded by the same assessment cap as the deadline list, so a fabricated
+ * hundred-item semester cannot inflate the prompt through this route.
+ */
+function studyPlanSummaries(
+  plan: SemesterPlan,
+  assessments: Assessment[],
+  courseById: Map<string, Course>,
+  todayIso: string,
+): string[] {
+  const byAssessment = new Map<string, StudyBlock[]>();
+  for (const b of plan.studyBlocks) {
+    const list = byAssessment.get(b.assessmentId) ?? [];
+    list.push(b);
+    byAssessment.set(b.assessmentId, list);
+  }
+
+  const out: string[] = [];
+  for (const a of assessments.slice(0, MAX_DATED_IN_CONTEXT)) {
+    const blocks = (byAssessment.get(a.id) ?? [])
+      .slice()
+      .sort((x, y) => x.start.localeCompare(y.start));
+    // Only sessions still ahead: a student asking when to start does not need
+    // the ones they have already sat.
+    const ahead = blocks.filter((b) => b.start.slice(0, 10) >= todayIso);
+    if (ahead.length === 0) continue;
+    const first = ahead[0].start.slice(0, 10);
+    // A block carries start and end, not a duration, so the hours are derived
+    // here the same way the panels derive them.
+    const hours = ahead.reduce((sum, b) => {
+      const ms = new Date(b.end).getTime() - new Date(b.start).getTime();
+      return sum + (Number.isFinite(ms) && ms > 0 ? ms / 3_600_000 : 0);
+    }, 0);
+    const code = courseById.get(a.courseId)?.code ?? "?";
+    out.push(
+      `- ${code} ${a.title} | ${ahead.length} session${ahead.length === 1 ? "" : "s"} | first ${friendlyDate(first, todayIso)} (${relativeDay(todayIso, first)}) | about ${Math.round(hours * 10) / 10}h total`,
+    );
+  }
+  return out;
 }
 
 /* -------------------------------------------------------------------------- */
