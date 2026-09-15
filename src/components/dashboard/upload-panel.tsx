@@ -12,7 +12,9 @@ import { ErrorState, Note } from "@/components/ui/states";
 import { AlertIcon, CheckIcon, FileIcon, UploadIcon } from "@/components/icons";
 import { AssessmentRow } from "@/components/dashboard/assessment-row";
 import { SectionChooser } from "@/components/dashboard/section-chooser";
+import { SetupJump } from "@/components/dashboard/setup-card";
 import { sectionGroups } from "@/lib/sections";
+import { setupQuestions } from "@/lib/setup";
 import { formatPercent, pluralize } from "@/components/format";
 
 /** Mirrors the route's own limit, so the wording matches what the server says. */
@@ -101,6 +103,7 @@ export function UploadPanel({
   onAssessmentChanged,
   onCourseChanged,
   onCourseReplaced,
+  onAnswerQuestions,
 }: {
   demoMode: boolean;
   /** Accent the newly added course will carry elsewhere in the dashboard. */
@@ -120,6 +123,12 @@ export function UploadPanel({
    * and its assessments, which a plain "uploaded" would not tell it to do.
    */
   onCourseReplaced?: (oldCourseId: string, result: UploadResult) => void;
+  /**
+   * Send the student to this course's setup card on the roadmap. The questions
+   * that are not answerable here — a term start, a class time, a weekly day —
+   * are asked there, and a count with no way to reach them is a nag.
+   */
+  onAnswerQuestions?: (courseId: string) => void;
 }) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -333,6 +342,7 @@ export function UploadPanel({
           accent={accent}
           onChanged={onAssessmentChanged ? onRowChanged : undefined}
           onCourseChanged={onCourseChanged ? onCourseSaved : undefined}
+          onAnswerQuestions={onAnswerQuestions}
         />
       ) : (
         <div className="space-y-3">
@@ -522,14 +532,24 @@ function ExtractionResult({
   accent,
   onChanged,
   onCourseChanged,
+  onAnswerQuestions,
 }: {
   result: UploadResult;
   accent: string;
   onChanged?: (updated: Assessment) => void;
   onCourseChanged?: (updated: Course) => void;
+  onAnswerQuestions?: (courseId: string) => void;
 }) {
   const { course, assessments, warnings, notion } = result;
   const flagged = assessments.filter(needsReview);
+  /**
+   * The gaps this card cannot close. Sections are asked right here, so they are
+   * not counted: a link promising three things to finish, one of which is the
+   * radio group directly below it, is the panel talking about itself.
+   */
+  const elsewhere = setupQuestions(course, assessments).filter(
+    (question) => question.kind !== "section",
+  ).length;
   const totalWeight = course.gradeWeights.reduce(
     (sum, row) => sum + row.weightPercent,
     0,
@@ -596,6 +616,25 @@ function ExtractionResult({
           <div className="mt-3.5">
             <SectionChooser course={course} onChanged={onCourseChanged} />
           </div>
+        ) : null}
+
+        {/* The other gaps are asked on the roadmap, where the items they place
+            are visible. Named and counted here because this is the moment the
+            student is thinking about this syllabus, and a term start typed now
+            is seven dated items rather than seven surprises in October. */}
+        {elsewhere > 0 ? (
+          <p className="mt-3 text-[0.8125rem] leading-relaxed text-ink-soft">
+            <SetupJump
+              courseId={course.id}
+              label={`${elsewhere} ${elsewhere === 1 ? "thing" : "things"} to finish for ${course.code}`}
+              onClick={
+                onAnswerQuestions ? () => onAnswerQuestions(course.id) : undefined
+              }
+            />{" "}
+            — the syllabus left {elsewhere === 1 ? "it" : "them"} open, and your
+            calendar stays incomplete until {elsewhere === 1 ? "it is" : "they are"}{" "}
+            answered.
+          </p>
         ) : null}
       </div>
 

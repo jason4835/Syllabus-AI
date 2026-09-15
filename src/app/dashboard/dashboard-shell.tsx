@@ -109,8 +109,17 @@ export function DashboardShell() {
     scrollToElement(target, "start");
   }, []);
 
-  const loadCourses = useCallback(async () => {
-    setCoursesLoading(true);
+  /**
+   * `quiet` re-reads without flipping the panels to skeletons.
+   *
+   * The setup card answers questions by refetching: the server places the
+   * week-numbered items and expands the weekly ones itself, so the page has to
+   * look again to see them. A loud reload would unmount the card mid-answer,
+   * taking the "Saved — 7 items now have dates" line and the folded receipt
+   * with it, and blanking the list the student was checking.
+   */
+  const loadCourses = useCallback(async (quiet = false) => {
+    if (!quiet) setCoursesLoading(true);
     const result = await apiGet<CoursesPayload>("/api/courses");
     if (result.ok) {
       setCourses(result.data.courses ?? []);
@@ -393,23 +402,45 @@ export function DashboardShell() {
   }, [courses]);
 
   /**
-   * The sync result names courses with a section question still open; the
-   * chooser for each is already on the roadmap. Focus moves with the scroll so
-   * a keyboard user lands on the radio group rather than at the top of a panel
-   * they were sent to for one specific question. A course can have more than
-   * one open question, and the first unanswered one is where to start.
+   * A setup answer the server acted on beyond the field it was sent: a term
+   * start that dates every week-numbered item, a weekly day that creates one
+   * item per week. Both change items this page holds, and neither is reported
+   * by the course that comes back — so the items are re-read, quietly, and the
+   * plan with them, because new dates are new week loads.
    */
-  const onChooseSection = useCallback((courseId: string) => {
+  const onSetupAnswered = useCallback(() => {
+    void loadCourses(true);
+    void loadPlan();
+  }, [loadCourses, loadPlan]);
+
+  /**
+   * The upload result and the sync result both name courses with questions
+   * still open; the card that asks them is already on the roadmap. Focus moves
+   * with the scroll so a keyboard user lands on the question rather than at the
+   * top of a panel they were sent to for one specific answer.
+   *
+   * Aimed at the setup card, which is the whole set of open questions now
+   * rather than only the section one — with the chooser and then the course
+   * card as fallbacks, so a link still lands somewhere sensible while a course
+   * has only sections left to answer.
+   */
+  const onAnswerQuestions = useCallback((courseId: string) => {
+    const card = document.getElementById(`setup-card-${courseId}`);
     const chooser = document.getElementById(`section-chooser-${courseId}`);
-    const target = chooser ?? document.getElementById(`roadmap-card-${courseId}`);
+    const target =
+      card ?? chooser ?? document.getElementById(`roadmap-card-${courseId}`);
     if (!target) return;
-    // Focus first: focusing mid-flight cancels a smooth scroll in Chrome.
-    // The checked option when there is one: a radio group is entered at its
-    // current answer, not at the top of the list.
-    const radio =
-      chooser?.querySelector<HTMLInputElement>('input[type="radio"]:checked') ??
-      chooser?.querySelector<HTMLInputElement>('input[type="radio"]');
-    radio?.focus({ preventScroll: true });
+    // Focus first: focusing mid-flight cancels a smooth scroll in Chrome. The
+    // first real control inside the card, which is the first thing being asked
+    // -- and for a radio group, the current answer rather than the top of the
+    // list, because that is where a radio group is entered.
+    const control =
+      target.querySelector<HTMLElement>('input[type="radio"]:checked') ??
+      target.querySelector<HTMLElement>(
+        "input:not([disabled]), select:not([disabled])",
+      ) ??
+      target.querySelector<HTMLElement>("button:not([disabled])");
+    control?.focus({ preventScroll: true });
     scrollToElement(target, "center");
   }, []);
 
@@ -433,6 +464,7 @@ export function DashboardShell() {
       onAssessmentChanged={onAssessmentChanged}
       onCourseChanged={onCourseChanged}
       onCourseReplaced={onCourseReplaced}
+      onAnswerQuestions={onAnswerQuestions}
     />
   );
   // Only once the answer is known: moving the panel mid-load would be a jump
@@ -550,6 +582,7 @@ export function DashboardShell() {
                 editingCourseId={editingCourseId}
                 editFocusField={editFocusField}
                 onEditCourse={onEditCourse}
+                onSetupAnswered={onSetupAnswered}
                 coursePages={notionStatus?.coursePages ?? {}}
                 onRetry={() => void loadCourses()}
               />
@@ -562,7 +595,8 @@ export function DashboardShell() {
                 googleReady={config?.googleReady ?? false}
                 hasCourses={courses.length > 0}
                 courses={courses}
-                onChooseSection={onChooseSection}
+                assessments={assessments}
+                onAnswerQuestions={onAnswerQuestions}
               />
               <div ref={notionRef}>
                 <NotionPanel

@@ -26,12 +26,12 @@ import {
 } from "@/components/dashboard/assessment-row";
 import { CourseEditor } from "@/components/dashboard/course-editor";
 import {
-  SectionChooser,
   meetingSummary,
   meetingSummaryWithKind,
   openQuestionWords,
 } from "@/components/dashboard/section-chooser";
-import { meetingsForStudent, sectionGroups } from "@/lib/sections";
+import { SetupCard } from "@/components/dashboard/setup-card";
+import { meetingsForStudent } from "@/lib/sections";
 import { KIND_LABEL } from "@/components/labels";
 import { accentFor } from "@/components/course-accents";
 import {
@@ -96,6 +96,7 @@ export function RoadmapPanel({
   editingCourseId = null,
   editFocusField = "code",
   onEditCourse,
+  onSetupAnswered,
 }: {
   loading: boolean;
   error?: { error: string; detail?: string };
@@ -124,6 +125,14 @@ export function RoadmapPanel({
   editingCourseId?: string | null;
   editFocusField?: "code" | "startDate";
   onEditCourse?: (courseId: string | null) => void;
+  /**
+   * Re-read courses and items after a setup answer the server acted on beyond
+   * the field it was sent — a term start that dates every week-numbered item, a
+   * weekly day that creates one item per week. `onCourseChanged` cannot stand
+   * in for it: the course it hands back is correct and says nothing about the
+   * items that moved underneath it.
+   */
+  onSetupAnswered?: () => void;
 }) {
   /**
    * Per-course open/closed, `undefined` meaning "whatever the viewport implies".
@@ -219,13 +228,12 @@ export function RoadmapPanel({
             const canAdd = typeof onAssessmentAdded === "function";
             const canDelete = typeof onCourseDeleted === "function";
             /**
-             * The chooser stays on the card once the syllabus has asked
-             * anything at all: open questions as cards, answered ones folded
-             * down to a line with its own "Change". It used to be mounted only
-             * while unanswered, which meant the answer and the way to revise
-             * it lived in two different places.
+             * The setup card is mounted for every course that can be edited,
+             * and decides for itself whether it has anything to say. Mounting
+             * it on "has an open question" instead would unmount it the instant
+             * the last one was answered, taking with it the receipt for the
+             * answer and the sentence saying what the answer just did.
              */
-            const showChooser = editable && sectionGroups(course).length > 0;
 
             return (
               <article
@@ -393,13 +401,14 @@ export function RoadmapPanel({
                     </div>
                   ) : null}
 
-                  {showChooser ? (
-                    <div className="mt-3">
-                      <SectionChooser
-                        course={course}
-                        onChanged={(updated) => onCourseChanged?.(updated)}
-                      />
-                    </div>
+                  {editable ? (
+                    <SetupCard
+                      className="mt-3"
+                      course={course}
+                      assessments={items}
+                      onCourseChanged={(updated) => onCourseChanged?.(updated)}
+                      onAnswered={onSetupAnswered}
+                    />
                   ) : null}
                 </header>
                 )}

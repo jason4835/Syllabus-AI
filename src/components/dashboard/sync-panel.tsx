@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import type { CalendarPrefs, CalendarSyncResult, Course, User } from "@/lib/types";
+import type {
+  Assessment,
+  CalendarPrefs,
+  CalendarSyncResult,
+  Course,
+  User,
+} from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
 import {
   apiGet,
@@ -14,8 +20,10 @@ import { Button, Spinner } from "@/components/ui/button";
 import { ErrorState, Note } from "@/components/ui/states";
 import { LoadingRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertIcon, CalendarIcon, CheckIcon } from "@/components/icons";
-import { formatDateShort } from "@/components/format";
+import { formatDateShort, pluralize } from "@/components/format";
 import { openQuestionWords } from "@/components/dashboard/section-chooser";
+import { SetupJump } from "@/components/dashboard/setup-card";
+import { setupQuestions } from "@/lib/setup";
 
 /** `POST /api/sync` answers with the result plus which mode it ran in. */
 type SyncResponse = CalendarSyncResult & { dryRun?: boolean };
@@ -66,15 +74,23 @@ export function SyncPanel({
   googleReady,
   hasCourses,
   courses = [],
-  onChooseSection,
+  assessments = [],
+  onAnswerQuestions,
 }: {
   demoMode: boolean;
   googleReady: boolean;
   hasCourses: boolean;
   /** Only to name the courses a sync result reports back by id. */
   courses?: Course[];
-  /** Send the student to that course's chooser on the roadmap. */
-  onChooseSection?: (courseId: string) => void;
+  /**
+   * Every course's items, for deriving the questions still open. A sync tells
+   * us which courses it skipped meetings for; it does not know that a term with
+   * no start date left eleven deadlines off the calendar too, because that gap
+   * is in the data rather than in the sync.
+   */
+  assessments?: Assessment[];
+  /** Send the student to that course's setup card on the roadmap. */
+  onAnswerQuestions?: (courseId: string) => void;
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
   /**
@@ -288,33 +304,53 @@ export function SyncPanel({
               </div>
             ) : null}
 
-            {(state.result.needsSection ?? []).length > 0 ? (
-              <div className="mt-3">
-                <Note tone="warn">
-                  <span className="block">
-                    Class meetings were skipped for{" "}
-                    {courseCodes(courses, state.result.needsSection).join(", ")} —
-                    the syllabus lists more than one of them and we won&rsquo;t
-                    guess which are yours.
-                  </span>
-                  <span className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-                    {state.result.needsSection.map((courseId) => (
-                      <SectionJump
-                        key={courseId}
-                        code={courseCode(courses, courseId)}
-                        course={courses.find((row) => row.id === courseId)}
-                        onClick={
-                          onChooseSection
-                            ? () => onChooseSection(courseId)
-                            : undefined
-                        }
-                        courseId={courseId}
-                      />
-                    ))}
-                  </span>
-                </Note>
-              </div>
-            ) : null}
+            {(() => {
+              /**
+               * What the sync could not finish, and what it never saw. A
+               * skipped section is the server's report; a missing term start or
+               * class time is this page's own reading of the same data, and it
+               * kept items off the calendar just as surely.
+               */
+              const skipped = state.result.needsSection ?? [];
+              const gaps = openGaps(courses, assessments, skipped);
+              if (gaps.length === 0) return null;
+              return (
+                <div className="mt-3">
+                  <Note tone="warn">
+                    {skipped.length > 0 ? (
+                      <span className="block">
+                        Class meetings were skipped for{" "}
+                        {courseCodes(courses, skipped).join(", ")} — the syllabus
+                        lists more than one of them and we won&rsquo;t guess
+                        which are yours.
+                      </span>
+                    ) : null}
+                    {gaps.some((gap) => !gap.sectionWords) ? (
+                      <span className="mt-1.5 block">
+                        Other gaps left the calendar short too — dates and times
+                        the syllabus never stated. They are quick to answer, and
+                        only you can.
+                      </span>
+                    ) : null}
+                    <span className="mt-1.5 block space-y-1">
+                      {gaps.map((gap) => (
+                        <span key={gap.courseId} className="block">
+                          <SetupJump
+                            courseId={gap.courseId}
+                            label={gapLabel(gap)}
+                            onClick={
+                              onAnswerQuestions
+                                ? () => onAnswerQuestions(gap.courseId)
+                                : undefined
+                            }
+                          />
+                        </span>
+                      ))}
+                    </span>
+                  </Note>
+                </div>
+              );
+            })()}
 
             <p className="mt-3 text-[0.75rem] text-muted">
               Calendar:{" "}
@@ -374,41 +410,76 @@ function courseCodes(courses: Course[], ids: string[]): string[] {
   return ids.map((id) => courseCode(courses, id));
 }
 
-/**
- * A jump, not a route: the chooser is already on this page, a panel away. The
- * anchor is the fallback for a shell that did not hand us a handler — it still
- * lands on the course card rather than nowhere.
- */
-function SectionJump({
-  code,
-  course,
-  courseId,
-  onClick,
-}: {
-  code: string;
-  /** Absent only if the sync named a course the page has not loaded. */
-  course?: Course;
+/** One course whose calendar is incomplete, and why. */
+interface Gap {
   courseId: string;
-  onClick?: () => void;
-}) {
-  const className =
-    "rounded-sm text-[0.8125rem] font-medium text-ink underline decoration-warn-line underline-offset-2 transition-colors hover:text-accent";
-  // Names what is actually being asked — "Choose your lecture and lab" — so the
-  // link does not promise one decision where the roadmap will ask for two.
-  const words = course ? openQuestionWords(course) : "";
-  const label = `${code}: Choose your ${words || "section"}`;
-  if (!onClick) {
-    return (
-      <a href={`#roadmap-card-${courseId}`} className={className}>
-        {label}
-      </a>
-    );
+  code: string;
+  /** How many questions this course still has open, from `setupQuestions`. */
+  open: number;
+  /**
+   * "lecture and lab", and only when sections are ALL that is left. A course
+   * missing its term start as well is not asking one kind of question, and
+   * naming only the sections would undersell what is waiting.
+   */
+  sectionWords: string;
+}
+
+/**
+ * The courses a student has to answer something for: the ones this sync
+ * reported skipping, plus the ones whose own data still has holes in it.
+ *
+ * Union rather than either alone. The sync knows about sections and nothing
+ * else; the page knows about every question `setupQuestions` derives but cannot
+ * know what a particular sync run actually skipped.
+ */
+function openGaps(
+  courses: Course[],
+  assessments: Assessment[],
+  needsSection: string[],
+): Gap[] {
+  const skipped = new Set(needsSection);
+  const gaps: Gap[] = courses
+    .map((course) => {
+      const questions = setupQuestions(
+        course,
+        assessments.filter((item) => item.courseId === course.id),
+      );
+      return { course, questions };
+    })
+    .filter(
+      ({ course, questions }) =>
+        questions.length > 0 || skipped.has(course.id),
+    )
+    .map(({ course, questions }) => ({
+      courseId: course.id,
+      code: course.code,
+      open: questions.length,
+      sectionWords:
+        questions.length > 0 && questions.every((q) => q.kind === "section")
+          ? openQuestionWords(course)
+          : "",
+    }));
+
+  // A course the sync named that this page does not hold — a stale id, or a
+  // course deleted in another tab. Still worth saying, still worth a link.
+  for (const id of needsSection) {
+    if (courses.some((course) => course.id === id)) continue;
+    gaps.push({ courseId: id, code: "A course", open: 0, sectionWords: "" });
   }
-  return (
-    <button type="button" onClick={onClick} className={className}>
-      {label}
-    </button>
-  );
+  return gaps;
+}
+
+/**
+ * What the link says. The section wording survives from when this was only
+ * about sections, because "Choose your lecture and lab" is more use than "has 2
+ * questions" when that is genuinely all it is.
+ */
+function gapLabel(gap: Gap): string {
+  if (gap.sectionWords) return `${gap.code}: choose your ${gap.sectionWords}`;
+  if (gap.open > 0) {
+    return `${gap.code} has ${pluralize(gap.open, "question")} to answer before its calendar is complete`;
+  }
+  return `${gap.code}: finish setting it up`;
 }
 
 /* -------------------------------------------------------------------------- */
