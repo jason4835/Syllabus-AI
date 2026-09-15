@@ -606,7 +606,11 @@ export function parseDaysOfWeek(raw: string): number[] {
 
   const words = raw.toLowerCase().match(/[a-z]+/g) ?? [];
   let matchedWord = false;
-  for (const word of words) {
+  for (const raw_ of words) {
+    // "Mondays and Wednesdays": the plural is how prose says it, and a plural
+    // that misses the lookup fell through to the compact scanner below, which
+    // then read the "s" of "mondays" as Saturday.
+    const word = raw_.length >= 4 && raw_.endsWith("s") && !(raw_ in WEEKDAY_WORDS) ? raw_.slice(0, -1) : raw_;
     if (word in WEEKDAY_WORDS && word.length >= 3) {
       days.add(WEEKDAY_WORDS[word]);
       matchedWord = true;
@@ -634,7 +638,10 @@ export function parseDaysOfWeek(raw: string): number[] {
   // Every run, not only the longest: "M/R" is two one-letter runs, and keeping
   // the longest of them read a Monday/Thursday class as Monday alone. The
   // model's own numbers then filled the gap -- with Sunday and Wednesday.
-  const runs = raw.toUpperCase().match(/[MTWRFSUH]{1,10}/g) ?? [];
+  // Whole tokens only: a run of day letters bounded by non-letters. Without
+  // the boundary, "MONDAYS" shed an "M" and an "S" and became Monday plus
+  // Saturday, which is how a Monday/Wednesday lecture gained a Saturday.
+  const runs = raw.toUpperCase().match(/(?<![A-Z])[MTWRFSUH]{1,10}(?![A-Z])/g) ?? [];
   for (const token of runs) {
     let i = 0;
     while (i < token.length) {

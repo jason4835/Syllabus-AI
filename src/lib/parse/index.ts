@@ -67,7 +67,7 @@ export async function parseSyllabus(
   const parsed = capWhenTentative(
     reconcileNoClass(
       dropMeetingsWithUnstatedTimes(
-        warnWhenWeeksHaveNoAnchor(collapseInventedSeries(await parseFromText(text, opts))),
+        warnWhenWeeksHaveNoAnchor(mergePlaceholdersPerRow(collapseInventedSeries(await parseFromText(text, opts)))),
         text,
       ),
     ),
@@ -138,22 +138,93 @@ function statedTimes(text: string): Set<string> {
  * answer, said out loud, with what to do about it.
  */
 export function dropMeetingsWithUnstatedTimes(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
-  const stated = statedTimes(text);
+  // Only the START is checked. A recitation table that lists "8:00 Fri" states
+  // a real meeting whose end the model infers, and requiring the inferred end
+  // to appear in the text threw six of nine real recitations away. A start
+  // that appears nowhere is the fabrication; an end that appears nowhere is a
+  // duration guess, which is a known and tolerable thing.
+  //
+  // And where the start appears matters. Told not to invent a time, the model
+  // relabelled the office hours as the lecture instead -- four "lectures" in
+  // the professor's office. So a start that is stated ONLY on lines about
+  // office hours does not support a class; it supports office hours.
+  const seen = new Map<string, { anywhere: boolean; outsideOfficeHours: boolean }>();
+  for (const line of text.split(/\r?\n/)) {
+    const officeHours = /office\s*hours|student\s*hours|\bOH\b/i.test(line);
+    for (const t of statedTimes(line)) {
+      const rec = seen.get(t) ?? { anywhere: false, outsideOfficeHours: false };
+      rec.anywhere = true;
+      if (!officeHours) rec.outsideOfficeHours = true;
+      seen.set(t, rec);
+    }
+  }
   const keep: typeof parsed.course.meetingTimes = [];
   const warnings = [...parsed.warnings];
   const DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   for (const m of parsed.course.meetingTimes) {
-    if (stated.has(m.startTime) && stated.has(m.endTime)) {
+    const rec = seen.get(m.startTime);
+    const supported = rec?.anywhere === true && (m.kind === "office_hours" || rec.outsideOfficeHours);
+    if (supported) {
       keep.push(m);
       continue;
     }
     const days = m.daysOfWeek.map((d) => DAY[d] ?? "?").join("/");
     warnings.push(
-      `A ${m.kind.replace("_", " ")} on ${days} was left off: the syllabus names the days but not a time this app could find in it (${m.startTime}-${m.endTime} appears nowhere in the document). Add the meeting time on the course card.`,
+      rec?.anywhere
+        ? `A ${m.kind.replace("_", " ")} on ${days} at ${m.startTime} was left off: that time appears in the syllabus only as office hours, and the class time itself is not stated. Add the class time on the course card.`
+        : `A ${m.kind.replace("_", " ")} on ${days} was left off: the syllabus names the days but not a time this app could find in it (${m.startTime} appears nowhere in the document). Add the meeting time on the course card.`,
     );
   }
   if (keep.length === parsed.course.meetingTimes.length) return parsed;
   return { ...parsed, course: { ...parsed.course, meetingTimes: keep }, warnings };
+}
+
+/**
+ * Two undated placeholders for one grading category are one category.
+ *
+ * "Quizzes" and "Weekly Quizes", both undated, both pointing at the one
+ * "Quizzes 12%" row, each carrying half its weight: the extractor described a
+ * category twice. The rule that keeps six "End of Week N" homeworks apart is
+ * right -- those are anchored -- so the line is drawn there: an undated item
+ * with no week or date anchor in its evidence is a placeholder, and
+ * placeholders that map to the same grading row merge into that row's name.
+ * Exams are never touched, and neither is anything anchored.
+ */
+export function mergePlaceholdersPerRow(parsed: ParsedSyllabus): ParsedSyllabus {
+  const anchored = (a: { sourceText: string | null; notes: string | null }) =>
+    /\bweek\s*\d|end of (?:the )?week|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d|\d{1,2}\/\d{1,2}|\b\d{1,2}(?:st|nd|rd|th)\b/i.test(
+      `${a.sourceText ?? ""} ${a.notes ?? ""}`,
+    );
+  const norm = (v: string) => v.toLowerCase().replace(/\([^)]*\)/g, " ").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const rows = parsed.course.gradeWeights.map((w) => norm(w.category));
+  const rowFor = (title: string): number => {
+    const t = norm(title);
+    const words = t.split(" ").filter((x) => x.length >= 4);
+    return rows.findIndex((r) => r === t || t.startsWith(r) || r.startsWith(t) || words.some((x) => r.includes(x.replace(/e?s$/, ""))));
+  };
+  const groups = new Map<number, number[]>();
+  parsed.assessments.forEach((a, i) => {
+    if (a.dueDate !== null || a.kind === "exam" || anchored(a)) return;
+    const r = rowFor(a.title);
+    if (r < 0) return;
+    groups.set(r, [...(groups.get(r) ?? []), i]);
+  });
+  const drop = new Set<number>();
+  const assessments = parsed.assessments.map((a) => ({ ...a }));
+  const warnings = [...parsed.warnings];
+  for (const [r, indices] of groups) {
+    if (indices.length < 2) continue;
+    const first = assessments[indices[0]];
+    const title = parsed.course.gradeWeights[r].category.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+    const merged = indices.map((i) => assessments[i].title);
+    first.title = title;
+    first.weightPercent = null;
+    first.notes = [...new Set(indices.map((i) => assessments[i].notes).filter(Boolean))].join(" ") || first.notes;
+    for (const i of indices.slice(1)) drop.add(i);
+    warnings.push(`${merged.map((m) => `"${m}"`).join(" and ")} describe the same graded category with no dates, so they are shown as one entry, "${title}".`);
+  }
+  if (drop.size === 0) return parsed;
+  return { ...parsed, assessments: assessments.filter((_, i) => !drop.has(i)), warnings };
 }
 
 /**
