@@ -64,11 +64,144 @@ export async function parseSyllabus(
 ): Promise<ParsedSyllabus> {
   // Unreadable input is the one failure the user can act on, so it stays fatal.
   const text = await extractText(buf, filename);
-  const parsed = collapseInventedSeries(await parseFromText(text, opts));
+  const parsed = capWhenTentative(
+    reconcileNoClass(
+      dropMeetingsWithUnstatedTimes(
+        warnWhenWeeksHaveNoAnchor(collapseInventedSeries(await parseFromText(text, opts))),
+        text,
+      ),
+    ),
+    text,
+  );
   // Decided from the document, once, for every extraction path -- see the
   // field's own comment for why the grading rows cannot be trusted with this.
-  const rankBasedExamWeights = RANK_BASED_EXAMS.test(text);
+  const rankBasedExamWeights = isRankBasedExamWeighting(text);
   return { ...relabelRankRows(parsed, rankBasedExamWeights), rankBasedExamWeights };
+}
+
+/**
+ * Rank-based exam weighting, judged one sentence at a time: the sentence must
+ * name an exam, test or midterm AND a rank word, and must not be a drop policy.
+ * "Your lowest quiz grade is dropped" has "lowest" and "grade" and says nothing
+ * about how exams are weighted; a document-wide regex fired on it.
+ */
+export function isRankBasedExamWeighting(text: string): boolean {
+  // Two consecutive sentences, because the exam and the rank are routinely a
+  // sentence apart: "...four exams that determine 100% of the grade. The
+  // highest score will receive 45%." Judged one sentence at a time, that real
+  // syllabus stopped being detected -- the unit test caught it before it
+  // shipped. The drop-policy exclusion applies to the same window.
+  const sentences = text.split(/(?<=[.!?\n])\s+/);
+  return sentences.some((sentence, i) => {
+    const window = `${sentences[i - 1] ?? ""} ${sentence}`;
+    return (
+      /\b(?:exams?|tests?|midterms?)\b/i.test(window) &&
+      /\b(?:highest|lowest|second[\s-]?highest|third[\s-]?highest)\b/i.test(sentence) &&
+      !/\bdrop/i.test(window)
+    );
+  });
+}
+
+/**
+ * Every time the document states, as HH:MM, in both the 12-hour and 24-hour
+ * reading of any bare number so a real "3:25 - 4:50 p.m." can never be
+ * rejected. Only a time whose digits appear nowhere at all is caught -- which
+ * is exactly the fabricated one, since an invented time has no source.
+ */
+function statedTimes(text: string): Set<string> {
+  const out = new Set<string>();
+  const re = /\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?/gi;
+  for (const m of text.matchAll(re)) {
+    const h = Number(m[1]);
+    const mm = m[2] ?? "00";
+    if (h > 23 || Number(mm) > 59) continue;
+    const pm = m[3] ? /p/i.test(m[3]) : null;
+    const add = (hour: number) => out.add(`${String(hour).padStart(2, "0")}:${mm}`);
+    if (pm === true) add(h === 12 ? 12 : h + 12);
+    else if (pm === false) add(h === 12 ? 0 : h);
+    else {
+      add(h);
+      if (h < 12) add(h + 12);
+    }
+  }
+  return out;
+}
+
+/**
+ * A meeting whose start or end time the document never states is dropped.
+ *
+ * The schema requires a time on every meeting, so a class the document gives
+ * days for but no time can only be invented or omitted, and the model invented:
+ * a Tuesday/Friday lecture at 10:00-11:15, the 10:00 lifted from the office
+ * hours line and the 75 minutes from nowhere, became twenty-six calendar events
+ * colliding with the real office hours on the same days. Omission is the honest
+ * answer, said out loud, with what to do about it.
+ */
+export function dropMeetingsWithUnstatedTimes(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+  const stated = statedTimes(text);
+  const keep: typeof parsed.course.meetingTimes = [];
+  const warnings = [...parsed.warnings];
+  const DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  for (const m of parsed.course.meetingTimes) {
+    if (stated.has(m.startTime) && stated.has(m.endTime)) {
+      keep.push(m);
+      continue;
+    }
+    const days = m.daysOfWeek.map((d) => DAY[d] ?? "?").join("/");
+    warnings.push(
+      `A ${m.kind.replace("_", " ")} on ${days} was left off: the syllabus names the days but not a time this app could find in it (${m.startTime}-${m.endTime} appears nowhere in the document). Add the meeting time on the course card.`,
+    );
+  }
+  if (keep.length === parsed.course.meetingTimes.length) return parsed;
+  return { ...parsed, course: { ...parsed.course, meetingTimes: keep }, warnings };
+}
+
+/**
+ * Two things a no-class period must never do: run past the end of the term,
+ * and cover the day of a dated exam. One parse asserted "Final Exam Dec 14"
+ * and "no class Dec 14" together, with the period ending a day after endDate.
+ * A period that starts on an exam's day starts the day after instead; one
+ * that ends on it ends the day before; one left with nothing in it goes.
+ */
+export function reconcileNoClass(parsed: ParsedSyllabus): ParsedSyllabus {
+  const examDays = new Set(parsed.assessments.filter((a) => a.kind === "exam" && a.dueDate).map((a) => a.dueDate as string));
+  const endDate = parsed.course.endDate;
+  const shift = (iso: string, days: number) => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+  let changed = false;
+  const noClass = [];
+  for (const period of parsed.course.noClass ?? []) {
+    let { start, end } = period;
+    if (endDate && end > endDate) { end = endDate; changed = true; }
+    while (start <= end && examDays.has(start)) { start = shift(start, 1); changed = true; }
+    while (end >= start && examDays.has(end)) { end = shift(end, -1); changed = true; }
+    if (start > end) { changed = true; continue; }
+    noClass.push({ ...period, start, end });
+  }
+  return changed ? { ...parsed, course: { ...parsed.course, noClass } } : parsed;
+}
+
+/**
+ * A document that calls its own schedule tentative has told the student its
+ * dates may move. A 0.95 next to each of them says the opposite. Capped at
+ * 0.8 -- still above the review threshold, so nothing is flagged that the
+ * document itself did not flag -- with one warning that repeats the document.
+ */
+export function capWhenTentative(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+  if (!/\btentative\b/i.test(text)) return parsed;
+  const dated = parsed.assessments.filter((a) => a.dueDate && a.confidence > 0.8);
+  if (dated.length === 0) return parsed;
+  return {
+    ...parsed,
+    assessments: parsed.assessments.map((a) => (a.dueDate && a.confidence > 0.8 ? { ...a, confidence: 0.8 } : a)),
+    warnings: [
+      ...parsed.warnings,
+      "The syllabus calls its schedule tentative, so these dates may move. Check announcements before relying on any of them.",
+    ],
+  };
 }
 
 /**
@@ -125,11 +258,26 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
   const groups = new Map<string, number[]>();
   parsed.assessments.forEach((a, i) => {
     if (a.dueDate !== null) return;
+    // An exam is a specific thing by convention -- "Exam 1" and "Exam 2" are two
+    // sittings whether or not the document dates them. This once merged a
+    // course's two midterms into one item called "Exam # 1 and 2".
+    if (a.kind === "exam") return;
     const stem = stemOf(a.title);
     if (!stem || stem === a.title.trim()) return;
     const key = `${a.kind}|${stem.toLowerCase()}`;
     groups.set(key, [...(groups.get(key) ?? []), i]);
   });
+
+  // The whole judgement: numbered items are an invention only when nothing but
+  // the number tells them apart. Six homework sets with six different "End of
+  // Week N" lines are six real deadlines that merely lack a term anchor, and
+  // folding them into one destroyed five. Distinct evidence is distinct items.
+  const indistinguishable = (indices: number[]) => {
+    const norm = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    const src = new Set(indices.map((i) => norm(parsed.assessments[i].sourceText)));
+    const notes = new Set(indices.map((i) => norm(parsed.assessments[i].notes)));
+    return src.size <= 1 && notes.size <= 1;
+  };
 
   const drop = new Set<number>();
   const warnings = [...parsed.warnings];
@@ -138,6 +286,7 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
   let changed = false;
   for (const indices of groups.values()) {
     const first = assessments[indices[0]];
+    if (indices.length >= 2 && !indistinguishable(indices)) continue;
     if (indices.length < 2) {
       // One undated "Quiz 1" is the same invention at n=1, but only when the
       // grading table names the series ("Quizzes") and nothing dated shares
@@ -145,14 +294,8 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
       // Exams are exempt: "Exam 1 (TBD)" is a specific exam by convention.
       const stem = stemOf(first.title);
       const siblings = parsed.assessments.some((a) => a !== parsed.assessments[indices[0]] && stemOf(a.title).toLowerCase() === stem.toLowerCase());
-      const row = first.kind !== "exam" && !siblings
-        ? parsed.course.gradeWeights.find((w) => {
-            const c = w.category.toLowerCase().replace(/\([^)]*\)/g, "").trim();
-            return c.startsWith(stem.toLowerCase()) && c !== stem.toLowerCase() && !/\d\s*$/.test(c);
-          })
-        : undefined;
-      if (!row) continue;
-      const title = row.category.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+      const title = !siblings ? seriesRowTitle(stem, parsed.course.gradeWeights) : null;
+      if (!title) continue;
       warnings.push(`"${first.title}" has no date and the syllabus lists no individual ${stem.toLowerCase()}s, so it is shown as the category "${title}".`);
       first.title = title;
       first.weightPercent = null;
@@ -160,13 +303,7 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
       continue;
     }
     const stem = stemOf(first.title);
-    // Name it the way the grading table does when a row plainly names this
-    // series ("Quizzes" for "Quiz", "Problem Sets" for "Problem Set"); else a
-    // plain plural, which is still a category and no longer a count.
-    const row = parsed.course.gradeWeights.find((w) =>
-      w.category.toLowerCase().replace(/\([^)]*\)/g, "").trim().startsWith(stem.toLowerCase()),
-    );
-    const title = row ? row.category.replace(/\s*\([^)]*\)\s*/g, " ").trim() : /(s|x|z|ch|sh)$/i.test(stem) ? `${stem}es` : `${stem}s`;
+    const title = seriesTitle(stem, parsed.course.gradeWeights);
     first.title = title;
     // The join assigns the category's weight to the one item that stands for it.
     first.weightPercent = null;
@@ -174,21 +311,63 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
     for (const i of indices.slice(1)) drop.add(i);
     changed = true;
     warnings.push(
-      `${indices.length} undated "${stem}" items were listed but the syllabus gives no dates and no count, so they are shown as one entry, "${title}", until the dates are known.`,
+      `${indices.length} undated "${stem}" items were listed with no dates and nothing to tell them apart, so they are shown as one entry, "${title}", until the dates are known.`,
     );
   }
   if (!changed) return parsed;
   return { ...parsed, assessments: assessments.filter((_, i) => !drop.has(i)), warnings };
 }
 
+/** "HW" is "Homework"; "PS" is "Problem Set". The grading table rarely abbreviates. */
+const STEM_SYNONYMS: Record<string, string> = { hw: "homework", hws: "homework", ps: "problem set", psets: "problem set", pset: "problem set" };
+
 /**
- * "Exam with the highest grade", "the highest score will receive 45%", "your
- * lowest exam is dropped": exam weight assigned by rank rather than by exam.
- * Either order, within one sentence, so "the highest grade in last year's
- * class" three paragraphs from any exam does not trip it.
+ * The grading row that names this series, or null. A row counts when its name
+ * begins with the stem (or the stem's expansion), is longer than it, and does
+ * not itself end in a number -- and is not a flattened table cell masquerading
+ * as a name: "Exam # 1 and 2" is two exams read as one cell, and was once used
+ * as the title of a merged item. A label containing a digit is not a category.
  */
-const RANK_BASED_EXAMS =
-  /\b(?:exams?|tests?|midterms?)\b[^.\n]{0,80}\b(?:highest|lowest)\b|\b(?:highest|lowest)\b[^.\n]{0,80}\b(?:exams?|tests?|scores?|grades?)\b/i;
+function seriesRowTitle(stem: string, gradeWeights: { category: string }[]): string | null {
+  const wants = [stem.toLowerCase(), STEM_SYNONYMS[stem.toLowerCase()] ?? ""].filter(Boolean);
+  const row = gradeWeights.find((w) => {
+    const c = w.category.toLowerCase().replace(/\([^)]*\)/g, "").trim();
+    return wants.some((x) => c.startsWith(x) && c !== x) && !/\d/.test(c);
+  });
+  return row ? row.category.replace(/\s*\([^)]*\)\s*/g, " ").trim() : null;
+}
+
+/** The row's name when there is one; else a plain plural of the expanded stem. */
+function seriesTitle(stem: string, gradeWeights: { category: string }[]): string {
+  const fromRow = seriesRowTitle(stem, gradeWeights);
+  if (fromRow) return fromRow;
+  const expanded = STEM_SYNONYMS[stem.toLowerCase()];
+  const base = expanded ? expanded.replace(/^./, (c) => c.toUpperCase()) : stem;
+  return /(s|x|z|ch|sh)$/i.test(base) ? `${base}es` : `${base}s`;
+}
+
+/**
+ * A syllabus that places its work by week number and never says when Week 1
+ * begins produces a calendar with nothing on it. Without this the student sees
+ * an empty term and a set of item-level notes and has no way to know the app
+ * is not broken. One sentence at the course level says what is missing and
+ * what to do about it.
+ */
+export function warnWhenWeeksHaveNoAnchor(parsed: ParsedSyllabus): ParsedSyllabus {
+  if (parsed.course.startDate) return parsed;
+  const weekly = parsed.assessments.filter(
+    (a) => a.dueDate === null && /\bweek\s*\d{1,2}\b/i.test(`${a.sourceText ?? ""} ${a.notes ?? ""}`),
+  );
+  if (weekly.length === 0) return parsed;
+  return {
+    ...parsed,
+    warnings: [
+      ...parsed.warnings,
+      `${weekly.length} item${weekly.length === 1 ? "" : "s"} are placed by week number ("Week 8") but the syllabus never says when Week 1 begins, so they have no dates. Get the term start date from your instructor or course calendar and add the dates from there.`,
+    ],
+  };
+}
+
 
 async function parseFromText(text: string, opts: ParseOptions): Promise<ParsedSyllabus> {
 

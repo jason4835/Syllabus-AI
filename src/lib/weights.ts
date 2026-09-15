@@ -142,13 +142,18 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
   // write one -- so it is where that has to be guaranteed, not merely asked for.
   const rowsSayRank = gradeWeights.some((w) => RANK_BASED_ROW.test(w.category));
   const rankBased = opts.rankBasedExams === true || rowsSayRank;
+  // "Three tests, the highest counts most" beside "Final Exam 15%": the rank
+  // rule governs the tests, and the final keeps the number written for it. An
+  // exam whose own title is a non-rank grading row is outside the rank scheme.
+  const ownRow = (a: { title: string }) =>
+    gradeWeights.some((w) => !RANK_BASED_ROW.test(w.category) && normalize(w.category) === normalize(a.title));
   if (rankBased && warnings && assessments.some((a) => a.kind === "exam")) {
     // When the rows are worded by rank they are the reference. When the
     // document says rank but the rows came back as "Exam 1 5%", the rows are
     // the thing to distrust, and the warning must not send the student to them.
     const message = rowsSayRank
-      ? "Exams are weighted by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank; the grading table shows how they will be assigned."
-      : "This syllabus weights exams by rank (the highest score counts most), so no exam has a fixed percentage until grades exist. Per-exam weights were left blank. The grading table's exam rows are by rank of score, not by exam number -- check the syllabus for the exact rule.";
+      ? "Some exams are weighted by rank (the highest score counts most), so those have no fixed percentage until grades exist and were left blank; an exam with its own row in the grading table keeps its stated weight."
+      : "This syllabus weights some exams by rank (the highest score counts most), so those have no fixed percentage until grades exist and were left blank; an exam with its own row in the grading table keeps its stated weight. Rank-weighted rows are by rank of score, not by exam number -- check the syllabus for the exact rule.";
     if (!warnings.includes(message)) warnings.push(message);
   }
   if (gradeWeights.length === 0 && !rankBased) return assessments;
@@ -159,7 +164,7 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
   assessments.forEach((a, index) => {
     // An extractor that already found a per-item weight knows better than we do.
     if (a.weightPercent !== null) return;
-    if (rankBased && a.kind === "exam") return;
+    if (rankBased && a.kind === "exam" && !ownRow(a)) return;
 
     let bestScore = 0;
     let bestCategory = -1;
@@ -180,7 +185,7 @@ export function applyGradeWeights<T extends { title: string; kind: Assessment["k
 
   const out = assessments.map((a) =>
     // Whatever the extractor put there: a rank-weighted exam has no number.
-    rankBased && a.kind === "exam" ? { ...a, weightPercent: null } : { ...a },
+    rankBased && a.kind === "exam" && !ownRow(a) ? { ...a, weightPercent: null } : { ...a },
   );
   for (const [categoryIndex, indices] of claimed) {
     const category = gradeWeights[categoryIndex];

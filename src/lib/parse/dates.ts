@@ -630,18 +630,22 @@ export function parseDaysOfWeek(raw: string): number[] {
   ];
   // "H" belongs in the class even though it is never a day on its own -- without
   // it "TTh" tokenizes as "TT" and Thursday silently disappears.
-  const token = (raw.toUpperCase().match(/[MTWRFSUH]{1,10}/g) ?? []).sort((a, b) => b.length - a.length)[0];
-  if (!token) return [];
-
-  let i = 0;
-  while (i < token.length) {
-    const hit = compact.find(([code]) => token.startsWith(code, i));
-    if (!hit) {
-      i += 1;
-      continue;
+  //
+  // Every run, not only the longest: "M/R" is two one-letter runs, and keeping
+  // the longest of them read a Monday/Thursday class as Monday alone. The
+  // model's own numbers then filled the gap -- with Sunday and Wednesday.
+  const runs = raw.toUpperCase().match(/[MTWRFSUH]{1,10}/g) ?? [];
+  for (const token of runs) {
+    let i = 0;
+    while (i < token.length) {
+      const hit = compact.find(([code]) => token.startsWith(code, i));
+      if (!hit) {
+        i += 1;
+        continue;
+      }
+      days.add(hit[1]);
+      i += hit[0].length;
     }
-    days.add(hit[1]);
-    i += hit[0].length;
   }
   return [...days].sort((a, b) => a - b);
 }

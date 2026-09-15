@@ -16,7 +16,7 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
 import type { MeetingKind, MeetingTime, NoClassPeriod, ParsedSyllabus } from "../types";
-import { addDays, normalizeDate, parseTime, termWindowFromLabel, type DateContext } from "./dates";
+import { addDays, normalizeDate, parseDaysOfWeek, parseTime, termWindowFromLabel, type DateContext } from "./dates";
 import { pluralize } from "@/components/format";
 import { mergeNoClassPeriods } from "./fallback";
 
@@ -111,6 +111,14 @@ const MeetingTimeSchema = z.object({
    * Null on a single-section syllabus and on office hours.
    */
   section: z.string().nullable(),
+  /**
+   * The day abbreviation exactly as the syllabus writes it -- "M/R", "Mon, Thu",
+   * "TTh". The numbers in `daysOfWeek` are derived from this by our own parser,
+   * because the model indexed Monday as 0 on three meetings out of three across
+   * two real syllabi, and a Monday/Thursday class silently landed on Sunday and
+   * Wednesday. Copying a string is something it does reliably; counting is not.
+   */
+  daysText: z.string().nullable(),
   /** Who runs this meeting, when stated -- office hours especially. */
   instructor: z.string().nullable(),
   daysOfWeek: z.array(z.number()),
@@ -173,7 +181,7 @@ RULES
 2. DATES. dueDate must be ISO YYYY-MM-DD or null.
    - Resolve relative references ("Week 3", "the Friday before spring break", "the last day of class") against the term start and end dates whenever the syllabus gives you enough to do so, and say how you resolved it in notes.
    - If the syllabus omits the year, infer it from the term so the date lands INSIDE the term. A "Jan 20" in a Fall 2026 term is January 2027, not January 2026.
-   - If you cannot resolve a date honestly, set dueDate to null, explain why in notes, and add a warning naming the item. NEVER guess a date. A null date is recoverable; a wrong date is not.
+   - If you cannot resolve a date honestly, set dueDate to null, explain why in notes, and add a warning naming the item. NEVER guess a date. A null date is recoverable; a wrong date is not. When dueDate is null the notes must say what is MISSING ("stated as 'End of Week 4'; the syllabus never says when Week 1 begins") and must never use the word "resolved" -- five items once read "Due date resolved from 'Week 5'" with no date at all. An APPROXIMATE anchor ("approximately during the week of Oct. 5", "sometime in November") is still information: dueDate stays null, and notes carry the anchor verbatim so the student keeps it.
    - dueTime is 24-hour HH:MM, or null when no time is stated. "11:59 pm" is "23:59".
    - When an item gives a time range, \`dueTime\` is the START and \`endTime\` the END, both 24h HH:MM. Exams and quizzes usually do.
 
@@ -188,6 +196,8 @@ RULES
 6. CONFIDENCE is your honest 0..1 belief that the item's title, kind and date are all correct. Use the full range. An item read straight from an explicit deadline table with a four-digit year is ~0.95. An item whose date you resolved from "Week 7" is ~0.6. An item you are unsure is even graded is ~0.35. Do not default everything to 0.9.
 
 7. MEETING TIMES are every recurring meeting the syllabus states. daysOfWeek uses 0 = Sunday through 6 = Saturday; startTime and endTime are 24-hour HH:MM.
+   - NO TIME, NO MEETING. If the document names the days a class meets but never states its time, do NOT emit that meeting -- add a warning saying the time is missing. Never borrow a time from office hours or another meeting, and never invent a duration. A fabricated 10:00 class once collided with the real 10:00 office hours on the same days.
+   - DAYS AS WRITTEN. Put the day abbreviation into daysText EXACTLY as the document writes it ("M/R", "Mon, Thu", "TTh", "MWF", "Tuesdays and Thursdays"). daysOfWeek is computed from daysText by the application; fill it in as well, but daysText is what is trusted. Never leave daysText null when the document names days.
    - KIND. Every meeting gets one: "lecture" for a lecture, a class, a "Meets ..." line, or a bare "MWF 10:00-10:50" line; "recitation" for a recitation, discussion, section meeting, problem session or tutorial; "lab" for a lab or laboratory; "office_hours" for office hours, "OH", or student hours; "other" for anything recurring that fits none of these. Getting this wrong is not cosmetic: it decides the event's title and whether the student's preferences put it on the calendar at all, and "MATH 221 class" at the professor's door is a wrong fact.
    - OFFICE HOURS ARE MEETING TIMES. Extract them explicitly, with kind "office_hours", instructor set to whose hours they are, location set to where they are held, and section null. If the syllabus lists hours for several people -- the instructor and one or more TAs -- emit ONE entry per person per pattern. "and by appointment" is not a meeting; do not emit anything for it.
    - SECTIONS. A syllabus that lists several sections lists them ALL; the student attends ONE. Emit each with its own \`section\` label; do not guess which is theirs. When the document has a section table or repeated lines like "Section A / Sec. 01 / LEC 1 / 001 ... days times room [instructor]", emit one meeting per section per pattern, with \`section\` set to the label EXACTLY as the syllabus writes it and \`instructor\` set when that row names one. Never collapse several sections into one entry, never pick one, and never merge their days or rooms. A syllabus with a single section leaves \`section\` null.
@@ -356,9 +366,15 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
   const seenMeeting = new Set<string>();
   const meetingTimes: MeetingTime[] = [];
   for (const m of raw.course.meetingTimes ?? []) {
-    const daysOfWeek = [
-      ...new Set((m.daysOfWeek ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)),
-    ].sort((a, b) => a - b);
+    // The verbatim day string wins whenever it parses. The model's own numbers
+    // are the fallback only, for the same reason `daysText` exists at all.
+    const fromText = m.daysText ? parseDaysOfWeek(m.daysText) : [];
+    const daysOfWeek =
+      fromText.length > 0
+        ? fromText
+        : [
+            ...new Set((m.daysOfWeek ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)),
+          ].sort((a, b) => a - b);
     const startTime = parseTime(m.startTime) ?? "";
     const endTime = parseTime(m.endTime) ?? "";
     if (daysOfWeek.length === 0 || startTime === "" || endTime === "") continue;
