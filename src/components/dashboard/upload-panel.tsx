@@ -27,6 +27,8 @@ const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
  */
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+/** The legacy binary Word format, still what a department's shared drive holds. */
+const DOC_MIME = "application/msword";
 
 export interface UploadResult {
   courseId: string;
@@ -187,22 +189,6 @@ export function UploadPanel({
   const send = useCallback(
     async (file: File, fields?: Record<string, string>) => {
       /**
-       * A legacy `.doc` is checked first and named, because it is the single
-       * most likely rejection now that Word documents are accepted: the student
-       * has the right kind of file in the right program and one Save As away
-       * from an upload that works. Falling through to "not a Word document"
-       * would be true and useless. The wording matches the server's 415 and the
-       * parser's own .doc message, since all three answer the same file.
-       */
-      if (/\.doc$/i.test(file.name) || file.type === "application/msword") {
-        setPhase({
-          kind: "error",
-          error: "That is an older Word .doc, not a .docx",
-          detail: `Open “${file.name}” in Word, use Save As to make a .docx or a PDF, and upload that.`,
-        });
-        return;
-      }
-      /**
        * PDF, Word or plain text. Three layers used to disagree about the last
        * one: the server accepted `.txt`, this check refused it, the description
        * said "PDF only", and the file dialog would not offer it -- while the
@@ -216,14 +202,15 @@ export function UploadPanel({
        * the server, which is the only place that can.
        */
       if (
-        !/\.(pdf|docx|txt)$/i.test(file.name) &&
+        !/\.(pdf|docx?|txt)$/i.test(file.name) &&
         file.type !== "application/pdf" &&
-        file.type !== DOCX_MIME
+        file.type !== DOCX_MIME &&
+        file.type !== DOC_MIME
       ) {
         setPhase({
           kind: "error",
-          error: "That file is not a PDF, a Word .docx or a text file",
-          detail: `“${file.name}” could not be read. Export your syllabus as a PDF or a .docx, or paste its text into a .txt file, and try again.`,
+          error: "That file is not a PDF, a Word document or a text file",
+          detail: `“${file.name}” could not be read. Export your syllabus as a PDF or a Word document, or paste its text into a .txt file, and try again.`,
         });
         return;
       }
@@ -316,7 +303,7 @@ export function UploadPanel({
       description={
         demoMode
           ? "Demo mode parses your file with the built-in fixture extractor."
-          : "PDF, Word .docx or .txt. One course per file."
+          : "PDF, Word (.docx or .doc) or .txt. One course per file."
       }
       action={
         busy ? (
@@ -423,7 +410,7 @@ export function UploadPanel({
                     /* Extensions as well as MIME types: a .docx dragged out of
                        Downloads sometimes carries no type at all, and a filter
                        built only from types greys it out in the dialog. */
-                    accept={`application/pdf,.pdf,${DOCX_MIME},.docx,text/plain,.txt`}
+                    accept={`application/pdf,.pdf,${DOCX_MIME},.docx,${DOC_MIME},.doc,text/plain,.txt`}
                     className="sr-only"
                     onChange={(event) => {
                       const file = event.target.files?.[0];

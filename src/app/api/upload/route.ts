@@ -78,16 +78,11 @@ export async function POST(req: Request) {
    * lie about itself. This is the cheap gate that keeps an obvious .jpg or .zip
    * from reaching it.
    *
-   * The legacy `.doc` sentence is here rather than left to the parser because a
-   * `.doc` cannot get that far -- it fails this test by extension -- and "upload
-   * a .docx" is useless advice to someone looking at a Word file that is not
-   * one. The parser says the same thing for a `.doc` renamed to `.docx`.
+   * Both Word formats pass: the parser reads a legacy `.doc` as well as a
+   * `.docx`, and tells the two apart by their bytes, not their names.
    */
-  if (!/\.(pdf|docx|txt)$/i.test(name)) {
-    return fail(
-      "Upload a PDF, a Word .docx, or a .txt syllabus. An older .doc has to be saved as a .docx or a PDF first.",
-      415,
-    );
+  if (!/\.(pdf|docx?|txt)$/i.test(name)) {
+    return fail("Upload a PDF, a Word document (.docx or .doc), or a .txt syllabus.", 415);
   }
 
   try {

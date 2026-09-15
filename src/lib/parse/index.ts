@@ -16,7 +16,8 @@
  */
 
 import type { MeetingTime, ParsedSyllabus } from "../types";
-import { UNKNOWN_TIME, meetingNeedsTime } from "../setup";
+import { UNKNOWN_TIME, meetingNeedsTime, weeklyRuleOf } from "../setup";
+import { addDays, findDateSpans, isoDayOfWeek, normalizeDate } from "./dates";
 import { extractWithAi, isConfigured } from "./extract";
 import { fallbackParse } from "./fallback";
 import { extractText } from "./pdf";
@@ -67,8 +68,16 @@ export async function parseSyllabus(
   const text = await extractText(buf, filename);
   const parsed = capWhenTentative(
     reconcileNoClass(
-      blankUnstatedMeetingTimes(
-        warnWhenWeeksHaveNoAnchor(mergePlaceholdersPerRow(collapseInventedSeries(await parseFromText(text, opts)))),
+      inferMeetingDaysFromSchedule(
+        dropAsynchronousDays(
+          blankUnstatedMeetingTimes(
+            warnWhenWeeksHaveNoAnchor(
+              mergePlaceholdersPerRow(collapseInventedSeries(unnumberWeeklyRules(await parseFromText(text, opts)))),
+            ),
+            text,
+          ),
+          text,
+        ),
         text,
       ),
     ),
@@ -315,10 +324,17 @@ export function mergePlaceholdersPerRow(parsed: ParsedSyllabus): ParsedSyllabus 
     );
   const norm = (v: string) => v.toLowerCase().replace(/\([^)]*\)/g, " ").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   const rows = parsed.course.gradeWeights.map((w) => norm(w.category));
+  // An exact or prefix match first; a shared word only when exactly one row
+  // shares it. "Mastering A&P Homework" and "Mastering A & P Quizzes" both
+  // contain "mastering", and taking the first row that did once folded two
+  // graded categories, 10% and 5%, into one entry.
   const rowFor = (title: string): number => {
     const t = norm(title);
+    const exact = rows.findIndex((r) => r === t || t.startsWith(r) || r.startsWith(t));
+    if (exact >= 0) return exact;
     const words = t.split(" ").filter((x) => x.length >= 4);
-    return rows.findIndex((r) => r === t || t.startsWith(r) || r.startsWith(t) || words.some((x) => r.includes(x.replace(/e?s$/, ""))));
+    const byWord = rows.map((r, i) => (words.some((x) => r.includes(x.replace(/e?s$/, ""))) ? i : -1)).filter((i) => i >= 0);
+    return byWord.length === 1 ? byWord[0] : -1;
   };
   const groups = new Map<number, number[]>();
   parsed.assessments.forEach((a, i) => {
@@ -365,6 +381,10 @@ export function reconcileNoClass(parsed: ParsedSyllabus): ParsedSyllabus {
   for (const period of parsed.course.noClass ?? []) {
     let { start, end } = period;
     if (endDate && end > endDate) { end = endDate; changed = true; }
+    // "After last day of classes", starting on the last day of classes: a
+    // break that begins on or after the term's end removes nothing from the
+    // calendar and reads as a mistake on the review screen.
+    if (endDate && start >= endDate) { changed = true; continue; }
     while (start <= end && examDays.has(start)) { start = shift(start, 1); changed = true; }
     while (end >= start && examDays.has(end)) { end = shift(end, -1); changed = true; }
     if (start > end) { changed = true; continue; }
@@ -501,7 +521,7 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
       const siblings = parsed.assessments.some((a) => a !== parsed.assessments[indices[0]] && stemOf(a.title).toLowerCase() === stem.toLowerCase());
       const title = !siblings ? seriesRowTitle(stem, parsed.course.gradeWeights) : null;
       if (!title) continue;
-      warnings.push(`"${first.title}" has no date and the syllabus lists no individual ${stem.toLowerCase()}s, so it is shown as the category "${title}".`);
+      warnings.push(`"${first.title}" has no date and the syllabus lists no individual ${plural(stem.toLowerCase())}, so it is shown as the category "${title}".`);
       first.title = title;
       first.weightPercent = null;
       changed = true;
@@ -521,6 +541,180 @@ export function collapseInventedSeries(parsed: ParsedSyllabus): ParsedSyllabus {
   }
   if (!changed) return parsed;
   return { ...parsed, assessments: assessments.filter((_, i) => !drop.has(i)), warnings };
+}
+
+/** "quiz" -> "quizzes", "essay" -> "essays", "lab" -> "labs"; the warning that once said "quizs". */
+function plural(word: string): string {
+  if (/(?:s|x|z|ch|sh)$/i.test(word)) return word.endsWith("z") ? `${word}zes` : `${word}es`;
+  if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
+  return `${word}s`;
+}
+
+/**
+ * A weekly rule is one item, and the model is told so; it still sometimes
+ * emits the first of the series it was told not to expand -- "Online
+ * Discussion Boards Week 1" for boards due every Saturday. The "1" is not a
+ * fact about the document. A lone undated item whose own text states a
+ * weekly rule loses a trailing "1" / "Week 1" / "#1"; the app's weekly-day
+ * question then stands for the whole series once the term has dates.
+ *
+ * Numbers that are part of a name stay: "Chapter 1", "Unit 1", "Module 1".
+ */
+export function unnumberWeeklyRules(parsed: ParsedSyllabus): ParsedSyllabus {
+  const suffix = /\s*[-–:,]?\s*(?:\(\s*week\s*1\s*\)|week\s*1|#\s*1|no\.?\s*1|1)\s*$/i;
+  const named = /\b(?:chapter|ch|unit|module|part|section|sec|phase|stage|level|tier|round)\.?$/i;
+  let changed = false;
+  const assessments = parsed.assessments.map((a) => {
+    if (a.dueDate !== null || a.kind === "exam" || !suffix.test(a.title) || !weeklyRuleOf(a)) return a;
+    const title = a.title.replace(suffix, "").trim();
+    if (!title || named.test(title)) return a;
+    const siblings = parsed.assessments.some((b) => b !== a && b.title.trim().toLowerCase().startsWith(title.toLowerCase()));
+    if (siblings) return a;
+    changed = true;
+    return { ...a, title };
+  });
+  return changed ? { ...parsed, assessments } : parsed;
+}
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** "Tuesday and Friday", "Monday, Wednesday and Friday". */
+function dayList(days: number[]): string {
+  const names = days.map((d) => DAY_NAMES[d] ?? "?");
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * "Mondays (asynchronous online) and Thursdays 12:15 to 1:40 (in person)": the
+ * Monday half is not a meeting anyone attends, so there is no time to ask the
+ * student for. A blank-time class day that the document itself calls
+ * asynchronous, in the same breath, is taken off the meeting; a meeting left
+ * with no days goes. Stated times are never touched -- the Thursday half
+ * shares the sentence and is real.
+ */
+export function dropAsynchronousDays(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+  const asynchronous = new Set<number>();
+  const flat = text.replace(/\s+/g, " ");
+  DAY_NAMES.forEach((name, d) => {
+    // No leading word boundary: a heading and the next paragraph can run
+    // together in a converted document ("...and PowerMondays (asynchronous").
+    // The window is tight on purpose -- "asynchronous online) and Thursdays"
+    // must not reach Thursday, which is the in-person half of the same line.
+    const after = new RegExp(`${name}s?\\b\\s*[(,:–-]?\\s*(?:\\w+\\s+){0,2}asynch?ronous`, "i");
+    const before = new RegExp(`\\basynch?ronous(?:\\s+\\w+){0,2}\\s+\\(?${name}s?\\b`, "i");
+    if (after.test(flat) || before.test(flat)) asynchronous.add(d);
+  });
+  if (asynchronous.size === 0) return parsed;
+
+  let changed = false;
+  const warnings = [...parsed.warnings];
+  const meetingTimes: MeetingTime[] = [];
+  for (const m of parsed.course.meetingTimes) {
+    if (m.kind === "office_hours" || !meetingNeedsTime(m)) {
+      meetingTimes.push(m);
+      continue;
+    }
+    const removed = m.daysOfWeek.filter((d) => asynchronous.has(d));
+    if (removed.length === 0) {
+      meetingTimes.push(m);
+      continue;
+    }
+    changed = true;
+    const kept = m.daysOfWeek.filter((d) => !asynchronous.has(d));
+    warnings.push(
+      `${dayList(removed)} is asynchronous online, so it was not added as a class meeting -- there is no time to put on the calendar.`,
+    );
+    if (kept.length > 0) meetingTimes.push({ ...m, daysOfWeek: kept });
+  }
+  if (!changed) return parsed;
+  return { ...parsed, course: { ...parsed.course, meetingTimes }, warnings };
+}
+
+/** Fewer dated rows than this is a list of deadlines, not a schedule. */
+const MIN_SCHEDULE_DATES = 8;
+
+/**
+ * A syllabus that lists twenty-six dated class sessions and never once says
+ * what time the class meets has told the student the days: they are the days
+ * the sessions fall on. The model is asked to read them that way and does
+ * not always. With no class meeting at all, the student gets no sessions on
+ * the calendar and is asked nothing -- the one outcome the setup card exists
+ * to prevent.
+ *
+ * So, when the term has bounds and the parse holds no class meeting (office
+ * hours only, or nothing): every date in the document that falls inside the
+ * term is read, and the weekdays that carry the bulk of them are the class
+ * days -- if there are enough dates to be a schedule, the chosen days account
+ * for nearly all of them, and the listed dates cover most of the sessions
+ * those days would hold. The meeting is emitted with blank times, which is
+ * the setup card's cue to ask. A regular day the schedule skips, when the
+ * schedule is near-complete, is a day the class does not meet.
+ *
+ * A list of assignment deadlines fails the coverage test: eight Sunday
+ * deadlines over a fifteen-week term are half the Sundays, not a schedule.
+ */
+export function inferMeetingDaysFromSchedule(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+  const { startDate, endDate } = parsed.course;
+  if (!startDate || !endDate || startDate > endDate) return parsed;
+  if (parsed.course.meetingTimes.some((m) => m.kind !== "office_hours")) return parsed;
+
+  const ctx = { termStart: startDate, termEnd: endDate };
+  const dates = new Set<string>();
+  for (const span of findDateSpans(text)) {
+    const iso = normalizeDate(text.slice(span.start, span.end), ctx);
+    if (iso && iso >= startDate && iso <= endDate) dates.add(iso);
+  }
+  if (dates.size < MIN_SCHEDULE_DATES) return parsed;
+
+  const perDay = new Map<number, number>();
+  for (const iso of dates) {
+    const d = isoDayOfWeek(iso);
+    if (d !== null) perDay.set(d, (perDay.get(d) ?? 0) + 1);
+  }
+  const days = [...perDay.entries()].filter(([, n]) => n >= 4).map(([d]) => d).sort((a, b) => a - b);
+  if (days.length === 0 || days.length > 4) return parsed;
+  const covered = days.reduce((n, d) => n + (perDay.get(d) ?? 0), 0);
+  if (covered < dates.size * 0.85) return parsed;
+
+  const expected: string[] = [];
+  for (let d: string | null = startDate; d && d <= endDate; d = addDays(d, 1)) {
+    const wd = isoDayOfWeek(d);
+    if (wd !== null && days.includes(wd)) expected.push(d);
+  }
+  const listed = expected.filter((d) => dates.has(d));
+  if (expected.length === 0 || listed.length < expected.length * 0.6) return parsed;
+
+  const meeting: MeetingTime = {
+    kind: "lecture",
+    section: null,
+    instructor: null,
+    daysOfWeek: days,
+    startTime: UNKNOWN_TIME,
+    endTime: UNKNOWN_TIME,
+    location: null,
+  };
+  const warnings = [
+    ...parsed.warnings,
+    `Class days (${dayList(days)}) were read from the dated schedule. The syllabus never states a class time, so you'll be asked for it.`,
+  ];
+
+  let noClass = parsed.course.noClass ?? [];
+  if (listed.length >= expected.length * 0.8) {
+    const inBreak = (d: string) => noClass.some((p) => p.start <= d && d <= p.end);
+    const gaps = expected.filter((d) => !dates.has(d) && !inBreak(d));
+    if (gaps.length > 0 && gaps.length <= 6) {
+      noClass = [...noClass, ...gaps.map((d) => ({ start: d, end: d, reason: null }))];
+      warnings.push(
+        `${gaps.length === 1 ? "One regular class day is" : `${gaps.length} regular class days are`} missing from the dated schedule (${gaps.join(", ")}), so ${gaps.length === 1 ? "it was" : "they were"} marked as no class.`,
+      );
+    }
+  }
+  return {
+    ...parsed,
+    course: { ...parsed.course, meetingTimes: [...parsed.course.meetingTimes, meeting], noClass },
+    warnings,
+  };
 }
 
 /** "HW" is "Homework"; "PS" is "Problem Set". The grading table rarely abbreviates. */

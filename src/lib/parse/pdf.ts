@@ -13,6 +13,7 @@
  */
 
 import { convertToHtml } from "mammoth";
+import WordExtractor from "word-extractor";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 /** The slice of pdf-parse's result we actually consume. */
@@ -307,12 +308,46 @@ function flattenHtml(html: string): string {
  *
  * @throws Error with a message written for the end user.
  */
-async function extractDocx(buf: Buffer): Promise<string> {
-  if (hasLegacyDocHeader(buf)) {
+/**
+ * A legacy Word .doc (the binary format Word used until 2007) is not rare on a
+ * department's shared drive: one of six syllabi in a real sample was one. It
+ * is read here rather than bounced with "save it as .docx first", which is a
+ * lost upload from a student who does not own Word. Tables come through with
+ * cells tab-separated, which the same `tidy` handles.
+ */
+async function extractDoc(buf: Buffer): Promise<string> {
+  if (!hasLegacyDocHeader(buf)) {
     throw new Error(
-      "That is an older Word .doc, not a .docx. Open it in Word, use Save As to make a .docx or a PDF, and upload that.",
+      "That file doesn't look like a Word document. Upload the .doc or .docx Word itself saves, or paste the syllabus into a .txt file and upload that.",
     );
   }
+  let raw: string;
+  try {
+    const doc = await new WordExtractor().extract(buf);
+    raw = [doc.getHeaders(), doc.getBody(), doc.getTextboxes(), doc.getFootnotes(), doc.getEndnotes()].filter(Boolean).join("\n");
+  } catch (err) {
+    console.error("[parse/pdf] word-extractor failed:", err);
+    throw new Error(
+      "We couldn’t read that Word file — it may be damaged. Try re-saving it from Word as a .docx or a PDF, or copy the text into a .txt file and upload that.",
+    );
+  }
+  if (raw.length > MAX_DOCX_CHARS) {
+    throw new Error(
+      `That document holds about ${Math.round(raw.length / 1000)}k characters of text, far more than a syllabus. Upload just the syllabus -- if it is part of a larger packet, save those pages on their own.`,
+    );
+  }
+  const text = tidy(raw.replace(/\t/g, " | "));
+  if (text.replace(/\s/g, "").length < MIN_MEANINGFUL_CHARS) {
+    throw new Error(
+      "That Word file has almost no text in it. If the syllabus is a scanned image, copy its text into a .txt file and upload that.",
+    );
+  }
+  return text;
+}
+
+async function extractDocx(buf: Buffer): Promise<string> {
+  // A .doc renamed to .docx is still a .doc, and readable.
+  if (hasLegacyDocHeader(buf)) return extractDoc(buf);
   if (!hasZipHeader(buf)) {
     throw new Error(
       "That file doesn't look like a Word document. Upload the .docx Word itself saves, or paste the syllabus into a .txt file and upload that.",
@@ -378,6 +413,8 @@ export async function extractText(buf: Buffer, filename: string): Promise<string
   }
 
   if (name.endsWith(".docx")) return extractDocx(buf);
+  // The bytes decide, not the name: a .docx someone renamed to .doc is a zip.
+  if (name.endsWith(".doc")) return hasZipHeader(buf) ? extractDocx(buf) : extractDoc(buf);
 
   if (!hasPdfHeader(buf)) {
     // A .doc or .pages upload lands here, so does a Word file someone renamed
