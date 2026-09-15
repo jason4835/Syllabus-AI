@@ -20,6 +20,7 @@
     "@notionhq/client": "^5.26.0",
     "@supabase/supabase-js": "^2.112.4",
     "googleapis": "^165.0.0",
+    "mammoth": "1.12.3",
     "next": "^15.5.25",
     "openai": "^6.49.0",
     "pdf-parse": "^1.1.1",

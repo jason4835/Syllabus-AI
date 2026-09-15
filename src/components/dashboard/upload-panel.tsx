@@ -18,6 +18,14 @@ import { formatPercent, pluralize } from "@/components/format";
 /** Mirrors the route's own limit, so the wording matches what the server says. */
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
+/**
+ * Word's own type string, spelled out once: it is long enough that repeating it
+ * in the `accept` attribute and in the rejection check invites a typo that would
+ * silently refuse every .docx a student picks from a Windows file dialog.
+ */
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 export interface UploadResult {
   courseId: string;
   course: Course;
@@ -170,19 +178,43 @@ export function UploadPanel({
   const send = useCallback(
     async (file: File, fields?: Record<string, string>) => {
       /**
-       * PDF or plain text. Three layers used to disagree about the second one:
-       * the server accepted `.txt`, this check refused it, the description said
-       * "PDF only", and the file dialog would not offer it -- while the parser's
-       * own error messages suggested pasting text that had nowhere to go. Text
-       * is the honest answer for the case that most needs one: a scanned
-       * syllabus has no text layer, and copying it into a .txt file is something
-       * a student can actually do.
+       * A legacy `.doc` is checked first and named, because it is the single
+       * most likely rejection now that Word documents are accepted: the student
+       * has the right kind of file in the right program and one Save As away
+       * from an upload that works. Falling through to "not a Word document"
+       * would be true and useless. The wording matches the server's 415 and the
+       * parser's own .doc message, since all three answer the same file.
        */
-      if (!/\.(pdf|txt)$/i.test(file.name) && file.type !== "application/pdf") {
+      if (/\.doc$/i.test(file.name) || file.type === "application/msword") {
         setPhase({
           kind: "error",
-          error: "That file is not a PDF or a text file",
-          detail: `“${file.name}” could not be read. Export your syllabus as a PDF, or paste its text into a .txt file, and try again.`,
+          error: "That is an older Word .doc, not a .docx",
+          detail: `Open “${file.name}” in Word, use Save As to make a .docx or a PDF, and upload that.`,
+        });
+        return;
+      }
+      /**
+       * PDF, Word or plain text. Three layers used to disagree about the last
+       * one: the server accepted `.txt`, this check refused it, the description
+       * said "PDF only", and the file dialog would not offer it -- while the
+       * parser's own error messages suggested pasting text that had nowhere to
+       * go. Text is the honest answer for the case that most needs one: a
+       * scanned syllabus has no text layer, and copying it into a .txt file is
+       * something a student can actually do.
+       *
+       * The MIME fallbacks cover a file whose extension is missing or wrong but
+       * whose type the browser recognised; the bytes themselves are checked on
+       * the server, which is the only place that can.
+       */
+      if (
+        !/\.(pdf|docx|txt)$/i.test(file.name) &&
+        file.type !== "application/pdf" &&
+        file.type !== DOCX_MIME
+      ) {
+        setPhase({
+          kind: "error",
+          error: "That file is not a PDF, a Word .docx or a text file",
+          detail: `“${file.name}” could not be read. Export your syllabus as a PDF or a .docx, or paste its text into a .txt file, and try again.`,
         });
         return;
       }
@@ -274,8 +306,8 @@ export function UploadPanel({
       icon={<UploadIcon width={17} height={17} />}
       description={
         demoMode
-          ? "Demo mode parses your PDF with the built-in fixture extractor."
-          : "PDF or .txt. One course per file."
+          ? "Demo mode parses your file with the built-in fixture extractor."
+          : "PDF, Word .docx or .txt. One course per file."
       }
       action={
         busy ? (
@@ -365,20 +397,23 @@ export function UploadPanel({
                   <FileIcon width={20} height={20} />
                 </span>
                 <p className="text-[0.9375rem] font-medium text-ink">
-                  Drop a syllabus PDF here
+                  Drop a syllabus here
                 </p>
                 <p className="mt-1 text-[0.8125rem] text-muted">
                   or pick one from your computer
                 </p>
                 <div className="mt-4">
                   <label htmlFor={inputId} className="sr-only">
-                    Syllabus PDF file
+                    Syllabus file
                   </label>
                   <input
                     ref={inputRef}
                     id={inputId}
                     type="file"
-                    accept="application/pdf,.pdf,text/plain,.txt"
+                    /* Extensions as well as MIME types: a .docx dragged out of
+                       Downloads sometimes carries no type at all, and a filter
+                       built only from types greys it out in the dialog. */
+                    accept={`application/pdf,.pdf,${DOCX_MIME},.docx,text/plain,.txt`}
                     className="sr-only"
                     onChange={(event) => {
                       const file = event.target.files?.[0];
@@ -391,7 +426,7 @@ export function UploadPanel({
                     variant="secondary"
                     onClick={() => inputRef.current?.click()}
                   >
-                    Choose a PDF
+                    Choose a file
                   </Button>
                 </div>
               </>

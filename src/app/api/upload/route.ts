@@ -65,15 +65,29 @@ export async function POST(req: Request) {
   } catch {
     return fail("Could not read the upload.", 400);
   }
-  if (!file) return fail("No file received. Attach a syllabus PDF.", 400);
+  if (!file) return fail("No file received. Attach your syllabus.", 400);
   if (file.size === 0) return fail("That file is empty.", 400);
   if (file.size > MAX_BYTES) {
     return fail(`That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is 15 MB.`, 413);
   }
 
   const name = file.name || "syllabus.pdf";
-  if (!/\.(pdf|txt)$/i.test(name)) {
-    return fail("Upload a PDF (or a .txt) syllabus.", 415);
+  /**
+   * Extension only, deliberately: what the bytes actually are is decided in the
+   * parser, which has the header checks and the wording for each way a file can
+   * lie about itself. This is the cheap gate that keeps an obvious .jpg or .zip
+   * from reaching it.
+   *
+   * The legacy `.doc` sentence is here rather than left to the parser because a
+   * `.doc` cannot get that far -- it fails this test by extension -- and "upload
+   * a .docx" is useless advice to someone looking at a Word file that is not
+   * one. The parser says the same thing for a `.doc` renamed to `.docx`.
+   */
+  if (!/\.(pdf|docx|txt)$/i.test(name)) {
+    return fail(
+      "Upload a PDF, a Word .docx, or a .txt syllabus. An older .doc has to be saved as a .docx or a PDF first.",
+      415,
+    );
   }
 
   try {
