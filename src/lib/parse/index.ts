@@ -133,6 +133,19 @@ export function isRankBasedExamWeighting(text: string): boolean {
  */
 function statedTimes(text: string): Set<string> {
   const out = new Set<string>();
+  // A range shares its meridiem: "2-3 p.m." and "10-11:15 am" state BOTH
+  // ends. Read those first, so the bare left end -- which the general pass
+  // below would rightly refuse as a lone integer -- is credited with the
+  // meridiem that governs it. Dropping the 2 p.m. office hours taught this.
+  const range = /\b(\d{1,2})(?:[:.](\d{2}))?\s*[-–—]\s*(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)/gi;
+  for (const m of text.matchAll(range)) {
+    const pm = /p/i.test(m[5]);
+    for (const [h, mm] of [[Number(m[1]), m[2] ?? "00"], [Number(m[3]), m[4] ?? "00"]] as [number, string][]) {
+      if (h > 23 || Number(mm) > 59) continue;
+      const hour = pm ? (h === 12 ? 12 : h + 12) : h === 12 ? 0 : h;
+      out.add(`${String(hour).padStart(2, "0")}:${mm}`);
+    }
+  }
   // A time has minutes or a meridiem. A bare integer is not one: "Chapter 10"
   // and "15 points" made 10:00 and 15:00 look stated, which let a borrowed
   // start time pass as the document's own. A class written "MW 10-11" now
