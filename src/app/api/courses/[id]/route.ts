@@ -1,9 +1,10 @@
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { archiveNotionPages } from "@/lib/notion/sync";
-import { logApiError } from "@/lib/log";
+import { log, logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { reconcileSections } from "@/lib/sections";
+import { resolveWeekRefs } from "@/lib/setup";
 import { store } from "@/lib/store";
 import type { Course } from "@/lib/types";
 import { Invalid, validateCoursePatch } from "@/lib/validation";
@@ -80,10 +81,54 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 
     const updated = await store.updateCourse(userId, id, patch);
     if (!updated) return fail("Course not found.", 404);
+
+    // A term start is not one field among several: it is the answer to "when
+    // does Week 1 begin?", and every "End of Week 10" in this course has been
+    // undated waiting for it. Placing them here rather than in the browser is
+    // the same rule as everywhere else in this app -- the inference belongs to
+    // the server, so the dashboard and a script get the same dates -- and
+    // `resolveWeekRefs` only ever touches items that are still undated, so an
+    // item the student dated by hand is never overwritten.
+    if (patch.startDate) await placeWeekItems(userId, updated);
+
+    // Still the `Course`, unchanged: every existing caller reads this response
+    // as the course it patched, and the client refetches its items anyway.
     return ok<Course>(updated);
   } catch (err) {
     logApiError("courses.update_failed", err, { userId, courseId: id });
     return fail("Could not save that change.", 500, messageOf(err));
+  }
+}
+
+/**
+ * Dates this course's week-numbered items from the term start it just gained.
+ *
+ * Best effort, and deliberately not allowed to fail the PATCH: the course
+ * change the student asked for is already saved, and telling them it failed --
+ * over a follow-on write they never asked for -- would send them to re-edit a
+ * field that is already correct. A failure is logged with the count it managed,
+ * and re-entering the term start runs the whole placement again, because the
+ * items it did not reach are still undated.
+ */
+async function placeWeekItems(userId: string, course: Course): Promise<void> {
+  let placed = 0;
+  try {
+    const mine = (await store.listAssessments(userId)).filter((a) => a.courseId === course.id);
+    const placements = resolveWeekRefs(course, mine);
+    for (const placement of placements) {
+      await store.updateAssessment(userId, placement.id, {
+        dueDate: placement.dueDate,
+        notes: placement.notes,
+        // The review threshold exactly, because that is what this date is: the
+        // week is the document's, the day inside it is this app's inference, so
+        // the item stays flagged for the student to confirm.
+        confidence: 0.6,
+      });
+      placed += 1;
+    }
+    if (placed > 0) log.info("courses.week_items_placed", { userId, courseId: course.id, placed });
+  } catch (err) {
+    logApiError("courses.week_items_failed", err, { userId, courseId: course.id, placed });
   }
 }
 

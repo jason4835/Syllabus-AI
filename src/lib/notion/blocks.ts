@@ -22,6 +22,7 @@
 import type { BlockObjectRequest, CreatePageParameters } from "@notionhq/client";
 import { DEFAULT_SITTING_MINUTES } from "@/lib/calendar/events";
 import { estimatedHoursFor, formatShortDate } from "@/lib/plan/workload";
+import { meetingNeedsTime } from "@/lib/setup";
 import { isSitting, needsReview } from "@/lib/types";
 import type {
   Assessment,
@@ -85,14 +86,22 @@ export function chunkBlocks(
 
 const DAY_LETTERS = ["Su", "M", "T", "W", "Th", "F", "Sa"];
 
-/** "MWF 10:00–10:50 · Hayes Hall 210" */
+/**
+ * "MWF 10:00–10:50 · Hayes Hall 210", or "TF time not set" for a meeting
+ * whose hour the syllabus never stated.
+ *
+ * The days are still worth printing -- they are what the document said -- and
+ * "TF –" or "TF 00:00–00:00" would be a page asserting something the
+ * syllabus never did. The student is being asked for the time elsewhere; this
+ * line says, in the meantime, exactly what is known.
+ */
 export function formatMeetingTime(m: MeetingTime): string {
   const days = m.daysOfWeek
     .slice()
     .sort((a, b) => a - b)
     .map((d) => DAY_LETTERS[d] ?? "?")
     .join("");
-  const when = `${days} ${m.startTime}–${m.endTime}`;
+  const when = meetingNeedsTime(m) ? `${days} time not set` : `${days} ${m.startTime}–${m.endTime}`;
   return m.location ? `${when} · ${m.location}` : when;
 }
 

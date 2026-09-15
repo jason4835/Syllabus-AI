@@ -352,6 +352,9 @@ export function validateSections(value: unknown): string[] {
  * The whole array is replaced on edit, so every row is checked from scratch.
  * Locations are kept verbatim -- the one thing this must never do is "fix" a
  * room string the student typed to match what the syllabus said.
+ *
+ * `startTime` and `endTime` may both be blank, meaning "the syllabus never said"
+ * -- see the comment on the pair below.
  */
 export function validateMeetingTimes(value: unknown): MeetingTime[] {
   if (!Array.isArray(value)) throw new Invalid("meetingTimes must be an array");
@@ -366,11 +369,21 @@ export function validateMeetingTimes(value: unknown): MeetingTime[] {
     if (!Array.isArray(days) || days.length === 0) throw new Invalid(`${at}.daysOfWeek needs at least one day`);
     const daysOfWeek = [...new Set(days.map((d) => Number(d)))].sort((a, b) => a - b);
     if (daysOfWeek.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) throw new Invalid(`${at}.daysOfWeek must be 0-6`);
-    const startTime = typeof r.startTime === "string" ? r.startTime : "";
-    const endTime = typeof r.endTime === "string" ? r.endTime : "";
-    if (!TIME_RE.test(startTime)) throw new Invalid(`${at}.startTime must be HH:MM`);
-    if (!TIME_RE.test(endTime)) throw new Invalid(`${at}.endTime must be HH:MM`);
-    if (endTime <= startTime) throw new Invalid(`${at}: endTime must be after startTime`);
+    const startTime = typeof r.startTime === "string" ? r.startTime.trim() : "";
+    const endTime = typeof r.endTime === "string" ? r.endTime.trim() : "";
+    // Both blank is a meeting whose time the syllabus never stated
+    // (`UNKNOWN_TIME` in `@/lib/setup`), and it has to survive a PATCH: the
+    // client edits this array whole, so a course with one such class could not
+    // have its room corrected -- or its section answered -- if a blank pair
+    // were rejected. One blank and one set is not a state anything produces:
+    // it is a half-filled form, and storing it would put a class on the
+    // calendar at an hour nobody chose.
+    const blank = startTime === "" && endTime === "";
+    if (!blank) {
+      if (!TIME_RE.test(startTime)) throw new Invalid(`${at}.startTime must be HH:MM, or blank with endTime`);
+      if (!TIME_RE.test(endTime)) throw new Invalid(`${at}.endTime must be HH:MM, or blank with startTime`);
+      if (endTime <= startTime) throw new Invalid(`${at}: endTime must be after startTime`);
+    }
     return {
       kind,
       section: optionalText(r.section, `${at}.section`, 40),

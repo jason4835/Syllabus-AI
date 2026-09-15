@@ -32,6 +32,7 @@ import type {
 } from "@/lib/types";
 import { isSitting, needsReview } from "@/lib/types";
 import { meetingsForStudent, needsSection } from "@/lib/sections";
+import { meetingNeedsTime } from "@/lib/setup";
 
 /* -------------------------------------------------------------------------- */
 /* Model                                                                       */
@@ -580,12 +581,18 @@ export function inNoClassPeriod(date: string, course: Course): boolean {
  * their original index in `course.meetingTimes` (the index the idempotency key
  * is built from, so it must survive the filtering).
  *
- * Two independent filters, in this order:
+ * Three independent filters, in this order:
  *
- *  1. **Kind vs preferences.** Office hours are opt-in; recitations and labs
+ *  1. **A stated time.** A meeting the syllabus gave days but no time for is
+ *     kept by the parser with its times blank (`meetingNeedsTime`), because the
+ *     days are worth keeping and the hour is a question only the student can
+ *     answer. Until they do, it produces nothing -- no event, no error, no
+ *     reported skip.
+ *
+ *  2. **Kind vs preferences.** Office hours are opt-in; recitations and labs
  *     travel together; lectures and unclassified meetings are "classes".
  *
- *  2. **Section gating**, delegated wholesale to `@/lib/sections` so the
+ *  3. **Section gating**, delegated wholesale to `@/lib/sections` so the
  *     calendar, the study scheduler and the chooser cannot drift apart.
  *
  *     A syllabus asks one question PER MEETING KIND, not one question overall.
@@ -618,6 +625,14 @@ export interface SelectedMeetings {
 export function selectCourseMeetings(course: Course, prefs: CalendarPrefs): SelectedMeetings {
   const byPrefs = (course.meetingTimes ?? [])
     .map((meeting, index) => ({ meeting, index }))
+    // A meeting whose time the syllabus never stated is not on the calendar
+    // yet. It is not an error and not a skip to report: the days are real, the
+    // hour is genuinely unknown, and `setupQuestions` is already asking the
+    // student for it. Filtered HERE rather than in each consumer so the feed,
+    // the Google sync, the dry-run counts and the study planner cannot disagree
+    // about it -- and before the pref filter, because "unknown" is not a
+    // category anyone can switch on.
+    .filter(({ meeting }) => !meetingNeedsTime(meeting))
     .filter(({ meeting }) => meetingAllowedByPrefs(meetingKind(meeting), prefs));
 
   // `meetingsForStudent` reads the WHOLE course, not the pref-filtered list, so

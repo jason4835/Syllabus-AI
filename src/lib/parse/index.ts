@@ -15,7 +15,8 @@
  * Server-only.
  */
 
-import type { ParsedSyllabus } from "../types";
+import type { MeetingTime, ParsedSyllabus } from "../types";
+import { UNKNOWN_TIME, meetingNeedsTime } from "../setup";
 import { extractWithAi, isConfigured } from "./extract";
 import { fallbackParse } from "./fallback";
 import { extractText } from "./pdf";
@@ -66,7 +67,7 @@ export async function parseSyllabus(
   const text = await extractText(buf, filename);
   const parsed = capWhenTentative(
     reconcileNoClass(
-      dropMeetingsWithUnstatedTimes(
+      blankUnstatedMeetingTimes(
         warnWhenWeeksHaveNoAnchor(mergePlaceholdersPerRow(collapseInventedSeries(await parseFromText(text, opts)))),
         text,
       ),
@@ -132,12 +133,18 @@ export function isRankBasedExamWeighting(text: string): boolean {
  */
 function statedTimes(text: string): Set<string> {
   const out = new Set<string>();
-  const re = /\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?/gi;
+  // A time has minutes or a meridiem. A bare integer is not one: "Chapter 10"
+  // and "15 points" made 10:00 and 15:00 look stated, which let a borrowed
+  // start time pass as the document's own. A class written "MW 10-11" now
+  // fails this and becomes a question -- the honest outcome, since 10-11 does
+  // not say AM or PM either.
+  const re = /\b(\d{1,2})(?:[:.](\d{2})\s*(a\.?m\.?|p\.?m\.?)?|\s*(a\.?m\.?|p\.?m\.?))/gi;
   for (const m of text.matchAll(re)) {
     const h = Number(m[1]);
     const mm = m[2] ?? "00";
+    const meridiem = m[3] ?? m[4];
     if (h > 23 || Number(mm) > 59) continue;
-    const pm = m[3] ? /p/i.test(m[3]) : null;
+    const pm = meridiem ? /p/i.test(meridiem) : null;
     const add = (hour: number) => out.add(`${String(hour).padStart(2, "0")}:${mm}`);
     if (pm === true) add(h === 12 ? 12 : h + 12);
     else if (pm === false) add(h === 12 ? 0 : h);
@@ -150,16 +157,28 @@ function statedTimes(text: string): Set<string> {
 }
 
 /**
- * A meeting whose start or end time the document never states is dropped.
+ * A meeting whose start time the document never states keeps its days and
+ * loses its time.
  *
- * The schema requires a time on every meeting, so a class the document gives
- * days for but no time can only be invented or omitted, and the model invented:
- * a Tuesday/Friday lecture at 10:00-11:15, the 10:00 lifted from the office
- * hours line and the 75 minutes from nowhere, became twenty-six calendar events
- * colliding with the real office hours on the same days. Omission is the honest
- * answer, said out loud, with what to do about it.
+ * The invention is real and worth stopping: a Tuesday/Friday lecture at
+ * 10:00-11:15, the 10:00 lifted from the office hours line and the 75 minutes
+ * from nowhere, became twenty-six calendar events colliding with the real
+ * office hours on the same days. But dropping the meeting threw away the half
+ * the document DID state -- that this class meets on Tuesday and Friday -- and
+ * left a warning in its place, which is a sentence no student can act on
+ * without retyping what the syllabus already said.
+ *
+ * So the time becomes `UNKNOWN_TIME` and the meeting stays. Blank means
+ * unknown, every consumer skips it (`meetingNeedsTime`), and `setupQuestions`
+ * turns it into the one question only the student can answer: what time does
+ * this class meet? The question replaces the warning, which is why nothing is
+ * pushed onto `warnings` here any more.
+ *
+ * Office hours are the exception, and still dropped: no question is asked
+ * about them, so an office hour with no stated time is nothing but a row of
+ * days the student cannot use.
  */
-export function dropMeetingsWithUnstatedTimes(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+export function blankUnstatedMeetingTimes(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
   // Only the START is checked. A recitation table that lists "8:00 Fri" states
   // a real meeting whose end the model infers, and requiring the inferred end
   // to appear in the text threw six of nine real recitations away. A start
@@ -180,7 +199,7 @@ export function dropMeetingsWithUnstatedTimes(parsed: ParsedSyllabus, text: stri
       seen.set(t, rec);
     }
   }
-  const keep: typeof parsed.course.meetingTimes = [];
+  const keep: MeetingTime[] = [];
   const warnings = [...parsed.warnings];
   const DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   for (const m of parsed.course.meetingTimes) {
@@ -190,15 +209,79 @@ export function dropMeetingsWithUnstatedTimes(parsed: ParsedSyllabus, text: stri
       keep.push(m);
       continue;
     }
-    const days = m.daysOfWeek.map((d) => DAY[d] ?? "?").join("/");
-    warnings.push(
-      rec?.anywhere
-        ? `A ${m.kind.replace("_", " ")} on ${days} at ${m.startTime} was left off: that time appears in the syllabus only as office hours, and the class time itself is not stated. Add the class time on the course card.`
-        : `A ${m.kind.replace("_", " ")} on ${days} was left off: the syllabus names the days but not a time this app could find in it (${m.startTime} appears nowhere in the document). Add the meeting time on the course card.`,
-    );
+    if (m.kind === "office_hours") {
+      const days = m.daysOfWeek.map((d) => DAY[d] ?? "?").join("/");
+      // The extractor's own time is quoted when it had one, because "10:00
+      // appears nowhere" is checkable by the student against the document and
+      // "no time was found" is not.
+      const found = m.startTime ? ` (${m.startTime} appears nowhere in the document)` : "";
+      warnings.push(
+        `Office hours on ${days} were left off: the syllabus names the days but not a time this app could find in it${found}.`,
+      );
+      continue;
+    }
+    keep.push({ ...m, startTime: UNKNOWN_TIME, endTime: UNKNOWN_TIME });
   }
-  if (keep.length === parsed.course.meetingTimes.length) return parsed;
-  return { ...parsed, course: { ...parsed.course, meetingTimes: keep }, warnings };
+  const meetingTimes = mergeBlankTimeMeetings(keep);
+  // Every surviving meeting is the object that came in, and nothing merged:
+  // the parse is untouched, so hand back the same object.
+  const unchanged =
+    meetingTimes.length === parsed.course.meetingTimes.length &&
+    meetingTimes.every((m, i) => m === parsed.course.meetingTimes[i]);
+  if (unchanged) return parsed;
+  return { ...parsed, course: { ...parsed.course, meetingTimes }, warnings };
+}
+
+/**
+ * Blank-time meetings of one kind and section are one meeting.
+ *
+ * The four "lectures" the model made out of a Tuesday/Friday office-hours
+ * block are one unstated class time, not four: two Tuesday slots and two
+ * Friday slots, all of them the same relabelling mistake. Left apart they
+ * become four identical questions about the same class, and answering all four
+ * puts four overlapping series on the calendar. Merged on the union of their
+ * days they are one question -- "when does the Tuesday/Friday lecture meet?"
+ * -- whose answer is the whole truth about that class.
+ *
+ * Only blank-time meetings merge, and only within a kind and a section: two
+ * stated sections of a lecture are two real meetings, and a lab is not a
+ * lecture. The merged meeting keeps no `location`: a room that arrived on a row
+ * whose time the document never stated came in with the fabrication, and in the
+ * case that motivates all of this it is the professor's office -- a class in the
+ * wrong room sends the student to the wrong building. `instructor` survives when
+ * every merged row names the same person, which is the one fact the relabelling
+ * did get right.
+ */
+function mergeBlankTimeMeetings(meetings: MeetingTime[]): MeetingTime[] {
+  const groups = new Map<string, MeetingTime[]>();
+  const out: MeetingTime[] = [];
+  for (const m of meetings) {
+    if (!meetingNeedsTime(m)) {
+      out.push(m);
+      continue;
+    }
+    const key = `${m.kind}|${m.section ?? ""}`;
+    const group = groups.get(key);
+    if (group) {
+      group.push(m);
+      continue;
+    }
+    groups.set(key, [m]);
+    // A placeholder in the output, replaced below, so a merged meeting keeps
+    // the position its first row had rather than being appended at the end.
+    out.push(m);
+  }
+  return out.map((m) => {
+    const group = meetingNeedsTime(m) ? groups.get(`${m.kind}|${m.section ?? ""}`) : undefined;
+    if (!group || group.length < 2) return m;
+    const instructors = new Set(group.map((g) => g.instructor));
+    return {
+      ...m,
+      daysOfWeek: [...new Set(group.flatMap((g) => g.daysOfWeek))].sort((a, b) => a - b),
+      instructor: instructors.size === 1 ? group[0].instructor : null,
+      location: null,
+    };
+  });
 }
 
 /**

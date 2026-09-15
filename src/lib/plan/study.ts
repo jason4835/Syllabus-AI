@@ -31,6 +31,7 @@ import type {
 } from "@/lib/types";
 import { isSitting } from "@/lib/types";
 import { inNoClassPeriod, selectCourseMeetings } from "@/lib/calendar/events";
+import { meetingNeedsTime } from "@/lib/setup";
 import {
   addDays,
   dayOfWeek,
@@ -183,7 +184,7 @@ function mergeIntervals(list: Interval[]): Interval[] {
  *
  * Every course's meetings block every other course's study time -- nobody is in
  * a MATH lecture and a CS lab at once -- but only the meetings the student
- * actually attends may block anything. Three filters, and all three are the
+ * actually attends may block anything. Four filters, and all of them are the
  * calendar's, not a second copy of them:
  *
  *  - **Kind.** Office hours are optional, so they never black out an afternoon.
@@ -194,6 +195,8 @@ function mergeIntervals(list: Interval[]): Interval[] {
  *  - **No-class periods.** A break or the week after the last day of classes is
  *    free time; reserving a lecture slot through finals week is how the plan
  *    refused to schedule on the days a student most needs it to.
+ *  - **A stated time.** A meeting the syllabus gave days but no time for has no
+ *    hour to reserve, so it reserves none until the student supplies one.
  *
  * `selectCourseMeetings` and `inNoClassPeriod` come from the calendar module,
  * which already had to answer exactly these questions to decide what goes on
@@ -230,6 +233,12 @@ function attendedMeetings(courses: Course[]): AttendedMeeting[] {
 }
 
 function meetingInterval(m: MeetingTime): Interval | null {
+  // A class whose time the syllabus never stated blacks out nothing. It cannot:
+  // there is no hour to reserve, and reserving a guessed one would move the
+  // student's study time for a class that may not meet then at all. The
+  // calendar's own selection already drops these; this is the second half of
+  // the same rule, stated where a reader of this file can see it.
+  if (meetingNeedsTime(m)) return null;
   const start = minutesOfDay(m.startTime);
   const end = minutesOfDay(m.endTime);
   if (start === null || end === null || end <= start) return null;

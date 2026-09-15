@@ -32,6 +32,7 @@ import type {
   WeekLoad,
 } from "@/lib/types";
 import { isSitting } from "@/lib/types";
+import { meetingNeedsTime } from "@/lib/setup";
 import {
   addDays,
   dayOfWeek,
@@ -248,8 +249,16 @@ export function buildPlanContext(
 
   lines.push("", "COURSES");
   for (const c of courses) {
+    // A class whose time the syllabus never stated says so, rather than
+    // arriving as a bare list of days: asked "when is my Tuesday lecture?",
+    // the coach has to be able to answer "the syllabus does not say" instead
+    // of inventing an hour or going quiet about a class that exists.
     const meets = (c.meetingTimes ?? [])
-      .map((m) => `${meetingDays(m.daysOfWeek ?? [])} ${timeRangePhrase(m.startTime, m.endTime)}`.trim())
+      .map((m) =>
+        meetingNeedsTime(m)
+          ? `${meetingDays(m.daysOfWeek ?? [])} (time not set)`.trim()
+          : `${meetingDays(m.daysOfWeek ?? [])} ${timeRangePhrase(m.startTime, m.endTime)}`.trim(),
+      )
       .join("; ");
     const term =
       c.startDate && c.endDate
