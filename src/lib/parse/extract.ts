@@ -13,6 +13,7 @@
 
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
+import { PacerTimeout, acquire, estimateTokens } from "./pacer";
 import { z } from "zod";
 
 import type { MeetingKind, MeetingTime, NoClassPeriod, ParsedSyllabus } from "../types";
@@ -46,6 +47,36 @@ function addMinutes(hhmm: string, minutes: number): string {
 }
 
 const REQUEST_TIMEOUT_MS = 90_000;
+/**
+ * How long one upload will wait for tokens-per-minute budget before it is
+ * told the reader is busy. The route allows 120s in total; the model call
+ * itself takes 10-25s.
+ */
+const PACE_WAIT_MS = 60_000;
+/** A 429 that gets past the pacer is retried this many times, this far apart. */
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_RETRY_MS = 15_000;
+
+/**
+ * Thrown when the model could not be called because the organization's rate
+ * limit is exhausted -- too many syllabi in one minute -- and waiting did not
+ * clear it. Not a parse failure: the caller should say "busy, try again"
+ * rather than fall back to pattern matching, whose output for a real syllabus
+ * is worse than no output.
+ */
+export class AiBusyError extends Error {
+  constructor(detail: string) {
+    super(`The AI syllabus reader is busy: ${detail}`);
+    this.name = "AiBusyError";
+  }
+}
+
+function isRateLimit(err: unknown): boolean {
+  const status = (err as { status?: unknown })?.status;
+  if (status === 429) return true;
+  const message = err instanceof Error ? err.message : "";
+  return /\b429\b|rate limit/i.test(message);
+}
 
 // ---------------------------------------------------------------------------
 // Schema -- a structural mirror of ParsedSyllabus in src/lib/types.ts
@@ -637,23 +668,40 @@ export async function extractWithAi(text: string, signal?: AbortSignal): Promise
 
   const parts: ModelOutput[] = [];
   for (let i = 0; i < chunks.length; i += 1) {
-    let completion;
+    const budget = estimateTokens(SYSTEM_PROMPT.length + chunks[i].length);
     try {
-      completion = await client.chat.completions.parse(
-        {
-          model,
-          temperature: 0,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userPrompt(chunks[i], i, chunks.length) },
-          ],
-          response_format: responseFormat,
-        },
-        { signal },
-      );
+      await acquire(model, budget, PACE_WAIT_MS);
     } catch (err) {
-      const detail = err instanceof Error ? redact(err.message) : "unknown error";
-      throw new Error(`The AI syllabus reader could not be reached: ${detail}`);
+      if (err instanceof PacerTimeout) throw new AiBusyError(redact(err.message));
+      throw err;
+    }
+    let completion;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        completion = await client.chat.completions.parse(
+          {
+            model,
+            temperature: 0,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userPrompt(chunks[i], i, chunks.length) },
+            ],
+            response_format: responseFormat,
+          },
+          { signal },
+        );
+        break;
+      } catch (err) {
+        const detail = err instanceof Error ? redact(err.message) : "unknown error";
+        if (isRateLimit(err)) {
+          if (attempt < RATE_LIMIT_RETRIES && !signal?.aborted) {
+            await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_RETRY_MS));
+            continue;
+          }
+          throw new AiBusyError(detail);
+        }
+        throw new Error(`The AI syllabus reader could not be reached: ${detail}`);
+      }
     }
 
     const message = completion.choices[0]?.message;

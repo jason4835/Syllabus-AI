@@ -7,6 +7,7 @@ import { isNotionConfigured } from "@/lib/notion/oauth";
 import { archiveNotionPages, syncToNotion } from "@/lib/notion/sync";
 import { buildSemesterPlan } from "@/lib/plan";
 import { parseSyllabus } from "@/lib/parse";
+import { AiBusyError } from "@/lib/parse/extract";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { store } from "@/lib/store";
 import type { Assessment, Course } from "@/lib/types";
@@ -191,6 +192,14 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     logApiError("upload.failed", err, { userId, filename: name, bytes: file.size });
+    if (err instanceof AiBusyError) {
+      return fail(
+        "The syllabus reader is busy right now.",
+        503,
+        "Several syllabi are being read at once. Nothing was saved -- try again in a minute.",
+        { "Retry-After": "60" },
+      );
+    }
     return fail("Could not read that syllabus.", 422, messageOf(err));
   }
 }

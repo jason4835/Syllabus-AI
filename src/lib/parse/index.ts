@@ -18,7 +18,7 @@
 import type { MeetingTime, ParsedSyllabus } from "../types";
 import { UNKNOWN_TIME, meetingNeedsTime, weeklyRuleOf } from "../setup";
 import { addDays, findDateSpans, isoDayOfWeek, normalizeDate, parseDaysOfWeek, parseTimeRange } from "./dates";
-import { extractWithAi, isConfigured } from "./extract";
+import { AiBusyError, extractWithAi, isConfigured } from "./extract";
 import { fallbackParse } from "./fallback";
 import { extractText } from "./pdf";
 
@@ -898,6 +898,10 @@ async function parseFromText(text: string, opts: ParseOptions): Promise<ParsedSy
 
     return result;
   } catch (err) {
+    // Busy is not broken. The fallback exists for an outage or a missing key;
+    // a minute's rate limit is a reason to say "try again", not to hand a
+    // student pattern-matched items titled "Tue".
+    if (err instanceof AiBusyError) throw err;
     return fallbackParse(text, { reason: describeFailure(err) });
   }
 }
