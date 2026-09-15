@@ -197,7 +197,7 @@ RULES
 
 7. MEETING TIMES are every recurring meeting the syllabus states. daysOfWeek uses 0 = Sunday through 6 = Saturday; startTime and endTime are 24-hour HH:MM.
    - OFFICE HOURS ARE NEVER A LECTURE, and a missing class time is never filled from them. When the document gives the class days but no class time, emit the office hours as office_hours and emit NO lecture -- do not relabel the office-hours slots as the class. One syllabus came back with four "lectures" that were its four office-hour blocks, in the professor's office.
-   - NO TIME, NO MEETING. If the document names the days a class meets but never states its time, do NOT emit that meeting -- add a warning saying the time is missing. Never borrow a time from office hours or another meeting, and never invent a duration. A fabricated 10:00 class once collided with the real 10:00 office hours on the same days.
+   - NO TIME, BLANK TIME. If the document names the days a class meets but never states its time -- or the days are evident because every dated class row in the schedule falls on the same weekdays -- emit that meeting with daysOfWeek set and startTime and endTime both EMPTY STRINGS (""). The application asks the student for the time. Never borrow a time from office hours or another meeting, and never invent a duration: a fabricated 10:00 class once collided with the real 10:00 office hours on the same days. Emit nothing only when neither the days nor the time can be read from the document.
    - DAYS AS WRITTEN. Put the day abbreviation into daysText EXACTLY as the document writes it ("M/R", "Mon, Thu", "TTh", "MWF", "Tuesdays and Thursdays"). daysOfWeek is computed from daysText by the application; fill it in as well, but daysText is what is trusted. Never leave daysText null when the document names days.
    - KIND. Every meeting gets one: "lecture" for a lecture, a class, a "Meets ..." line, or a bare "MWF 10:00-10:50" line; "recitation" for a recitation, discussion, section meeting, problem session or tutorial; "lab" for a lab or laboratory; "office_hours" for office hours, "OH", or student hours; "other" for anything recurring that fits none of these. Getting this wrong is not cosmetic: it decides the event's title and whether the student's preferences put it on the calendar at all, and "MATH 221 class" at the professor's door is a wrong fact.
    - OFFICE HOURS ARE MEETING TIMES. Extract them explicitly, with kind "office_hours", instructor set to whose hours they are, location set to where they are held, and section null. If the syllabus lists hours for several people -- the instructor and one or more TAs -- emit ONE entry per person per pattern. "and by appointment" is not a meeting; do not emit anything for it.
@@ -378,7 +378,11 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
           ].sort((a, b) => a - b);
     const startTime = parseTime(m.startTime) ?? "";
     const endTime = parseTime(m.endTime) ?? "";
-    if (daysOfWeek.length === 0 || startTime === "" || endTime === "") continue;
+    // A fully blank pair is a meeting whose time the document never stated,
+    // kept so the student can be asked (see `meetingNeedsTime` in setup.ts).
+    // Half-blank is not a time and never was; no days is not a meeting.
+    const blank = startTime === "" && endTime === "";
+    if (daysOfWeek.length === 0 || (!blank && (startTime === "" || endTime === ""))) continue;
 
     // "lecture" is the honest default for a meeting the model did not label:
     // it is what an unlabelled "MWF 10:00-10:50" line means, and it is the one
