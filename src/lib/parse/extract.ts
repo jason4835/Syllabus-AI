@@ -365,12 +365,6 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
     );
   }
 
-  if (defaultedEnds > 0) {
-    warnings.push(
-      `${defaultedEnds} meeting${defaultedEnds === 1 ? "" : "s"} state${defaultedEnds === 1 ? "s" : ""} a start time but no end, so each was given one hour. Adjust the end time on the course card if it runs longer.`,
-    );
-  }
-
   const gradeWeights = raw.course.gradeWeights
     .map((w) => ({ category: collapse(w.category), weightPercent: Number(w.weightPercent) }))
     .filter((w) => w.category.length > 0 && Number.isFinite(w.weightPercent) && w.weightPercent > 0);
@@ -440,6 +434,12 @@ function sanitize(raw: ModelOutput, warnings: string[]): ParsedSyllabus {
 
     meetingTimes.push({ kind, section, instructor, daysOfWeek, startTime, endTime: endTimeOut, location });
   }
+  if (defaultedEnds > 0) {
+    warnings.push(
+      `${defaultedEnds} meeting${defaultedEnds === 1 ? "" : "s"} state${defaultedEnds === 1 ? "s" : ""} a start time but no end, so each was given one hour. Adjust the end time on the course card if it runs longer.`,
+    );
+  }
+
 
   const policies = raw.course.policies
     .map((p) => ({
