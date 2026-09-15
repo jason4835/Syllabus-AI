@@ -164,6 +164,8 @@ export interface WeeklyRule {
   weekday: number | null;
   /** HH:MM when stated alongside the rule, else null. */
   time: string | null;
+  /** The words that state the rule ("every week by Saturday"), for the card to quote. */
+  phrase: string;
 }
 
 /**
@@ -176,12 +178,18 @@ export interface WeeklyRule {
 export function weeklyRuleOf(a: Pick<Assessment, "dueDate" | "sourceText" | "notes" | "dueTime">): WeeklyRule | null {
   if (a.dueDate !== null) return null;
   const text = `${a.sourceText ?? ""} ${a.notes ?? ""}`;
-  if (!/\b(?:weekly|every\s+week|each\s+week|per\s+week|each\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|every\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/i.test(text)) {
-    return null;
-  }
+  // The rule's words, extended through the day and time that follow them when
+  // they do ("each week by Saturday, 11:59pm"), so the card can quote the rule.
+  const DAY = "(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)s?";
+  const TIME = "\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)";
+  const rule = new RegExp(
+    `\\b(?:weekly|every\\s+week|each\\s+week|per\\s+week|each\\s+${DAY}|every\\s+${DAY})\\b(?:[^.;\\n]{0,30}?(?:${TIME}\\b|\\b${DAY}\\b)){0,2}`,
+    "i",
+  ).exec(text);
+  if (!rule) return null;
   const dayWord = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)s?\b/i.exec(text);
   const weekday = dayWord ? (parseDaysOfWeek(dayWord[1])[0] ?? null) : null;
-  return { weekday, time: a.dueTime ?? null };
+  return { weekday, time: a.dueTime ?? null, phrase: rule[0].trim() };
 }
 
 /** What an expanded weekly item looks like before it has an id. */
@@ -242,8 +250,12 @@ export type SetupQuestion =
   | {
       kind: "term-start";
       courseId: string;
-      /** The undated items a start date will place, for the card to name. */
-      affects: { id: string; title: string; phrase: string }[];
+      /**
+       * The undated items that wait on a start date, for the card to name. A
+       * "Week N" item is placed by the save itself; a weekly rule (`weekly`)
+       * gets the weekly-day question next, and is not dated by this answer.
+       */
+      affects: { id: string; title: string; phrase: string; weekly: boolean }[];
     }
   | {
       kind: "meeting-time";
@@ -281,11 +293,19 @@ export function setupQuestions(course: Course, assessments: Assessment[]): Setup
   const out: SetupQuestion[] = [];
 
   if (!course.startDate) {
+    // A "Week N" reference and a weekly rule both wait on the same date. The
+    // rule waits one step longer -- the weekly-day question below comes after
+    // -- but a term with no start date asks nothing about it at all, and a
+    // course whose only deadlines are "every Saturday" then never gets one.
     const affects = assessments
       .filter((a) => a.dueDate === null)
-      .map((a) => ({ a, ref: weekRefOf(a) }))
-      .filter((x): x is { a: Assessment; ref: WeekRef } => x.ref !== null)
-      .map(({ a, ref }) => ({ id: a.id, title: a.title, phrase: ref.phrase }));
+      .map((a) => {
+        const ref = weekRefOf(a);
+        if (ref) return { id: a.id, title: a.title, phrase: ref.phrase, weekly: false };
+        const rule = weeklyRuleOf(a);
+        return rule ? { id: a.id, title: a.title, phrase: rule.phrase, weekly: true } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
     if (affects.length > 0) out.push({ kind: "term-start", courseId: course.id, affects });
   }
 

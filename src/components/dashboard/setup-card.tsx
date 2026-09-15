@@ -646,6 +646,14 @@ function TermStartQuestion({
 
   const shown = question.affects.slice(0, AFFECTS_SHOWN);
   const more = question.affects.length - shown.length;
+  /**
+   * A "Week 3" item is dated by this save. A weekly rule ("every Saturday")
+   * is not: it gets the weekly-day question next. The copy, the promise and
+   * the count afterwards all have to say which of the two this card is doing.
+   */
+  const placedIds = question.affects.filter((item) => !item.weekly).map((item) => item.id);
+  const weeklyCount = question.affects.length - placedIds.length;
+  const weeklyOnly = placedIds.length === 0;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -678,10 +686,13 @@ function TermStartQuestion({
         ? saved
         : { ...course, startDate: start, endDate: savedEnd },
       line,
-      "Saved — term dates set.",
+      weeklyOnly && !correcting
+        ? "Saved — term dates set. One more question: which day the weekly work is due."
+        : "Saved — term dates set.",
       // Nothing to count on a correction: the placements already happened, and
-      // recounting them would report work this save did not do.
-      correcting ? [] : question.affects.map((item) => item.id),
+      // recounting them would report work this save did not do. Weekly items
+      // are never counted: this save does not date them.
+      correcting ? [] : placedIds,
     );
   }
 
@@ -699,12 +710,31 @@ function TermStartQuestion({
       ) : (
         <>
           <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
-            This syllabus schedules by week number but never says when Week 1
-            begins. Enter the term start and{" "}
-            {question.affects.length === 1
-              ? "this item gets a date"
-              : `these ${question.affects.length} items get dates`}
-            :
+            {weeklyOnly ? (
+              <>
+                This syllabus sets deadlines by the week but never says when the
+                term starts. Enter the term dates, and you&rsquo;ll be asked which
+                day{" "}
+                {weeklyCount === 1 ? "this item is" : `these ${weeklyCount} items are`}{" "}
+                due each week:
+              </>
+            ) : weeklyCount > 0 ? (
+              <>
+                This syllabus schedules by week number but never says when Week 1
+                begins. Enter the term start: items with a week number get dates,
+                and the weekly {weeklyCount === 1 ? "one gets" : "ones get"} one
+                more question:
+              </>
+            ) : (
+              <>
+                This syllabus schedules by week number but never says when Week 1
+                begins. Enter the term start and{" "}
+                {question.affects.length === 1
+                  ? "this item gets a date"
+                  : `these ${question.affects.length} items get dates`}
+                :
+              </>
+            )}
           </p>
           <ul className="mt-1.5 space-y-0.5">
             {shown.map((item) => (
