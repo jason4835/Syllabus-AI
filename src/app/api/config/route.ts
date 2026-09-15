@@ -1,6 +1,8 @@
 import { ok } from "@/lib/api";
 import { isGoogleConfigured } from "@/lib/google/oauth";
 import { isAiParsingAvailable } from "@/lib/parse";
+import { TERM_PASS } from "@/lib/pricing";
+import { isStripeConfigured } from "@/lib/stripe";
 import { resolveVisitor } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
@@ -25,5 +27,13 @@ export async function GET() {
     demoMode: isDemo,
     googleReady: isGoogleConfigured(),
     openaiReady: isAiParsingAvailable(),
+    /**
+     * `ready` is the same kind of fact as `googleReady`: whether this deployment
+     * can actually take money. The price travels with it so the paywall has one
+     * number to print, and it comes from the server because the client must never
+     * be the thing that says what something costs -- Stripe charges the price id
+     * in the environment, and this is only what the student reads.
+     */
+    billing: { ready: isStripeConfigured(), termPass: TERM_PASS },
   });
 }

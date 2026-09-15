@@ -59,6 +59,7 @@ the rest are yours.
 | `SUPABASE_SERVICE_ROLE_KEY` | **Yes** | Same — the store only picks the Supabase driver when *both* are set. |
 | `OPENAI_API_KEY` | Recommended | Uploads fall back to the heuristic parser and chat answers from a deterministic matcher. Nothing errors; quality drops and a warning is attached to the parse. |
 | `OPENAI_MODEL` | No — advanced | Optional override, deliberately **not** in `.env.example`. See the hazard below. |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_TERM_PASS_PRICE_ID` | Recommended | Academic Term Pass billing is off: the free course and everything else keep working, but the Term Pass paywall shows "not configured" copy instead of a Buy button. See step 9. |
 | `NODE_ENV` | Set by platform | Vercel sets `production`. It gates the session hard-fail, and the `secure` flag on the session cookie. |
 
 Optional, read only by `/api/health` to label the deploy — never required:
@@ -660,6 +661,146 @@ limits** in `README.md`.
 - **`/api/health` is unauthenticated.** It is boolean-only by design, but it does
   tell the internet which capabilities your deploy has and how long the instance
   has been up. That is the intended trade; know you made it.
+
+---
+
+## 9. Stripe (Academic Term Pass)
+
+The Academic Term Pass is a one-time $5.99 payment that unlocks premium access
+for one academic term — full product rules (the 183-day term cap, the 14-day
+grace period, the one-free-course rule, how a paid term can and can't be
+edited) are in `docs/TERM-PASS.md`, not repeated here. This section is only
+the operational setup: what to create in the Stripe Dashboard, how to test it
+locally, and what to check after a deploy.
+
+Billing is optional and degrades independently of everything else: without
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_TERM_PASS_PRICE_ID`
+all set, uploads and the rest of the app work exactly as they do today and the
+Term Pass paywall shows "not configured" copy instead of a Buy button.
+
+### 9a. Product and price
+
+1. In the [Stripe Dashboard](https://dashboard.stripe.com), stay in **test
+   mode** first (the toggle is top right) — do this whole section in test
+   mode before touching live keys.
+2. **Product catalog → Add product.** Name it exactly **Academic Term Pass**
+   (this is display-only, but keep it unambiguous in your own dashboard).
+3. Give it **one price**: **$5.99 USD**, billing type **One time**. Do not
+   create a recurring price — the product has no renewal.
+4. Save, then open the price and copy its id (`price_...`) into
+   `STRIPE_TERM_PASS_PRICE_ID`. This id is the only place the price lives;
+   `src/lib/pricing.ts` reads the displayed amount back from Stripe-adjacent
+   config, and nothing in the codebase hardcodes `5.99`.
+5. **Developers → API keys → Secret key** → copy into `STRIPE_SECRET_KEY`
+   (`sk_test_...` for now). `STRIPE_PUBLISHABLE_KEY` lives on the same page;
+   set it too even though the server does not read it today — it exists for
+   a possible future client-side Stripe element.
+
+### 9b. Webhook endpoint
+
+Premium is granted **only** by a verified webhook — the success redirect
+polls `GET /api/terms` and never activates anything itself, so an endpoint
+that isn't delivering means nobody's purchase ever completes, with no error
+visible in the UI.
+
+1. **Developers → Webhooks → Add endpoint.**
+2. Endpoint URL: `https://<APP_URL>/api/stripe/webhook` — the real deployed
+   origin, not localhost (local testing uses the Stripe CLI instead, below).
+3. Select exactly these events:
+   - `checkout.session.completed`
+   - `checkout.session.async_payment_succeeded`
+   - `checkout.session.expired`
+4. Save, then open the endpoint and copy its **Signing secret**
+   (`whsec_...`) into `STRIPE_WEBHOOK_SECRET`.
+
+### 9c. Local testing
+
+`stripe trigger checkout.session.completed` fires a synthetic event with no
+`client_reference_id` and no `metadata`, so the webhook handler has nothing to
+look up a term by — it will not fail loudly, it will just look up the metadata
+and find nothing to grant. Don't use `trigger` to test this flow.
+
+1. Install the [Stripe CLI](https://stripe.com/docs/stripe-cli), then:
+
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+
+2. The CLI prints its own `whsec_...` value on startup. Use **that** value as
+   `STRIPE_WEBHOOK_SECRET` in `.env.local` while `stripe listen` is running —
+   not the Dashboard endpoint's secret, which only matches events Stripe sends
+   directly to a deployed URL.
+3. Run a real test-mode checkout through the app (start a checkout for a term,
+   land on Stripe's hosted page) and pay with the standard test card
+   `4242 4242 4242 4242`, any future expiry, any CVC. That produces a genuine
+   `checkout.session.completed` event carrying the real `client_reference_id`
+   and `metadata.user_id` / `metadata.term_id`, which the CLI forwards to your
+   local server.
+4. Confirm the term flips to premium (`GET /api/terms` shows
+   `access: "premium"`) and that the terminal running `stripe listen` shows a
+   `200` for the forwarded event.
+
+### 9d. Going live
+
+1. Switch the Dashboard out of test mode.
+2. Re-create the price in **live mode** — test-mode and live-mode objects are
+   separate; a `price_...` id from test mode does not exist in live mode.
+   Copy the new id into the production `STRIPE_TERM_PASS_PRICE_ID`.
+3. Create a **new** webhook endpoint for the live mode, same URL and same
+   three events as 9b. It gets its own signing secret — copy that into the
+   production `STRIPE_WEBHOOK_SECRET`; it is not the same value as the
+   test-mode endpoint's.
+4. Swap `STRIPE_SECRET_KEY` and `STRIPE_PUBLISHABLE_KEY` for their
+   `sk_live_...` / `pk_live_...` equivalents.
+5. Redeploy — environment variable changes never apply to an existing
+   deployment (same rule as every other variable in step 1).
+
+### 9e. What to check after deploy
+
+1. On a staging term, buy a pass in test mode (9c's card works in any
+   environment still pointed at test-mode keys).
+2. Confirm the term reads **"Term Pass Active"** in the dashboard.
+3. Check the deploy log for the line `analytics.term_pass_purchased` — that
+   is `src/lib/analytics.ts`'s structured log for a completed grant, and its
+   absence with a successful-looking checkout means the webhook fired but the
+   grant logic didn't run.
+4. In the Stripe Dashboard, open the webhook endpoint's recent deliveries and
+   confirm the event shows a **200** response. A delivery stuck retrying, or
+   showing a 4xx/5xx, means the signature check or the raw-body handling
+   (below) is misconfigured in that environment — the purchase went through
+   on Stripe's side even though the app never saw it as valid.
+
+### Deployment note: raw body and `APP_URL`
+
+`POST /api/stripe/webhook` verifies the request with
+`stripe.webhooks.constructEvent`, which hashes the **exact raw bytes** of the
+request body against the `Stripe-Signature` header. Anything that
+re-serializes the body before your route sees it — a body-parsing proxy, a
+WAF that rewrites JSON, an edge middleware that reads and re-emits the
+request — breaks the signature and every event is rejected. Make sure nothing
+sits in front of this route that parses or rewrites the body.
+
+`APP_URL` must be set in every environment that takes real payments: the
+checkout session's success and cancel URLs
+(`/dashboard?checkout=success&term=…`) are built from it, the same way the
+calendar feed and OAuth redirect already depend on it (step 1). An unset
+`APP_URL` on a host that trusts a forwarded `Host` header means a checkout
+that redirects the payer somewhere you don't control.
+
+### Migration
+
+Re-run `supabase/schema.sql` — it is written to be idempotent (step 2), so
+running it again on a database that predates the Term Pass adds the new
+`academic_terms` and `stripe_events` tables and the `courses.term_id` column
+without touching anything that already exists.
+
+There is no data-migration script to run. Existing courses have no `term_id`
+until `ensureTermsBackfilled(userId)` groups a user's term-less courses into
+terms on their **next dashboard load** — the same read-side pattern the
+codebase already uses for every earlier schema addition. Nothing needs to be
+scheduled or backfilled ahead of the deploy; the first login after this
+release does the work per user, lazily. See "Existing users (migration and
+grandfathering)" in `docs/TERM-PASS.md` for exactly how courses get grouped.
 
 ---
 

@@ -1,4 +1,5 @@
-import type { ApiResult } from "@/lib/types";
+import type { AcademicTerm, ApiResult } from "@/lib/types";
+import type { TermAccess } from "@/lib/terms";
 
 /**
  * Every call funnels through here so a missing, half-deployed or erroring API
@@ -6,10 +7,115 @@ import type { ApiResult } from "@/lib/types";
  * rejection. The dashboard then renders its empty/error states as designed.
  */
 
+/**
+ * What the paywall is allowed to print. The amount comes from the server
+ * (`src/lib/pricing.ts`) rather than from any string in the client, so the
+ * number a student reads is the number Stripe was configured with -- see
+ * docs/TERM-PASS.md.
+ */
+export interface TermPassDisplay {
+  name: string;
+  amountCents: number;
+  currency: string;
+  display: string;
+  oneTime: boolean;
+}
+
+export interface BillingConfig {
+  /** False when this server has no Stripe keys; the card then offers no button. */
+  ready: boolean;
+  termPass: TermPassDisplay;
+}
+
 export interface AppConfig {
   demoMode: boolean;
   googleReady: boolean;
   openaiReady: boolean;
+  /**
+   * Optional rather than required, for the same reason `UploadResult.notion`
+   * is: a server that has not shipped the billing half of `/api/config` simply
+   * omits the key, and the honest reading of "no billing information" is "no
+   * payments configured" -- which is exactly the variant the paywall card shows.
+   * Never defaulted to a hard-coded price: nothing in the client says 5.99.
+   */
+  billing?: BillingConfig;
+}
+
+/**
+ * A term as `GET /api/terms` hands it over: the row, plus the three things only
+ * the server can count or decide. `access` and `canAddCourse` are `termAccess`
+ * and `canAddCourse` from `@/lib/terms` already applied, so the UI never has to
+ * re-derive entitlement from a clock the server did not use.
+ *
+ * Defined here rather than imported from the server's entitlement module on
+ * purpose: that module reaches the store, and a value import of it would pull
+ * the whole persistence layer into the browser bundle.
+ */
+export type TermSummary = AcademicTerm & {
+  courseCount: number;
+  access: TermAccess;
+  canAddCourse: boolean;
+};
+
+/** The body of the 402 the upload and course routes answer a full free term with. */
+export interface Paywall {
+  term: TermSummary;
+  courseCount: number;
+}
+
+/**
+ * A failed call. `paywall` rides along on the 402 exactly as `duplicateOf` does
+ * on the upload route's 409: the envelope hands back whatever the server sent,
+ * so the extra key survives -- this only gives it a name.
+ */
+export interface ApiFailure {
+  ok: false;
+  error: string;
+  detail?: string;
+  paywall?: Paywall;
+}
+
+export type ClientResult<T> = { ok: true; data: T } | ApiFailure;
+
+/**
+ * The paywall body, read defensively. A server that has not shipped the 402
+ * yet, or one answering a plain 402 from a proxy, must read as an ordinary
+ * failure rather than render a card with an undefined term in it.
+ */
+export function paywallOf(result: unknown): Paywall | null {
+  if (typeof result !== "object" || result === null) return null;
+  const value = (result as { paywall?: unknown }).paywall;
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as { term?: unknown; courseCount?: unknown };
+  const term = record.term;
+  if (typeof term !== "object" || term === null) return null;
+  if (typeof (term as { id?: unknown }).id !== "string") return null;
+  return {
+    term: term as TermSummary,
+    courseCount:
+      typeof record.courseCount === "number" && Number.isFinite(record.courseCount)
+        ? record.courseCount
+        : 0,
+  };
+}
+
+/** The `code` a route puts on a refusal it wants the UI to branch on ("sign_in_required"). */
+export function errorCodeOf(result: unknown): string | null {
+  if (typeof result !== "object" || result === null) return null;
+  const code = (result as { code?: unknown }).code;
+  return typeof code === "string" && code.length > 0 ? code : null;
+}
+
+/**
+ * One funnel event, fired and forgotten. `apiPost` never rejects, so there is
+ * nothing to catch and nothing a student could do with the news that an
+ * analytics line did not land.
+ */
+export function trackEvent(
+  event: string,
+  fields?: Record<string, unknown>,
+): void {
+  void apiPost("/api/analytics", { event, ...(fields ? { fields } : {}) });
 }
 
 export type ChatRole = "user" | "assistant";
@@ -46,7 +152,7 @@ function readableDetail(body: string): string | undefined {
   return trimmed;
 }
 
-async function envelope<T>(request: Promise<Response>): Promise<ApiResult<T>> {
+async function envelope<T>(request: Promise<Response>): Promise<ClientResult<T>> {
   let response: Response;
   try {
     response = await request;
@@ -78,17 +184,17 @@ async function envelope<T>(request: Promise<Response>): Promise<ApiResult<T>> {
     };
   }
 
-  if (isApiResult(parsed)) return parsed as ApiResult<T>;
+  if (isApiResult(parsed)) return parsed as ClientResult<T>;
   return { ok: false, error: WIRE_FAILURE };
 }
 
-export function apiGet<T>(path: string): Promise<ApiResult<T>> {
+export function apiGet<T>(path: string): Promise<ClientResult<T>> {
   return envelope<T>(
     fetch(path, { headers: { Accept: "application/json" }, cache: "no-store" }),
   );
 }
 
-export function apiPost<T>(path: string, body?: unknown): Promise<ApiResult<T>> {
+export function apiPost<T>(path: string, body?: unknown): Promise<ClientResult<T>> {
   return envelope<T>(
     fetch(path, {
       method: "POST",
@@ -102,7 +208,7 @@ export function apiPost<T>(path: string, body?: unknown): Promise<ApiResult<T>> 
 }
 
 /** Partial updates — the row editor and its Confirm button both come through here. */
-export function apiPatch<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+export function apiPatch<T>(path: string, body: unknown): Promise<ClientResult<T>> {
   return envelope<T>(
     fetch(path, {
       method: "PATCH",
@@ -116,7 +222,7 @@ export function apiPatch<T>(path: string, body: unknown): Promise<ApiResult<T>> 
 }
 
 /** Same envelope as the rest — a DELETE that 404s still degrades to `ok: false`. */
-export function apiDelete<T>(path: string, body?: unknown): Promise<ApiResult<T>> {
+export function apiDelete<T>(path: string, body?: unknown): Promise<ClientResult<T>> {
   return envelope<T>(
     fetch(path, {
       method: "DELETE",
@@ -176,7 +282,7 @@ export function apiUpload<T>(
   path: string,
   file: File,
   handlers: UploadHandlers = {},
-): Promise<ApiResult<T>> {
+): Promise<ClientResult<T>> {
   return new Promise((resolve) => {
     const form = new FormData();
     form.append("file", file);
@@ -203,7 +309,7 @@ export function apiUpload<T>(
     const onAbort = () => xhr.abort();
     signal?.addEventListener("abort", onAbort);
 
-    const settle = (result: ApiResult<T>) => {
+    const settle = (result: ClientResult<T>) => {
       signal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
@@ -229,7 +335,7 @@ export function apiUpload<T>(
         });
         return;
       }
-      if (isApiResult(parsed)) settle(parsed as ApiResult<T>);
+      if (isApiResult(parsed)) settle(parsed as ClientResult<T>);
       else settle({ ok: false, error: WIRE_FAILURE });
     });
 

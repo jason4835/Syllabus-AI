@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseSyllabus } from "@/lib/parse";
+import { addDays } from "@/lib/parse/dates";
+import { MAX_TERM_DAYS, guessTermType, seasonName, termLengthDays } from "@/lib/terms";
+import type { ParsedSyllabus } from "@/lib/types";
 import { isDemoUser, resolveSession } from "@/lib/session";
 import type { ResolvedSession } from "@/lib/session";
 import { store } from "@/lib/store";
@@ -121,13 +124,37 @@ async function seed(userId: string): Promise<void> {
   const existing = await store.listCourses(userId);
   if (existing.length > 0) return;
 
+  const parsedAll: ParsedSyllabus[] = [];
   for (const name of FIXTURES) {
     const buf = await readFile(path.join(process.cwd(), "fixtures", name));
     // Never the model, however the server is configured. The fixtures are
     // static, so the model's answer for them is the same every time -- and this
     // runs once per visitor, on routes that do not and should not charge anyone
     // for showing them a sample. It was the only unmetered spend in the app.
-    const parsed = attachWeights(await parseSyllabus(buf, name, { offline: true }));
-    await store.createCourse(userId, parsed);
+    parsedAll.push(attachWeights(await parseSyllabus(buf, name, { offline: true })));
+  }
+
+  // The sample courses live in one term the sandbox owns, with one free slot
+  // left over: the whole point of the sample is that the visitor uploads a
+  // syllabus of their own into it, and a term whose allowance the fixtures
+  // had used up showed them the paywall before they had tried anything.
+  const starts = parsedAll.map((p) => p.course.startDate).filter((d): d is string => Boolean(d)).sort();
+  const ends = parsedAll.map((p) => p.course.endDate).filter((d): d is string => Boolean(d)).sort();
+  const startDate = starts[0] ?? null;
+  let endDate = ends[ends.length - 1] ?? null;
+  if (startDate && endDate && termLengthDays(startDate, endDate) > MAX_TERM_DAYS) {
+    endDate = addDays(startDate, MAX_TERM_DAYS) ?? endDate;
+  }
+  const dated = Boolean(startDate && endDate);
+  const term = await store.createTerm(userId, {
+    name: startDate ? seasonName(startDate) : "Sample semester",
+    termType: dated ? guessTermType(startDate as string, endDate as string) : "custom",
+    startDate: dated ? startDate : null,
+    endDate: dated ? endDate : null,
+    freeCourses: FIXTURES.length + 1,
+    confirmedAt: dated ? new Date().toISOString() : null,
+  });
+  for (const parsed of parsedAll) {
+    await store.createCourse(userId, parsed, term.id);
   }
 }

@@ -10,6 +10,7 @@ import type {
 } from "@/lib/types";
 import { needsReview } from "@/lib/types";
 import { apiDelete, apiPost } from "@/components/api-client";
+import type { AppConfig, TermSummary } from "@/components/api-client";
 import { useIsNarrow } from "@/components/use-narrow";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +87,8 @@ export function RoadmapPanel({
   courses,
   assessments,
   accents,
+  terms = [],
+  config = null,
   coursePages = {},
   onRetry,
   onAssessmentChanged,
@@ -103,6 +106,14 @@ export function RoadmapPanel({
   courses: Course[];
   assessments: Assessment[];
   accents: Record<string, string>;
+  /**
+   * The student's terms. Three things here need them: the course header prints
+   * the term's NAME, the editor moves a course between terms, and the setup card
+   * asks about a term the upload inferred but nobody has confirmed.
+   */
+  terms?: TermSummary[];
+  /** Passed down for the paywall card only; null while `/api/config` is in flight. */
+  config?: AppConfig | null;
   /** courseId -> Notion page URL, from the Notion status the shell holds. */
   coursePages?: Record<string, string>;
   onRetry: () => void;
@@ -220,6 +231,9 @@ export function RoadmapPanel({
             const unreviewed = items.filter(needsReview).length;
             const bodyId = `roadmap-course-${course.id}`;
             const notionUrl = coursePages[course.id];
+            const termName =
+              terms.find((term) => term.id === course.termId)?.name ??
+              course.term;
             // Every affordance below needs somewhere to put its result; without
             // a listener the control would change the server and not the page.
             const editable =
@@ -247,6 +261,8 @@ export function RoadmapPanel({
                     <CourseEditor
                       course={course}
                       color={color}
+                      terms={terms}
+                      config={config}
                       focusField={editFocusField}
                       onSaved={(updated) => {
                         onCourseChanged?.(updated);
@@ -271,7 +287,11 @@ export function RoadmapPanel({
                     <p className="mt-0.5 text-[0.8125rem] text-muted">
                       {[
                         course.instructor,
-                        course.term,
+                        /* The term ROW's name, which is what the rest of the
+                           dashboard groups this course under. `course.term` is
+                           the syllabus's own words and stays as the fallback for
+                           a course that has no term row. */
+                        termName,
                         pluralize(items.length, "item"),
                       ]
                         .filter(Boolean)
@@ -406,6 +426,7 @@ export function RoadmapPanel({
                       className="mt-3"
                       course={course}
                       assessments={items}
+                      terms={terms}
                       onCourseChanged={(updated) => onCourseChanged?.(updated)}
                       onAnswered={onSetupAnswered}
                     />

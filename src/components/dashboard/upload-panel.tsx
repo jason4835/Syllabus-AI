@@ -4,18 +4,30 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { needsReview } from "@/lib/types";
 import type { DragEvent } from "react";
 import type { Assessment, Course } from "@/lib/types";
-import { apiUpload } from "@/components/api-client";
+import { apiUpload, paywallOf } from "@/components/api-client";
+import type { AppConfig, TermSummary } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, Spinner } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ErrorState, Note } from "@/components/ui/states";
 import { AlertIcon, CheckIcon, FileIcon, UploadIcon } from "@/components/icons";
-import { AssessmentRow } from "@/components/dashboard/assessment-row";
+import {
+  AssessmentRow,
+  FORM_INPUT,
+  FormField,
+} from "@/components/dashboard/assessment-row";
 import { SectionChooser } from "@/components/dashboard/section-chooser";
 import { SetupJump } from "@/components/dashboard/setup-card";
+import { TermPassCard } from "@/components/dashboard/term-pass-card";
+import {
+  TermFields,
+  emptyTermDraft,
+  validateTermDraft,
+} from "@/components/dashboard/term-form";
+import type { TermDraft } from "@/components/dashboard/term-form";
 import { sectionGroups } from "@/lib/sections";
 import { setupQuestions } from "@/lib/setup";
-import { formatPercent, pluralize } from "@/components/format";
+import { formatDateRange, formatPercent, pluralize } from "@/components/format";
 
 /** Mirrors the route's own limit, so the wording matches what the server says. */
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -50,6 +62,56 @@ export interface UploadResult {
     hubUrl: string | null;
     error: string | null;
   } | null;
+  /**
+   * The term this course was filed under. Optional for the same reason `notion`
+   * is: a server without the terms half deployed simply omits it.
+   */
+  term?: TermSummary | null;
+  /**
+   * True when the server inferred the term from the syllabus and created it
+   * unconfirmed. The setup card is what asks about it — see `term-confirm` in
+   * `@/lib/setup` — so this panel only has to make sure the page re-reads its
+   * terms afterwards.
+   */
+  termSuggested?: boolean;
+}
+
+/** "Let the syllabus decide" — sends no term at all and lets the server infer one. */
+const INFER_TERM = "";
+/** The chooser's own option, not a term id: reveals the inline new-term form. */
+const NEW_TERM = "new";
+
+/** `YYYY-MM-DD` for today in the student's own zone, like every date they read. */
+function todayIso(now = new Date()): string {
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Which term a syllabus dropped right now most likely belongs to: the one
+ * running today, else the one most recently created.
+ *
+ * A guess, and only ever a default -- the select is right there, and the server
+ * re-decides from the syllabus itself when nothing is sent. Today's term beats
+ * the newest one because a student uploading in week two of the autumn has
+ * usually just created the autumn term, and one uploading a late add in October
+ * has not.
+ */
+function defaultTermId(terms: TermSummary[], now = new Date()): string {
+  const today = todayIso(now);
+  const current = terms.find(
+    (term) =>
+      term.startDate !== null &&
+      term.endDate !== null &&
+      term.startDate <= today &&
+      today <= term.endDate,
+  );
+  if (current) return current.id;
+  const newest = [...terms].sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  )[0];
+  return newest ? newest.id : INFER_TERM;
 }
 
 /** What the 409 says we already have. */
@@ -67,6 +129,24 @@ type Phase =
   | { kind: "done"; result: UploadResult }
   /** The file is held here, so answering the question never means re-picking it. */
   | { kind: "duplicate"; file: File; duplicate: DuplicateCourse }
+  /**
+   * A file was picked for a term whose free course is already used, so nothing
+   * was sent. The file is HELD -- it never left the browser, so re-attempting it
+   * against a term with room costs nothing and must not cost the student a trip
+   * back to the file picker.
+   *
+   * This is an answer to an attempt, never a state the panel opens in: a card
+   * that appeared on load, before anyone had done anything, would read as a
+   * popup no matter how it was styled.
+   */
+  | { kind: "blocked"; file: File; term: TermSummary }
+  /**
+   * The server's 402, after a parse. The file is NOT held here -- the parse
+   * already happened and re-sending the same bytes would spend another one -- so
+   * the card stands until another term is chosen or the pass is bought, and the
+   * page's term refetch clears it.
+   */
+  | { kind: "paywall"; term: TermSummary }
   /**
    * `file` is the one that failed, when there was one and retrying it makes
    * sense. "Try again" only reset the panel, so the student had to find and
@@ -101,6 +181,8 @@ function readDuplicate(result: unknown): DuplicateCourse | null {
 export function UploadPanel({
   demoMode,
   accent,
+  terms = [],
+  config = null,
   onUploaded,
   onAssessmentChanged,
   onCourseChanged,
@@ -110,6 +192,14 @@ export function UploadPanel({
   demoMode: boolean;
   /** Accent the newly added course will carry elsewhere in the dashboard. */
   accent: string;
+  /**
+   * The student's terms, for the chooser above the dropzone. Empty is a real
+   * state -- a first upload has no terms to choose from, and the server infers
+   * one from the syllabus.
+   */
+  terms?: TermSummary[];
+  /** Needed only by the paywall card; null while `/api/config` is in flight. */
+  config?: AppConfig | null;
   onUploaded: (result: UploadResult) => void;
   /** Hand a confirmed or edited item back to the shell. */
   onAssessmentChanged?: (updated: Assessment) => void;
@@ -133,8 +223,64 @@ export function UploadPanel({
   onAnswerQuestions?: (courseId: string) => void;
 }) {
   const inputId = useId();
+  const fieldId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+
+  /**
+   * Which term the next upload goes into: a term id, `INFER_TERM` (send
+   * nothing), or `NEW_TERM` (the inline form below).
+   */
+  const [termChoice, setTermChoice] = useState<string>(INFER_TERM);
+  const [termDraft, setTermDraft] = useState<TermDraft>(() => emptyTermDraft());
+  const [termError, setTermError] = useState<string | null>(null);
+  /**
+   * The default is applied once, the first time terms arrive. Re-applying it on
+   * every refetch would quietly undo a choice the student had already made --
+   * and a refetch happens after every upload.
+   */
+  const defaulted = useRef(false);
+  useEffect(() => {
+    if (defaulted.current || terms.length === 0) return;
+    defaulted.current = true;
+    setTermChoice(defaultTermId(terms));
+  }, [terms]);
+
+  const selectedTerm =
+    termChoice === INFER_TERM || termChoice === NEW_TERM
+      ? null
+      : (terms.find((term) => term.id === termChoice) ?? null);
+
+  /** The term has no room and the student asked to see the pass anyway. */
+  const [unlockOpen, setUnlockOpen] = useState(false);
+
+  /**
+   * The paywall as an ANSWER: a file was picked for a full term (nothing sent),
+   * or the server refused one after the parse. Both replace the dropzone,
+   * because in both cases the next step is a decision about the term and not
+   * another file. Neither is derived from the selection alone -- see the
+   * `blocked` phase.
+   */
+  const attempt: { term: TermSummary; fileName: string | null } | null =
+    phase.kind === "blocked"
+      ? { term: phase.term, fileName: phase.file.name }
+      : phase.kind === "paywall"
+        ? { term: phase.term, fileName: null }
+        : null;
+
+  /** A term is selected, and it has no room for another course. */
+  const selectedIsFull = selectedTerm !== null && !selectedTerm.canAddCourse;
+
+  /**
+   * "Choose a different term" is a pointer at the chooser, not a change of it:
+   * silently moving someone's selection to make a card go away is the app
+   * deciding for them. Picking one with room clears the card -- and, when a file
+   * is being held, picks the upload back up where it left off.
+   */
+  const chooseAnotherTerm = useCallback(() => {
+    selectRef.current?.focus();
+  }, []);
   /**
    * The one handle on a request already in flight. A hung upload used to be
    * unstoppable: no timeout, no signal, and the reset control hidden while
@@ -186,8 +332,66 @@ export function UploadPanel({
 
   const busy = phase.kind === "uploading" || phase.kind === "parsing";
 
+  /**
+   * One line about the selected term, under the select. What a student needs to
+   * know before the file moves is whether this course is the free one — said as
+   * a fact, not as a nudge.
+   */
+  const termHint =
+    termChoice === NEW_TERM
+      ? null
+      : selectedTerm === null
+        ? "The dates in your syllabus decide. You can move the course afterwards."
+        : selectedTerm.access === "premium"
+          ? "Term Pass active — every course in this term is unlocked."
+          : selectedTerm.access === "expired"
+            ? "The pass for this term has run out."
+            : selectedTerm.canAddCourse
+              ? "Your first course in this term is free."
+              // Said by the line below instead, which carries the way out of it.
+              : null;
+
+  /**
+   * What one term choice means on the wire, decided in one place so the picker,
+   * the drop handler and the re-attempt cannot disagree about it.
+   *
+   * `choice` is passed in rather than read from state because the re-attempt
+   * happens in the same tick as the change that triggered it, when `termChoice`
+   * still holds the old value.
+   */
+  const resolveTermFields = useCallback(
+    (
+      choice: string,
+    ):
+      | { kind: "ok"; fields: Record<string, string> }
+      | { kind: "invalid"; error: string }
+      | { kind: "blocked"; term: TermSummary } => {
+      if (choice === NEW_TERM) {
+        const checked = validateTermDraft(termDraft);
+        if ("error" in checked) return { kind: "invalid", error: checked.error };
+        return { kind: "ok", fields: { newTerm: JSON.stringify(checked.input) } };
+      }
+      const term =
+        choice === INFER_TERM
+          ? null
+          : (terms.find((candidate) => candidate.id === choice) ?? null);
+      // Nothing sent: the server reads the term out of the syllabus itself.
+      if (term === null) return { kind: "ok", fields: {} };
+      // The courtesy check. The server repeats it after the parse; doing it here
+      // is what stops a student paying for an extraction they cannot keep.
+      if (!term.canAddCourse) return { kind: "blocked", term };
+      return { kind: "ok", fields: { termId: term.id } };
+    },
+    [termDraft, terms],
+  );
+
   const send = useCallback(
-    async (file: File, fields?: Record<string, string>) => {
+    async (
+      file: File,
+      fields?: Record<string, string>,
+      /** The term to send it to, when it is not the one in state yet. */
+      choiceOverride?: string,
+    ) => {
       /**
        * PDF, Word or plain text. Three layers used to disagree about the last
        * one: the server accepted `.txt`, this check refused it, the description
@@ -233,6 +437,27 @@ export function UploadPanel({
         return;
       }
 
+      /**
+       * The term, as one multipart field: an id when a term was picked, a JSON
+       * `TermInput` when one is being created here, and nothing at all when the
+       * syllabus is left to decide.
+       *
+       * A term with no room stops the upload HERE, holding the file: this is the
+       * moment the paywall is about, and it is the first moment it appears.
+       */
+      const resolved = resolveTermFields(choiceOverride ?? termChoice);
+      if (resolved.kind === "invalid") {
+        setTermError(resolved.error);
+        return;
+      }
+      if (resolved.kind === "blocked") {
+        setPhase({ kind: "blocked", file, term: resolved.term });
+        return;
+      }
+      setTermError(null);
+      /** A retry's own fields (`replace`, `allowDuplicate`) win over nothing here. */
+      const allFields = { ...resolved.fields, ...fields };
+
       const controller = new AbortController();
       abortRef.current?.abort();
       abortRef.current = controller;
@@ -240,7 +465,7 @@ export function UploadPanel({
       setPhase({ kind: "uploading", fileName: file.name, percent: 0 });
 
       const result = await apiUpload<UploadResult>("/api/upload", file, {
-        fields,
+        fields: allFields,
         signal: controller.signal,
         onProgress: (percent) => {
           setPhase((current) =>
@@ -262,6 +487,14 @@ export function UploadPanel({
       abortRef.current = null;
 
       if (!result.ok) {
+        // The 402 before the 409: a term that is full is not a question about
+        // this file, and retrying it would spend another parse to be told the
+        // same thing.
+        const paywall = paywallOf(result);
+        if (paywall) {
+          setPhase({ kind: "paywall", term: paywall.term });
+          return;
+        }
         const duplicate = readDuplicate(result);
         if (duplicate) {
           setPhase({ kind: "duplicate", file, duplicate });
@@ -272,19 +505,30 @@ export function UploadPanel({
           error: result.error,
           detail: result.detail,
           file,
-          fields,
+          fields: allFields,
         });
         return;
       }
       setPhase({ kind: "done", result: result.data });
 
+      /**
+       * A term just created here becomes the selection, so a second syllabus
+       * for the same semester does not have to be told about it twice — and the
+       * form does not sit there holding a term that already exists.
+       */
+      const created = result.data.term ?? null;
+      if ((choiceOverride ?? termChoice) === NEW_TERM && created) {
+        setTermChoice(created.id);
+        setTermDraft(emptyTermDraft());
+      }
+
       // `replaced` comes from the server; the id we sent is the fallback for a
       // server that performs the swap without reporting it.
-      const replacedId = result.data.replaced ?? fields?.replace ?? null;
+      const replacedId = result.data.replaced ?? allFields.replace ?? null;
       if (replacedId && onCourseReplaced) onCourseReplaced(replacedId, result.data);
       else onUploaded(result.data);
     },
-    [onUploaded, onCourseReplaced],
+    [onUploaded, onCourseReplaced, termChoice, resolveTermFields],
   );
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -333,6 +577,153 @@ export function UploadPanel({
         />
       ) : (
         <div className="space-y-3">
+          {/* Above the dropzone, because it is the one decision that has to be
+              made before the file moves — and after it, a wrong term costs a
+              parse. "Let the syllabus decide" stays the honest default: the
+              server reads the dates out of the document either way. */}
+          <div>
+            <FormField
+              label="Add it to"
+              htmlFor={`${fieldId}-term`}
+              hint={termHint}
+            >
+              <select
+                ref={selectRef}
+                id={`${fieldId}-term`}
+                value={termChoice}
+                disabled={busy}
+                aria-describedby={termHint ? `${fieldId}-term-hint` : undefined}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setTermError(null);
+                  setUnlockOpen(false);
+                  setTermChoice(next);
+                  // A 402 belongs to the term it came from; a new choice retires
+                  // it. The parse it cost is gone either way, so there is no file
+                  // to pick back up.
+                  if (phase.kind === "paywall") setPhase({ kind: "idle" });
+                  /**
+                   * A held file and a term with room: carry on. The student
+                   * already said "upload this" once, and asking them to say it
+                   * again is the panel forgetting what it is holding. A choice
+                   * with no room re-blocks against the new term, which is the
+                   * truthful answer rather than a stale card.
+                   */
+                  if (phase.kind === "blocked" && next !== NEW_TERM) {
+                    void send(phase.file, undefined, next);
+                  }
+                }}
+                className={FORM_INPUT}
+              >
+                <option value={INFER_TERM}>Let the syllabus decide</option>
+                {terms.map((term) => (
+                  <option key={term.id} value={term.id}>
+                    {term.name} — {formatDateRange(term.startDate, term.endDate)}
+                  </option>
+                ))}
+                <option value={NEW_TERM}>New term…</option>
+              </select>
+            </FormField>
+
+            {termChoice === NEW_TERM ? (
+              <div className="mt-2.5 rounded-lg border border-line bg-raised p-3">
+                <TermFields
+                  draft={termDraft}
+                  fieldId={`${fieldId}-new`}
+                  disabled={busy}
+                  onChange={(changes) => {
+                    setTermError(null);
+                    setTermDraft((current) => ({ ...current, ...changes }));
+                  }}
+                />
+              </div>
+            ) : null}
+
+            {termError ? (
+              <p
+                role="alert"
+                className="mt-2 rounded-md border border-danger-line bg-danger-soft px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-danger"
+              >
+                {termError}
+              </p>
+            ) : null}
+
+            {/* One muted line, not a card: a term with no room is a fact about
+                the term, and a returning student who came to read their roadmap
+                should be told it in passing rather than sold to. The pass is one
+                click away for anyone who wants it now. */}
+            {selectedIsFull && !attempt ? (
+              <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-[0.75rem] leading-relaxed text-muted">
+                <span>
+                  This term&rsquo;s free course is used — the next one needs a
+                  Term Pass.
+                </span>
+                <button
+                  type="button"
+                  aria-expanded={unlockOpen}
+                  onClick={() => setUnlockOpen((current) => !current)}
+                  className="rounded-sm font-medium underline decoration-line-strong underline-offset-2 transition-colors hover:text-ink"
+                >
+                  {unlockOpen ? "Hide" : "Unlock"}
+                </button>
+              </p>
+            ) : null}
+
+            {selectedIsFull && !attempt && unlockOpen && config && selectedTerm ? (
+              <div className="mt-2.5">
+                <TermPassCard term={selectedTerm} config={config} />
+              </div>
+            ) : null}
+          </div>
+
+          {attempt ? (
+            <div className="space-y-2">
+              {/* The file is still here. Saying so is the difference between
+                  "nothing happened" and "your file is gone". */}
+              {attempt.fileName ? (
+                <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
+                  <span className="break-all font-medium text-ink">
+                    {attempt.fileName}
+                  </span>{" "}
+                  wasn&rsquo;t uploaded — {attempt.term.name} already has its free
+                  course. Pick a term with room and it goes straight through.
+                </p>
+              ) : null}
+              {config ? (
+                <TermPassCard
+                  term={attempt.term}
+                  config={config}
+                  onChooseDifferentTerm={chooseAnotherTerm}
+                />
+              ) : (
+                <Note tone="warn">
+                  {attempt.term.name} already has its free course. Loading your
+                  payment options…
+                </Note>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* The way on for a term typed into the form above, which the
+                    select's own change cannot send on its own. */}
+                {phase.kind === "blocked" && termChoice === NEW_TERM ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void send(phase.file)}
+                  >
+                    Upload into this new term
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPhase({ kind: "idle" })}
+                >
+                  Not now
+                </Button>
+              </div>
+            </div>
+          ) : (
           <div
             onDragOver={(event) => {
               event.preventDefault();
@@ -429,6 +820,7 @@ export function UploadPanel({
               </>
             )}
           </div>
+          )}
 
           {phase.kind === "duplicate" ? (
             <DuplicateChoice
@@ -527,16 +919,21 @@ function ExtractionResult({
   onCourseChanged?: (updated: Course) => void;
   onAnswerQuestions?: (courseId: string) => void;
 }) {
-  const { course, assessments, warnings, notion } = result;
+  const { course, assessments, warnings, notion, term } = result;
   const flagged = assessments.filter(needsReview);
   /**
    * The gaps this card cannot close. Sections are asked right here, so they are
    * not counted: a link promising three things to finish, one of which is the
    * radio group directly below it, is the panel talking about itself.
+   *
+   * A term the server inferred counts as one of them: the setup card asks about
+   * it first, and a count that left it out would not match what the student
+   * finds when they follow the link.
    */
-  const elsewhere = setupQuestions(course, assessments).filter(
-    (question) => question.kind !== "section",
-  ).length;
+  const elsewhere =
+    setupQuestions(course, assessments).filter(
+      (question) => question.kind !== "section",
+    ).length + (result.termSuggested ? 1 : 0);
   const totalWeight = course.gradeWeights.reduce(
     (sum, row) => sum + row.weightPercent,
     0,
@@ -559,8 +956,12 @@ function ExtractionResult({
           {course.title}
         </h3>
         <p className="mt-1 text-[0.8125rem] text-muted">
-          {[course.instructor, course.term].filter(Boolean).join(" · ") ||
-            "No instructor or term listed"}
+          {/* The term ROW's name when there is one — it is what the rest of the
+              dashboard now groups this course under. `course.term` is the
+              syllabus's own words, kept as the fallback. */}
+          {[course.instructor, term?.name ?? course.term]
+            .filter(Boolean)
+            .join(" · ") || "No instructor or term listed"}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Badge tone="accent">

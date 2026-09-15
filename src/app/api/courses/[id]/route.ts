@@ -1,4 +1,9 @@
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
+import {
+  PaywallError,
+  assertCanAddCourse,
+  paywallResponse,
+} from "@/lib/entitlement";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { archiveNotionPages } from "@/lib/notion/sync";
 import { log, logApiError } from "@/lib/log";
@@ -77,6 +82,30 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
         { ...current, meetingTimes: patch.meetingTimes ?? current.meetingTimes },
         patch.sections,
       );
+    }
+
+    /**
+     * Moving a course into another term is the second way a course can enter one,
+     * so it meets the same two checks the upload does: the term has to be the
+     * student's, and it has to have room. Without this, the paywall would be one
+     * PATCH away from being optional.
+     *
+     * The course excludes itself from the count, so re-sending the term it is
+     * already in, or moving it out and back, is not refused by its own presence.
+     * Clearing `termId` (null) is always allowed -- it adds nothing to any term --
+     * and the backfill will file the course again on the next read.
+     */
+    if (patch.termId !== undefined && patch.termId !== null && patch.termId !== current.termId) {
+      const term = await store.getTerm(userId, patch.termId);
+      // 422 rather than 404: the missing thing is a field in this request, not
+      // the course the URL names. Not-yours and no-such-term are one answer.
+      if (!term) return fail("That term is not yours.", 422);
+      try {
+        await assertCanAddCourse(userId, term, { excludingCourseId: id });
+      } catch (err) {
+        if (err instanceof PaywallError) return paywallResponse(err);
+        throw err;
+      }
     }
 
     const updated = await store.updateCourse(userId, id, patch);

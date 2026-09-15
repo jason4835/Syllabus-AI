@@ -7,3 +7,6 @@ node_modules
 next-env.d.ts
 .DS_Store
 next.config.js
+
+# Local editor/agent launch configs (carry local secrets)
+.claude/

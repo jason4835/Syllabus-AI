@@ -25,13 +25,16 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
+  AcademicTerm,
   Assessment,
   Course,
   NotionConnection,
   NotionLink,
   ParsedSyllabus,
+  TermInput,
   User,
 } from "@/lib/types";
+import { FREE_COURSES_PER_TERM } from "@/lib/terms";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -80,13 +83,26 @@ interface LegacyCalendarLinkRecord extends CalendarLink {
   updatedAt?: string;
 }
 
+/**
+ * One processed Stripe webhook delivery. No user id: the event is Stripe's, not
+ * a user's, and the only question ever asked of this collection is whether an
+ * id has been seen before.
+ */
+interface StripeEventRecord {
+  id: string;
+  type: string;
+  processedAt: string;
+}
+
 interface Database {
   users: User[];
   courses: Course[];
   assessments: Assessment[];
+  terms: AcademicTerm[];
   calendarLinks: CalendarLinkRecord[];
   notionConnections: NotionConnection[];
   notionLinks: NotionLink[];
+  stripeEvents: StripeEventRecord[];
 }
 
 /**
@@ -109,9 +125,11 @@ function emptyDatabase(): Database {
     users: [],
     courses: [],
     assessments: [],
+    terms: [],
     calendarLinks: [],
     notionConnections: [],
     notionLinks: [],
+    stripeEvents: [],
   };
 }
 
@@ -156,9 +174,41 @@ function normalizeCourse(row: LegacyCourseRecord): Course {
   const { section: _legacySection, ...rest } = row;
   return {
     ...rest,
+    // A course written before terms existed has no `termId` key at all, and
+    // `undefined` would reach the backfill as a missing property rather than as
+    // "this course has no term yet" -- which is exactly the question it asks.
+    termId: row.termId ?? null,
     meetingTimes: normalizeMeetingTimes(row.meetingTimes),
     sections: Array.isArray(row.sections) ? row.sections : legacy ? [legacy] : [],
     noClass: Array.isArray(row.noClass) ? row.noClass : [],
+  };
+}
+
+/**
+ * And for terms, for the same reason the others get one.
+ *
+ * Nothing on disk predates `academic_terms` -- the collection is new -- but a
+ * hand-edited demo database, or a row written by a build that adds a column
+ * later, must not reach a route with a missing `premium` or a missing
+ * allowance. `freeCourses` in particular decides whether a paywall appears, and
+ * `undefined` there would compare as false against every course count.
+ */
+function normalizeTerm(row: AcademicTerm): AcademicTerm {
+  return {
+    ...row,
+    startDate: row.startDate ?? null,
+    endDate: row.endDate ?? null,
+    freeCourses:
+      typeof row.freeCourses === "number" ? row.freeCourses : FREE_COURSES_PER_TERM,
+    confirmedAt: row.confirmedAt ?? null,
+    premium: row.premium === true,
+    premiumStartedAt: row.premiumStartedAt ?? null,
+    premiumExpiresAt: row.premiumExpiresAt ?? null,
+    paidEndDate: row.paidEndDate ?? null,
+    stripeCheckoutSessionId: row.stripeCheckoutSessionId ?? null,
+    stripePaymentIntentId: row.stripePaymentIntentId ?? null,
+    stripeCustomerId: row.stripeCustomerId ?? null,
+    updatedAt: row.updatedAt ?? row.createdAt,
   };
 }
 
@@ -223,6 +273,9 @@ async function readDatabase(): Promise<Database> {
       assessments: Array.isArray(shape.assessments)
         ? (shape.assessments as Assessment[]).map(normalizeAssessment)
         : [],
+      terms: Array.isArray(shape.terms)
+        ? (shape.terms as AcademicTerm[]).map(normalizeTerm)
+        : [],
       calendarLinks: Array.isArray(shape.calendarLinks)
         ? (shape.calendarLinks as LegacyCalendarLinkRecord[])
             .map(normalizeCalendarLink)
@@ -233,6 +286,9 @@ async function readDatabase(): Promise<Database> {
         : [],
       notionLinks: Array.isArray(shape.notionLinks)
         ? (shape.notionLinks as NotionLink[])
+        : [],
+      stripeEvents: Array.isArray(shape.stripeEvents)
+        ? (shape.stripeEvents as StripeEventRecord[])
         : [],
     };
   } catch {
@@ -391,6 +447,7 @@ function userRowsRemaining(
     db.assessments.filter(
       (a) => courseIds.has(a.courseId) || assessmentIds.has(a.id),
     ).length +
+    db.terms.filter((t) => t.userId === userId).length +
     db.calendarLinks.filter((l) => calendarLinkBelongsTo(l, userId, courseIds, assessmentIds))
       .length +
     db.notionConnections.filter((c) => c.userId === userId).length +
@@ -575,6 +632,11 @@ export function createLocalStore(): Store {
         db.assessments = db.assessments.filter(
           (a) => !courseIds.has(a.courseId),
         );
+        // Terms carry their owner, so no join path is needed -- but they do have
+        // to be named here, or `deleteUser` stops being total and the check
+        // below says so. The record of a payment goes with the account it
+        // belonged to; Stripe keeps its own.
+        db.terms = db.terms.filter((t) => t.userId !== userId);
         // Owned links go by owner; links written before the column existed go
         // by key. Both are needed for the delete to be total, and `deleteUser`
         // checks itself on that below.
@@ -607,6 +669,144 @@ export function createLocalStore(): Store {
       });
     },
 
+    async listTerms(userId) {
+      return readOnly((db) =>
+        clone(
+          db.terms
+            .filter((t) => t.userId === userId)
+            .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)),
+        ),
+      );
+    },
+
+    async getTerm(userId, id) {
+      return readOnly((db) => {
+        // Scoped by owner, so a stranger's id reads as "no such term" rather
+        // than confirming that one exists -- the same silence as `getCourse`'s
+        // callers get from `updateCourse`.
+        const found = db.terms.find((t) => t.id === id && t.userId === userId);
+        return found ? clone(found) : null;
+      });
+    },
+
+    async createTerm(userId, input: TermInput & { freeCourses?: number; confirmedAt?: string | null }) {
+      return mutate((db) => {
+        const now = new Date().toISOString();
+        const term: AcademicTerm = {
+          id: randomUUID(),
+          userId,
+          name: input.name,
+          termType: input.termType,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          // One course free unless the caller is migrating several in; see
+          // `ensureTermsBackfilled`.
+          freeCourses: input.freeCourses ?? FREE_COURSES_PER_TERM,
+          // Null means "inferred from a syllabus, still waiting on the student".
+          confirmedAt: input.confirmedAt ?? null,
+          // A term is never born premium: only the verified webhook grants that,
+          // through `grantTermPremium`.
+          premium: false,
+          premiumStartedAt: null,
+          premiumExpiresAt: null,
+          paidEndDate: null,
+          stripeCheckoutSessionId: null,
+          stripePaymentIntentId: null,
+          stripeCustomerId: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        db.terms.push(term);
+        return clone(term);
+      });
+    },
+
+    async updateTerm(userId, id, patch) {
+      return mutate((db) => {
+        const index = db.terms.findIndex((t) => t.id === id && t.userId === userId);
+        // Missing and not-yours are indistinguishable, as everywhere else.
+        if (index === -1) return null;
+
+        const current = db.terms[index];
+        // id, userId and createdAt are identity, not data; the premium fields
+        // are the webhook's, and are restored after the spread so a stray key
+        // in the patch object cannot grant a pass nobody paid for.
+        const next: AcademicTerm = {
+          ...current,
+          ...patch,
+          id: current.id,
+          userId: current.userId,
+          freeCourses: current.freeCourses,
+          premium: current.premium,
+          premiumStartedAt: current.premiumStartedAt,
+          paidEndDate: current.paidEndDate,
+          stripePaymentIntentId: current.stripePaymentIntentId,
+          stripeCustomerId: current.stripeCustomerId,
+          createdAt: current.createdAt,
+          updatedAt: new Date().toISOString(),
+        };
+        db.terms[index] = next;
+        return clone(next);
+      });
+    },
+
+    async deleteTerm(userId, id) {
+      return mutate((db) => {
+        const index = db.terms.findIndex((t) => t.id === id && t.userId === userId);
+        if (index === -1) return false;
+
+        db.terms.splice(index, 1);
+        // The courses stay, and keep their own `term` text: deleting a term is
+        // tidying a label, never throwing away a semester of coursework. This
+        // is what `on delete set null` does in Postgres, done by hand here.
+        db.courses = db.courses.map((c) =>
+          c.termId === id && c.userId === userId ? { ...c, termId: null } : c,
+        );
+        return true;
+      });
+    },
+
+    async grantTermPremium(userId, id, grant) {
+      return mutate((db) => {
+        const index = db.terms.findIndex((t) => t.id === id && t.userId === userId);
+        if (index === -1) return null;
+
+        const next: AcademicTerm = {
+          ...db.terms[index],
+          premium: true,
+          premiumStartedAt: grant.premiumStartedAt,
+          // Computed by the caller through `premiumExpiresAt` in `@/lib/terms`,
+          // so the fourteen-day grace has one definition in the tree.
+          premiumExpiresAt: grant.premiumExpiresAt,
+          paidEndDate: grant.paidEndDate,
+          stripeCheckoutSessionId: grant.stripeCheckoutSessionId,
+          stripePaymentIntentId: grant.stripePaymentIntentId,
+          stripeCustomerId: grant.stripeCustomerId,
+          updatedAt: new Date().toISOString(),
+        };
+        db.terms[index] = next;
+        return clone(next);
+      });
+    },
+
+    async recordStripeEvent(id, type) {
+      // Check and insert inside ONE `mutate`, which is this driver's only
+      // atomicity primitive: two concurrent deliveries of the same event both
+      // pass a check made before the write, and the second would grant premium
+      // twice. Postgres gets the same guarantee from a primary key.
+      return mutate((db) => {
+        if (db.stripeEvents.some((e) => e.id === id)) return false;
+        db.stripeEvents.push({ id, type, processedAt: new Date().toISOString() });
+        return true;
+      });
+    },
+
+    async forgetStripeEvent(id) {
+      await mutate((db) => {
+        db.stripeEvents = db.stripeEvents.filter((e) => e.id !== id);
+      });
+    },
+
     async listCourses(userId) {
       return readOnly((db) =>
         clone(
@@ -624,7 +824,7 @@ export function createLocalStore(): Store {
       });
     },
 
-    async createCourse(userId, parsed: ParsedSyllabus) {
+    async createCourse(userId, parsed: ParsedSyllabus, termId?: string | null) {
       return mutate((db) => {
         const courseId = randomUUID();
         const course: Course = {
@@ -634,6 +834,9 @@ export function createLocalStore(): Store {
           title: parsed.course.title,
           instructor: parsed.course.instructor,
           term: parsed.course.term,
+          // Resolved by the upload flow, not by the parser: absent means a
+          // course with no term row, which the backfill will file later.
+          termId: termId ?? null,
           startDate: parsed.course.startDate,
           endDate: parsed.course.endDate,
           meetingTimes: normalizeMeetingTimes(clone(parsed.course.meetingTimes ?? [])),

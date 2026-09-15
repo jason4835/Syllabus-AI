@@ -1,4 +1,4 @@
-import type { AssessmentKind, MeetingKind } from "@/lib/types";
+import type { AssessmentKind, MeetingKind, TermType } from "@/lib/types";
 
 export const KIND_LABEL: Record<AssessmentKind, string> = {
   assignment: "Assignment",
@@ -44,4 +44,23 @@ export const MEETING_KIND_LABEL: Record<MeetingKind, string> = {
 
 export function meetingKindLabel(kind: MeetingKind): string {
   return MEETING_KIND_LABEL[kind] ?? MEETING_KIND_LABEL.other;
+}
+
+/**
+ * Term types, written the way a student reads their own calendar. `custom` is
+ * "Other" here rather than "Custom": on a select it is the answer for a term
+ * this list has no name for, not a feature.
+ */
+export const TERM_TYPE_LABEL: Record<TermType, string> = {
+  semester: "Semester",
+  quarter: "Quarter",
+  trimester: "Trimester",
+  summer: "Summer session",
+  winter: "Winter session",
+  j_term: "January term",
+  custom: "Other",
+};
+
+export function termTypeLabel(type: TermType): string {
+  return TERM_TYPE_LABEL[type] ?? TERM_TYPE_LABEL.custom;
 }

@@ -14,7 +14,8 @@
     "build": "next build",
     "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@notionhq/client": "^5.26.0",
@@ -26,6 +27,7 @@
     "pdf-parse": "^1.1.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "stripe": "22.6.2",
     "word-extractor": "1.0.4",
     "zod": "^4.5.4"
   },
@@ -37,6 +39,7 @@
     "@types/react-dom": "^19.2.5",
     "postcss": "^8.5.26",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "3.2.4"
   }
 }

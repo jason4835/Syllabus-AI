@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  AcademicTerm,
   Assessment,
   AssessmentKind,
   CalendarPrefs,
@@ -26,8 +27,12 @@ import type {
   NotionLink,
   NotionLinkKind,
   ParsedSyllabus,
+  TermInput,
+  TermType,
   User,
 } from "@/lib/types";
+import { TERM_TYPES } from "@/lib/types";
+import { FREE_COURSES_PER_TERM } from "@/lib/terms";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -70,6 +75,12 @@ interface CourseRow {
   title: string;
   instructor: string | null;
   term: string | null;
+  /**
+   * The academic term this course belongs to. Null for a course written before
+   * terms existed, until `ensureTermsBackfilled` files it; the `term` text above
+   * is what the UI shows in the meantime.
+   */
+  term_id: string | null;
   start_date: string | null;
   end_date: string | null;
   meeting_times: unknown;
@@ -99,6 +110,26 @@ interface AssessmentRow {
   confidence: number | string;
   reviewed_at: string | null;
   notes: string | null;
+}
+
+interface TermRow {
+  id: string;
+  user_id: string;
+  name: string;
+  term_type: string;
+  start_date: string | null;
+  end_date: string | null;
+  free_courses: number | string;
+  confirmed_at: string | null;
+  premium: boolean;
+  premium_started_at: string | null;
+  premium_expires_at: string | null;
+  paid_end_date: string | null;
+  stripe_checkout_session_id: string | null;
+  stripe_payment_intent_id: string | null;
+  stripe_customer_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /**
@@ -179,6 +210,17 @@ function toKind(value: string): AssessmentKind {
     : "other";
 }
 
+/**
+ * An unrecognised type degrades to `custom` rather than being dropped: a term
+ * type is a label the UI prints, so the worst outcome of the fallback is a term
+ * shown as "Custom", while dropping the row would hide a term somebody paid for.
+ */
+function toTermType(value: string): TermType {
+  return (TERM_TYPES as readonly string[]).includes(value)
+    ? (value as TermType)
+    : "custom";
+}
+
 const NOTION_LINK_KINDS: readonly NotionLinkKind[] = [
   "course",
   "assessment",
@@ -252,6 +294,11 @@ function courseToDomain(row: CourseRow): Course {
     title: row.title,
     instructor: row.instructor,
     term: row.term,
+    // `?? null` like the other late additions: a database that has not had the
+    // `term_id` migration applied yet returns no such key, and `undefined` would
+    // leave the field missing from the JSON the API sends -- and would reach the
+    // backfill as something other than "this course has no term yet".
+    termId: row.term_id ?? null,
     startDate: row.start_date,
     endDate: row.end_date,
     // Completed field by field, not just shape-checked: a meeting stored
@@ -285,6 +332,7 @@ function courseToRow(course: Course): CourseRow {
     title: course.title,
     instructor: course.instructor,
     term: course.term,
+    term_id: course.termId,
     start_date: course.startDate,
     end_date: course.endDate,
     meeting_times: course.meetingTimes,
@@ -313,6 +361,10 @@ function coursePatchToRow(
   if (patch.title !== undefined) row.title = patch.title;
   if (patch.instructor !== undefined) row.instructor = patch.instructor;
   if (patch.term !== undefined) row.term = patch.term;
+  // Moving a course between terms is an edit a student makes, and the backfill's
+  // only write. The route checks that the id is a term of theirs first: the
+  // foreign key would catch a nonexistent one, but not somebody else's.
+  if (patch.termId !== undefined) row.term_id = patch.termId;
   if (patch.startDate !== undefined) row.start_date = patch.startDate;
   if (patch.endDate !== undefined) row.end_date = patch.endDate;
   // `sections` and `meeting_times` ARE editable, unlike the rest of what the
@@ -391,6 +443,83 @@ function assessmentPatchToRow(
   // route sets it on every accepted request; nothing here decides policy.
   if (patch.reviewedAt !== undefined) row.reviewed_at = patch.reviewedAt;
   if (patch.notes !== undefined) row.notes = patch.notes;
+  return row;
+}
+
+function termToDomain(row: TermRow): AcademicTerm {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    termType: toTermType(row.term_type),
+    startDate: row.start_date,
+    endDate: row.end_date,
+    // `integer` should arrive as a number, but the same driver/column combos
+    // that deliver `numeric` as a string are why `toNumberOrNull` exists; a
+    // string here would compare against a course count as text and decide the
+    // paywall wrong.
+    freeCourses: toNumberOrNull(row.free_courses) ?? FREE_COURSES_PER_TERM,
+    confirmedAt: row.confirmed_at,
+    premium: row.premium === true,
+    premiumStartedAt: row.premium_started_at,
+    premiumExpiresAt: row.premium_expires_at,
+    paidEndDate: row.paid_end_date,
+    stripeCheckoutSessionId: row.stripe_checkout_session_id,
+    stripePaymentIntentId: row.stripe_payment_intent_id,
+    stripeCustomerId: row.stripe_customer_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * A create, as a row. `id` is left to the column default (`gen_random_uuid()`)
+ * and the premium columns to theirs: a term is never born paid for, and the
+ * only writer of those is `grantTermPremium`.
+ */
+function termInsertRow(
+  userId: string,
+  input: TermInput & { freeCourses?: number; confirmedAt?: string | null },
+  now: string,
+): Omit<TermRow, "id" | "premium" | "premium_started_at" | "premium_expires_at" | "paid_end_date" | "stripe_checkout_session_id" | "stripe_payment_intent_id" | "stripe_customer_id"> {
+  return {
+    user_id: userId,
+    name: input.name,
+    term_type: input.termType,
+    start_date: input.startDate,
+    end_date: input.endDate,
+    // One course free unless the caller is migrating several in; see
+    // `ensureTermsBackfilled`.
+    free_courses: input.freeCourses ?? FREE_COURSES_PER_TERM,
+    // Null means "inferred from a syllabus, still waiting on the student".
+    confirmed_at: input.confirmedAt ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/**
+ * Partial patch -> partial row, key by key, so an absent field means "leave
+ * alone" rather than "set to null".
+ *
+ * `user_id`, `created_at`, `free_courses` and the payment columns are never
+ * emitted: the first two are identity, the allowance is the product's, and the
+ * rest belong to `grantTermPremium`. `premium_expires_at` IS emitted, because
+ * shortening a paid term moves its expiry earlier with it.
+ */
+function termPatchToRow(patch: Partial<AcademicTerm>): Partial<TermRow> {
+  const row: Partial<TermRow> = {};
+  if (patch.name !== undefined) row.name = patch.name;
+  if (patch.termType !== undefined) row.term_type = patch.termType;
+  if (patch.startDate !== undefined) row.start_date = patch.startDate;
+  if (patch.endDate !== undefined) row.end_date = patch.endDate;
+  if (patch.confirmedAt !== undefined) row.confirmed_at = patch.confirmedAt;
+  if (patch.premiumExpiresAt !== undefined) {
+    row.premium_expires_at = patch.premiumExpiresAt;
+  }
+  if (patch.stripeCheckoutSessionId !== undefined) {
+    row.stripe_checkout_session_id = patch.stripeCheckoutSessionId;
+  }
   return row;
 }
 
@@ -473,6 +602,13 @@ function notionLinkToRow(link: NotionLink): NotionLinkRow {
 
 /** Postgres "no rows" from `.single()`; expected, not an error worth throwing. */
 const NO_ROWS = "PGRST116";
+
+/**
+ * Postgres `unique_violation`. Expected on the `stripe_events` insert, where it
+ * IS the answer: the primary key is what makes a duplicate webhook delivery a
+ * no-op, so the collision is the lock working rather than a failure.
+ */
+const UNIQUE_VIOLATION = "23505";
 
 function fail(operation: string, error: { message: string }): never {
   throw new Error(`[store/supabase] ${operation}: ${error.message}`);
@@ -931,13 +1067,22 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
      *   users
      *     <- courses.user_id              on delete cascade
      *          <- assessments.course_id        on delete cascade
+     *     <- academic_terms.user_id       on delete cascade
      *     <- calendar_links.user_id       on delete cascade  (nullable!)
      *     <- notion_connections.user_id   on delete cascade
      *     <- notion_links.user_id         on delete cascade
      *
      * So `delete from users where id = ?` reaches the user row, their courses,
-     * those courses' assessments, the Notion connection, every Notion link
-     * they own, and every calendar link that RECORDS an owner.
+     * those courses' assessments, their academic terms, the Notion connection,
+     * every Notion link they own, and every calendar link that RECORDS an owner.
+     *
+     * `courses.term_id` is `on delete set null` rather than a cascade, which is
+     * the right way round: deleting one term must not delete a course. It makes
+     * no difference here, because the courses go with the user anyway.
+     *
+     * `stripe_events` is deliberately NOT touched: a webhook delivery id is
+     * Stripe's record of a message, not a user's data, and forgetting one would
+     * re-open the door to processing it twice.
      *
      * The one gap is deliberate and is closed by hand first: `calendar_links`
      * used to key on `assessments.id` and cascade from there, and it no longer
@@ -979,6 +1124,133 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return ((data ?? []) as { id: string }[]).length > 0;
     },
 
+    async listTerms(userId) {
+      const { data, error } = await client
+        .from("academic_terms")
+        .select("*")
+        .eq("user_id", userId)
+        // Oldest first, and by creation rather than by date: a term inferred
+        // from a syllabus that stated no dates still has to have a place in the
+        // list.
+        .order("created_at", { ascending: true });
+      if (error) fail("listTerms", error);
+      return ((data ?? []) as TermRow[]).map(termToDomain);
+    },
+
+    async getTerm(userId, id) {
+      // The user_id predicate IS the ownership check: another user's id matches
+      // no rows, which is indistinguishable from "no such term".
+      const { data, error } = await client
+        .from("academic_terms")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("getTerm", error);
+      return data ? termToDomain(data as TermRow) : null;
+    },
+
+    async createTerm(userId, input) {
+      const now = new Date().toISOString();
+      const { data, error } = await client
+        .from("academic_terms")
+        .insert(termInsertRow(userId, input, now))
+        .select("*")
+        .single();
+      if (error) fail("createTerm", error);
+      return termToDomain(data as TermRow);
+    },
+
+    async updateTerm(userId, id, patch) {
+      const rowPatch = termPatchToRow(patch);
+      if (Object.keys(rowPatch).length === 0) {
+        // Nothing to write, but the caller still needs the ownership answer --
+        // and `updated_at` must not move for an edit that changed nothing.
+        const { data, error } = await client
+          .from("academic_terms")
+          .select("*")
+          .eq("id", id)
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (error && error.code !== NO_ROWS) fail("updateTerm read", error);
+        return data ? termToDomain(data as TermRow) : null;
+      }
+
+      const { data, error } = await client
+        .from("academic_terms")
+        .update({ ...rowPatch, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("user_id", userId)
+        .select("*")
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("updateTerm", error);
+      return data ? termToDomain(data as TermRow) : null;
+    },
+
+    async deleteTerm(userId, id) {
+      // The courses that referenced it keep everything except the reference:
+      // `courses.term_id` is `on delete set null` in supabase/schema.sql, so
+      // Postgres does that part. Deleting a term is tidying a label, never
+      // throwing away a semester of coursework.
+      const { data, error } = await client
+        .from("academic_terms")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", userId)
+        .select("id");
+      if (error) fail("deleteTerm", error);
+      return ((data ?? []) as { id: string }[]).length > 0;
+    },
+
+    async grantTermPremium(userId, id, grant) {
+      // The user_id predicate is what stops a Checkout Session from granting
+      // premium on a stranger's term. The webhook reads both ids from Stripe's
+      // copy of the metadata, so this predicate is the only thing standing
+      // between those two values and a write.
+      const { data, error } = await client
+        .from("academic_terms")
+        .update({
+          premium: true,
+          premium_started_at: grant.premiumStartedAt,
+          // Computed by the caller through `premiumExpiresAt` in `@/lib/terms`,
+          // so the fourteen-day grace has one definition in the tree.
+          premium_expires_at: grant.premiumExpiresAt,
+          paid_end_date: grant.paidEndDate,
+          stripe_checkout_session_id: grant.stripeCheckoutSessionId,
+          stripe_payment_intent_id: grant.stripePaymentIntentId,
+          stripe_customer_id: grant.stripeCustomerId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("user_id", userId)
+        .select("*")
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("grantTermPremium", error);
+      return data ? termToDomain(data as TermRow) : null;
+    },
+
+    async recordStripeEvent(id, type) {
+      // The INSERT is the lock, not a read followed by a write: Stripe retries
+      // deliveries, two of them can arrive at once, and a check-then-write would
+      // let both pass and grant premium twice. A primary-key collision is
+      // therefore the expected answer rather than an error.
+      const { error } = await client.from("stripe_events").insert({
+        id,
+        type,
+        processed_at: new Date().toISOString(),
+      });
+      if (error) {
+        if (error.code === UNIQUE_VIOLATION) return false;
+        fail("recordStripeEvent", error);
+      }
+      return true;
+    },
+
+    async forgetStripeEvent(id) {
+      const { error } = await client.from("stripe_events").delete().eq("id", id);
+      if (error) fail("forgetStripeEvent", error);
+    },
+
     async listCourses(userId) {
       const { data, error } = await client
         .from("courses")
@@ -999,7 +1271,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return data ? courseToDomain(data as CourseRow) : null;
     },
 
-    async createCourse(userId, parsed: ParsedSyllabus) {
+    async createCourse(userId, parsed: ParsedSyllabus, termId?: string | null) {
       const courseId = randomUUID();
       const course: Course = {
         id: courseId,
@@ -1008,6 +1280,9 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         title: parsed.course.title,
         instructor: parsed.course.instructor,
         term: parsed.course.term,
+        // Resolved by the upload flow, not by the parser: absent means a course
+        // with no term row, which the backfill will file later.
+        termId: termId ?? null,
         startDate: parsed.course.startDate,
         endDate: parsed.course.endDate,
         meetingTimes: normalizeMeetingTimes(parsed.course.meetingTimes),

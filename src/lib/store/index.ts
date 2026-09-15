@@ -12,6 +12,7 @@
 import { randomBytes } from "node:crypto";
 
 import type {
+  AcademicTerm,
   Assessment,
   CalendarPrefs,
   Course,
@@ -21,6 +22,7 @@ import type {
   NotionLink,
   NotionLinkKind,
   ParsedSyllabus,
+  TermInput,
   User,
 } from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
@@ -340,9 +342,9 @@ export interface Store {
   getUserByFeedToken(token: string): Promise<User | null>;
   /**
    * The account-deletion primitive: erases the user and everything that
-   * belongs to them -- courses, assessments, calendar links, Notion links, the
-   * Notion connection, and the user row itself. False when there was no such
-   * user.
+   * belongs to them -- courses, assessments, academic terms, calendar links,
+   * Notion links, the Notion connection, and the user row itself. False when
+   * there was no such user.
    *
    * This must stay TOTAL. Anything a future feature stores per user has to be
    * covered here too, in every driver. A partial delete is worse than no
@@ -357,11 +359,125 @@ export interface Store {
    */
   deleteUser(userId: string): Promise<boolean>;
 
+  /**
+   * The user's terms, oldest first. Ordered by creation rather than by date so
+   * a term with no dates yet (inferred from a syllabus that stated none) still
+   * has a place in the list.
+   */
+  listTerms(userId: string): Promise<AcademicTerm[]>;
+  /**
+   * Scoped by owner: null when the term is not this user's, which is
+   * indistinguishable from "no such term" on purpose. Every term route starts
+   * here, including the one that creates a Checkout Session.
+   */
+  getTerm(userId: string, id: string): Promise<AcademicTerm | null>;
+  /**
+   * Creates a term. Premium is never set here -- it is granted by the verified
+   * webhook and nowhere else -- so a create takes only the fields a person (or
+   * `suggestTerm`) supplies.
+   *
+   * `freeCourses` defaults to `FREE_COURSES_PER_TERM`; the backfill passes the
+   * number of courses it is migrating in, so a user who had three courses keeps
+   * all three. `confirmedAt` defaults to null, which is what marks a term as
+   * inferred and still waiting on the student.
+   */
+  createTerm(
+    userId: string,
+    input: TermInput & { freeCourses?: number; confirmedAt?: string | null },
+  ): Promise<AcademicTerm>;
+  /**
+   * Edits a term and bumps `updatedAt`. Null when the term is not this user's.
+   *
+   * The patch is narrow for the same reason `updateCourse`'s is: `premium`,
+   * `premiumStartedAt`, `paidEndDate` and the payment ids are the webhook's to
+   * write (`grantTermPremium`), and `freeCourses` is the product's allowance,
+   * not a field. `premiumExpiresAt` IS reachable, because shortening a paid
+   * term moves the expiry earlier with it -- the policy for that lives in
+   * `premiumEndDateAllowed`, not here.
+   */
+  updateTerm(
+    userId: string,
+    id: string,
+    patch: Partial<
+      Pick<
+        AcademicTerm,
+        | "name"
+        | "termType"
+        | "startDate"
+        | "endDate"
+        | "confirmedAt"
+        | "premiumExpiresAt"
+        | "stripeCheckoutSessionId"
+      >
+    >,
+  ): Promise<AcademicTerm | null>;
+  /**
+   * Removes a term. Courses that referenced it keep everything except the
+   * reference: `termId` becomes null, and their `term` text still says what the
+   * syllabus called it. Deleting a term must never delete a student's
+   * coursework, so this is `on delete set null` in SQL and explicit in the
+   * local driver.
+   *
+   * False when there was no such term, including when it belongs to someone
+   * else.
+   */
+  deleteTerm(userId: string, id: string): Promise<boolean>;
+  /**
+   * Turns a paid Checkout Session into premium on one term. The ONLY writer of
+   * `premium`, called from the signature-verified webhook and nowhere else --
+   * the success redirect polls `listTerms` and activates nothing.
+   *
+   * `premiumExpiresAt` is computed by the caller through `premiumExpiresAt()`
+   * in `@/lib/terms`, so the grace period has exactly one definition, and
+   * `paidEndDate` records the end date as it stood at purchase so a later edit
+   * can be bounded against what was actually bought.
+   *
+   * Null when the term is not this user's -- the webhook reads both ids from
+   * Stripe's copy of the metadata, so this is the check that a session cannot
+   * grant premium on a stranger's term.
+   */
+  grantTermPremium(
+    userId: string,
+    id: string,
+    grant: {
+      premiumStartedAt: string;
+      premiumExpiresAt: string;
+      paidEndDate: string | null;
+      stripeCheckoutSessionId: string | null;
+      stripePaymentIntentId: string | null;
+      stripeCustomerId: string | null;
+    },
+  ): Promise<AcademicTerm | null>;
+  /**
+   * Webhook idempotency: true when this event id was recorded just now, false
+   * when it was already there.
+   *
+   * The insert IS the lock. Stripe retries deliveries and can deliver the same
+   * event twice, so the handler asks this first and does nothing on false --
+   * which is why the answer has to come from the write itself rather than from
+   * a read followed by a write, where two concurrent deliveries both read
+   * "absent".
+   */
+  recordStripeEvent(id: string, type: string): Promise<boolean>;
+  /**
+   * Releases a claim made by `recordStripeEvent` whose handler then failed, so
+   * Stripe's retry of that event is processed rather than answered as a
+   * duplicate. A no-op for an id that is not on file.
+   */
+  forgetStripeEvent(id: string): Promise<void>;
+
   listCourses(userId: string): Promise<Course[]>;
   getCourse(id: string): Promise<Course | null>;
+  /**
+   * `termId` is the term the upload flow resolved for this syllabus -- the
+   * student's choice, or `suggestTerm`'s. Null (the default) is a course with
+   * no term row, which is what every course written before terms existed looks
+   * like until the backfill runs.
+   */
   createCourse(
     userId: string,
     parsed: ParsedSyllabus,
+    termId?: string | null,
   ): Promise<{ course: Course; assessments: Assessment[] }>;
   /**
    * Edits the details a person can correct after an upload. Scoped by owner
@@ -380,6 +496,12 @@ export interface Store {
    * a whole-array replace, since editing one entry of a list by index over
    * HTTP is a race waiting to happen. Both are replaced whole for the same
    * reason; the route reconciles `sections` against the syllabus first.
+   *
+   * `termId` is reachable too: moving a course between terms is an edit a
+   * student makes, and it is how the backfill files an old course under the term
+   * it created for it. Whether the id names a term the caller owns is the
+   * route's check, not this one's -- and moving a course into a full free term
+   * hits the same paywall an upload does.
    */
   updateCourse(
     userId: string,
@@ -391,6 +513,7 @@ export interface Store {
         | "title"
         | "instructor"
         | "term"
+        | "termId"
         | "startDate"
         | "endDate"
         | "sections"
@@ -570,9 +693,19 @@ export const store: Store = {
   resetCalendarFeedToken: (userId) => getStore().resetCalendarFeedToken(userId),
   getUserByFeedToken: (token) => getStore().getUserByFeedToken(token),
   deleteUser: (userId) => getStore().deleteUser(userId),
+  listTerms: (userId) => getStore().listTerms(userId),
+  getTerm: (userId, id) => getStore().getTerm(userId, id),
+  createTerm: (userId, input) => getStore().createTerm(userId, input),
+  updateTerm: (userId, id, patch) => getStore().updateTerm(userId, id, patch),
+  deleteTerm: (userId, id) => getStore().deleteTerm(userId, id),
+  grantTermPremium: (userId, id, grant) =>
+    getStore().grantTermPremium(userId, id, grant),
+  recordStripeEvent: (id, type) => getStore().recordStripeEvent(id, type),
+  forgetStripeEvent: (id) => getStore().forgetStripeEvent(id),
   listCourses: (userId) => getStore().listCourses(userId),
   getCourse: (id) => getStore().getCourse(id),
-  createCourse: (userId, parsed) => getStore().createCourse(userId, parsed),
+  createCourse: (userId, parsed, termId) =>
+    getStore().createCourse(userId, parsed, termId),
   updateCourse: (userId, id, patch) => getStore().updateCourse(userId, id, patch),
   deleteCourse: (userId, courseId) => getStore().deleteCourse(userId, courseId),
   listAssessments: (userId) => getStore().listAssessments(userId),

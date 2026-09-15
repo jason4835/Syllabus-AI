@@ -60,6 +60,7 @@ export const COURSE_FIELD_KEYS = [
   "title",
   "instructor",
   "term",
+  "termId",
   "startDate",
   "endDate",
   "sections",
@@ -239,7 +240,7 @@ export function collectAssessmentFields(
 
 /** Exactly what `store.updateCourse` accepts. */
 export type CoursePatch = Partial<
-  Pick<Course, "code" | "title" | "instructor" | "term" | "startDate" | "endDate" | "sections" | "meetingTimes">
+  Pick<Course, "code" | "title" | "instructor" | "term" | "termId" | "startDate" | "endDate" | "sections" | "meetingTimes">
 >;
 
 /**
@@ -270,6 +271,7 @@ export function validateCoursePatch(
     patch.instructor = optionalText(body.instructor, "instructor", 120);
   }
   if ("term" in body) patch.term = optionalText(body.term, "term", 40);
+  if ("termId" in body) patch.termId = validateTermId(body.termId);
   if ("startDate" in body) {
     patch.startDate = validateDateField(body.startDate, "startDate");
   }
@@ -313,6 +315,25 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function validateSection(value: unknown): string | null {
   return optionalText(value, "section", 40);
+}
+
+/**
+ * The id of the academic term a course belongs to -- null to take it out of
+ * every term, otherwise an id.
+ *
+ * Shape only. Whether the id names a term, and whether that term is the
+ * caller's, is the route's job: this function has a body, not a store, and the
+ * answer to "is this yours" cannot be read off a string. The cap is generous
+ * (a uuid is 36) and exists to keep a megabyte of text out of a lookup.
+ */
+export function validateTermId(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string") throw new Invalid("termId must be an id or null");
+  const id = value.trim();
+  if (id.length === 0 || id.length > 64) {
+    throw new Invalid("termId must be 1-64 characters, or null");
+  }
+  return id;
 }
 
 /**
