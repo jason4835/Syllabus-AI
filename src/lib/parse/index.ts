@@ -76,7 +76,29 @@ export async function parseSyllabus(
   // Decided from the document, once, for every extraction path -- see the
   // field's own comment for why the grading rows cannot be trusted with this.
   const rankBasedExamWeights = isRankBasedExamWeighting(text);
-  return { ...relabelRankRows(parsed, rankBasedExamWeights), rankBasedExamWeights };
+  return { ...relabelRankRows(parsed, rankBasedExamWeights, text), rankBasedExamWeights };
+}
+
+/**
+ * The rank rows as the prose states them: "the highest score will receive
+ * 45% of the weight, the second highest 25%, ... and the lowest 5%". Read from
+ * the same two-sentence window the detector uses, so a drop policy can never
+ * supply a row. Empty unless at least two ranks carry a percentage.
+ */
+export function rankRowsFromText(text: string): { category: string; weightPercent: number }[] {
+  const sentences = text.split(/(?<=[.!?\n])\s+/);
+  for (let i = 0; i < sentences.length; i++) {
+    const window = `${sentences[i - 1] ?? ""} ${sentences[i]}`;
+    if (!/\b(?:exams?|tests?|midterms?)\b/i.test(window) || /\bdrop/i.test(window)) continue;
+    const found: { category: string; weightPercent: number }[] = [];
+    const re = /\b(highest|second[\s-]?highest|third[\s-]?highest|fourth[\s-]?highest|lowest)\b[^.%\d]{0,60}?(\d{1,3})\s*%/gi;
+    for (const m of sentences[i].matchAll(re)) {
+      const rank = m[1].toLowerCase().replace(/[\s-]+/g, " ");
+      found.push({ category: `Exam with ${rank} grade`, weightPercent: Number(m[2]) });
+    }
+    if (found.length >= 2) return found;
+  }
+  return [];
 }
 
 /**
@@ -285,14 +307,30 @@ export function capWhenTentative(parsed: ParsedSyllabus, text: string): ParsedSy
  * worded by rank are left alone; so is everything when the document does not
  * say rank at all.
  */
-export function relabelRankRows(parsed: ParsedSyllabus, rankBased: boolean): ParsedSyllabus {
+export function relabelRankRows(parsed: ParsedSyllabus, rankBased: boolean, text = ""): ParsedSyllabus {
   if (!rankBased) return parsed;
   const rows = parsed.course.gradeWeights;
   if (rows.some((w) => /\b(highest|lowest)\b/i.test(w.category))) return parsed;
   const numbered = rows
     .map((w, i) => (/^(?:exam|test|midterm)s?\s*#?\d{1,2}$/i.test(w.category.trim()) ? i : -1))
     .filter((i) => i >= 0);
-  if (numbered.length < 2) return parsed;
+  if (numbered.length < 2) {
+    // No breakdown in the rows at all -- one run summarised four rank rows
+    // into "Exams 100%". The breakdown is in the sentence; take it from there,
+    // replacing only a lone summary exam row and keeping every other row.
+    const fromText = rankRowsFromText(text);
+    if (fromText.length < 2) return parsed;
+    const summary = rows.findIndex((w) => /^(?:exams?|tests?|midterms?)$/i.test(w.category.trim()));
+    const kept = rows.filter((_, i) => i !== summary);
+    return {
+      ...parsed,
+      course: { ...parsed.course, gradeWeights: [...fromText, ...kept] },
+      warnings: [
+        ...parsed.warnings,
+        "The grading table did not break the exam weights down, but the syllabus assigns them by rank of score; the exam rows were rebuilt from that sentence, with its own percentages.",
+      ],
+    };
+  }
 
   const byWeight = numbered.slice().sort((a, b) => rows[b].weightPercent - rows[a].weightPercent);
   const ordinal = ["highest", "second highest", "third highest", "fourth highest", "fifth highest", "sixth highest"];
