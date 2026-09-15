@@ -17,7 +17,7 @@
 
 import type { MeetingTime, ParsedSyllabus } from "../types";
 import { UNKNOWN_TIME, meetingNeedsTime, weeklyRuleOf } from "../setup";
-import { addDays, findDateSpans, isoDayOfWeek, normalizeDate } from "./dates";
+import { addDays, findDateSpans, isoDayOfWeek, normalizeDate, parseDaysOfWeek, parseTimeRange } from "./dates";
 import { extractWithAi, isConfigured } from "./extract";
 import { fallbackParse } from "./fallback";
 import { extractText } from "./pdf";
@@ -70,9 +70,12 @@ export async function parseSyllabus(
     reconcileNoClass(
       inferMeetingDaysFromSchedule(
         dropAsynchronousDays(
-          blankUnstatedMeetingTimes(
-            warnWhenWeeksHaveNoAnchor(
-              mergePlaceholdersPerRow(collapseInventedSeries(unnumberWeeklyRules(await parseFromText(text, opts)))),
+          recoverOfficeHours(
+            blankUnstatedMeetingTimes(
+              warnWhenWeeksHaveNoAnchor(
+                mergePlaceholdersPerRow(collapseInventedSeries(unnumberWeeklyRules(await parseFromText(text, opts)))),
+              ),
+              text,
             ),
             text,
           ),
@@ -629,6 +632,89 @@ export function dropAsynchronousDays(parsed: ParsedSyllabus, text: string): Pars
   }
   if (!changed) return parsed;
   return { ...parsed, course: { ...parsed.course, meetingTimes }, warnings };
+}
+
+/**
+ * Office hours the model left out, read from the document's own "Office
+ * Hours:" line.
+ *
+ * Two syllabi lost their office hours in the same run: "Virtual Office
+ * Hours: Wednesdays and Fridays: 9:00am-11:00am" and "By appointment only
+ * (in person) Wednesday 11:00 am- 2:00 pm and Thursdays 10:00 am- 1:00 pm".
+ * Each is a stated day with a stated range; a wording change elsewhere in the
+ * prompt was enough to tip the model into skipping both. The line is
+ * deterministic to read, so it is read -- only when the parse holds no
+ * office hours at all, and only from lines that say they are office hours
+ * (plus the two lines after, since a PDF wraps "11:00" and "am- 2:00 pm"
+ * onto separate lines).
+ *
+ * Within the joined text, day words and time ranges are taken in order and
+ * each range attaches to the most recent day words: "Tuesday: 10:00-10:30am
+ * & 3:00-4:00pm & Friday 2:30-3:00pm" is two Tuesday blocks and one Friday
+ * block. A range with no days before it is skipped, and a day with no range
+ * ("by appointment") emits nothing.
+ */
+export function recoverOfficeHours(parsed: ParsedSyllabus, text: string): ParsedSyllabus {
+  if (parsed.course.meetingTimes.some((m) => m.kind === "office_hours")) return parsed;
+  const lines = text.split(/\r?\n/);
+  // The line that names office hours and up to three after it -- a PDF wraps
+  // "Wednesday 11:00" and "am- 2:00 pm" onto separate lines, and "Mondays:
+  // 12:30 PM to 3:00 PM" can sit two lines under its heading. The block stops
+  // early at a blank line, at a new heading, or at a line about the class
+  // itself, so a "Monday 9-10am class" under "Office hours: by appointment"
+  // is never read as office hours.
+  // Case-sensitive on purpose: "COURSE DESCRIPTION:" is a heading, "Mondays:
+  // 12:30 PM to 3:00 PM" is the office hours themselves.
+  const heading = /^\s*[A-Z][A-Z /&]{2,}:/;
+  const stop = /^\s*$|\b(?:class(?:es)?|lecture|meets|meeting|section|recitation|lab|tutorial)\b/i;
+  const blocks: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\b(?:office|student)\s*hours\b/i.test(lines[i])) continue;
+    const block = [lines[i]];
+    for (let j = i + 1; j <= i + 3 && j < lines.length && !stop.test(lines[j]) && !heading.test(lines[j]); j++) block.push(lines[j]);
+    blocks.push(block.join(" ").replace(/\s+/g, " "));
+    i += block.length - 1;
+  }
+  if (blocks.length === 0) return parsed;
+
+  const DAYS = "(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?s?\\.?";
+  const token = new RegExp(
+    `(${DAYS}(?:\\s*(?:,|and|&|\\/)\\s*${DAYS})*)|(\\d{1,2}(?::\\d{2})?\\s*(?:[ap]\\.?\\s*m\\.?)?\\s*(?:-|–|—|to|until)\\s*\\d{1,2}(?::\\d{2})?\\s*(?:[ap]\\.?\\s*m\\.?)?)`,
+    "gi",
+  );
+  const found: MeetingTime[] = [];
+  const seen = new Set<string>();
+  for (const block of blocks) {
+    let days: number[] = [];
+    for (const m of block.matchAll(token)) {
+      if (m[1]) {
+        days = parseDaysOfWeek(m[1]);
+        continue;
+      }
+      if (days.length === 0) continue;
+      const range = parseTimeRange(m[2]);
+      if (!range || range.start >= range.end) continue;
+      const key = `${days.join(",")}|${range.start}|${range.end}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({
+        kind: "office_hours",
+        section: null,
+        instructor: parsed.course.instructor,
+        daysOfWeek: days,
+        startTime: range.start,
+        endTime: range.end,
+        location: null,
+      });
+    }
+  }
+  if (found.length === 0) return parsed;
+  const describe = found.map((m) => `${dayList(m.daysOfWeek)} ${m.startTime}–${m.endTime}`).join("; ");
+  return {
+    ...parsed,
+    course: { ...parsed.course, meetingTimes: [...parsed.course.meetingTimes, ...found] },
+    warnings: [...parsed.warnings, `Office hours were read from the syllabus's office-hours line (${describe}). Check them against the document.`],
+  };
 }
 
 /** Fewer dated rows than this is a list of deadlines, not a schedule. */
