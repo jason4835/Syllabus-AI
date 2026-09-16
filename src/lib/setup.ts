@@ -1,4 +1,4 @@
-import type { Assessment, Course, MeetingTime } from "@/lib/types";
+import type { AcademicTerm, Assessment, Course, MeetingTime } from "@/lib/types";
 import { unansweredGroups } from "@/lib/sections";
 import type { SectionGroup } from "@/lib/sections";
 import { parseDaysOfWeek } from "@/lib/parse/dates";
@@ -248,6 +248,18 @@ export function expandWeekly(
  */
 export type SetupQuestion =
   | {
+      /**
+       * A term the server inferred from this syllabus and created unconfirmed.
+       * Asked FIRST, before anything else about the course: it is the only
+       * question whose answer is a row the student never asked for, and every
+       * other question ("when does Week 1 begin?") is about a term they have
+       * already agreed exists. See docs/TERM-PASS.md, "Upload flow".
+       */
+      kind: "term-confirm";
+      courseId: string;
+      term: AcademicTerm;
+    }
+  | {
       kind: "term-start";
       courseId: string;
       /**
@@ -331,7 +343,43 @@ export function setupQuestions(course: Course, assessments: Assessment[]): Setup
   return out;
 }
 
-/** How many questions a course has open -- what the panels badge and the sync panel warns about. */
-export function openQuestionCount(course: Course, assessments: Assessment[]): number {
-  return setupQuestions(course, assessments).length;
+/**
+ * The unconfirmed term this course was filed under, if there is one.
+ *
+ * Kept out of `setupQuestions` deliberately: that function answers "what does
+ * this syllabus leave open?" from the course and its items, and a term is
+ * neither. Asking for it would mean handing every caller a list of terms it does
+ * not have -- the calendar builder, the parser and the sync panel all call
+ * `setupQuestions` and none of them know about terms. So the card composes the
+ * two, and this is the half that needs the terms.
+ *
+ * Null for a course with no term, a term that is already confirmed, or a
+ * `termId` pointing at a term that is not in the list (a stale page mid-refetch;
+ * a question about a term nobody can see is worse than no question).
+ */
+export function termConfirmQuestion(
+  course: Pick<Course, "id" | "termId">,
+  terms: AcademicTerm[],
+): Extract<SetupQuestion, { kind: "term-confirm" }> | null {
+  if (!course.termId) return null;
+  const term = terms.find((candidate) => candidate.id === course.termId);
+  if (!term || term.confirmedAt !== null) return null;
+  return { kind: "term-confirm", courseId: course.id, term };
+}
+
+/**
+ * How many questions a course has open -- what the panels badge and the sync
+ * panel warns about.
+ *
+ * `terms` is optional so every existing caller keeps working unchanged: without
+ * it the count is what it always was, and a caller that has the terms in hand
+ * gets the term confirmation counted too.
+ */
+export function openQuestionCount(
+  course: Course,
+  assessments: Assessment[],
+  terms?: AcademicTerm[],
+): number {
+  const termConfirm = terms ? termConfirmQuestion(course, terms) : null;
+  return (termConfirm ? 1 : 0) + setupQuestions(course, assessments).length;
 }

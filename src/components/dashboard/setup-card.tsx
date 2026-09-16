@@ -14,13 +14,21 @@ import {
 import { meetingKindLabel } from "@/components/labels";
 import {
   formatDate,
+  formatDateRange,
   formatTime,
   formatTimeRange,
   pluralize,
 } from "@/components/format";
 import { sectionGroups } from "@/lib/sections";
-import { setupQuestions } from "@/lib/setup";
+import { setupQuestions, termConfirmQuestion } from "@/lib/setup";
 import type { SetupQuestion } from "@/lib/setup";
+import type { AcademicTerm } from "@/lib/types";
+import {
+  TermFields,
+  toTermDraft,
+  validateTermDraft,
+} from "@/components/dashboard/term-form";
+import type { TermDraft } from "@/components/dashboard/term-form";
 
 /**
  * The questions a syllabus leaves open, asked where the student is already
@@ -67,6 +75,8 @@ const MAX_OPEN = 2;
  */
 function keyOf(question: SetupQuestion): string {
   switch (question.kind) {
+    case "term-confirm":
+      return "term-confirm";
     case "term-start":
       return "term-start";
     case "meeting-time":
@@ -140,6 +150,7 @@ interface Resolved {
 export function SetupCard({
   course,
   assessments,
+  terms = [],
   onCourseChanged,
   onAnswered,
   className,
@@ -147,6 +158,13 @@ export function SetupCard({
   course: Course;
   /** This course's items. The questions are derived from them, so they must be this course's. */
   assessments: Assessment[];
+  /**
+   * Every term the student has, so the card can tell whether the one this course
+   * was filed under is still waiting to be confirmed. Defaulted to empty rather
+   * than required: with no terms there is simply no term question, which is the
+   * right behaviour for a page whose terms have not loaded yet.
+   */
+  terms?: AcademicTerm[];
   /** The saved course, straight from the server. */
   onCourseChanged: (updated: Course) => void;
   /**
@@ -211,7 +229,16 @@ export function SetupCard({
     setPlacing(null);
   }, [placing, assessments]);
 
-  const questions = setupQuestions(course, assessments);
+  /**
+   * The term question first, then everything the syllabus left open. Composed
+   * here rather than inside `setupQuestions`, which knows nothing about terms --
+   * see `termConfirmQuestion`.
+   */
+  const termConfirm = termConfirmQuestion(course, terms);
+  const questions: SetupQuestion[] = [
+    ...(termConfirm ? [termConfirm] : []),
+    ...setupQuestions(course, assessments),
+  ];
   const groups = sectionGroups(course);
 
   /**
@@ -276,6 +303,21 @@ export function SetupCard({
       onSkip: () => skip(question),
     };
     switch (question.kind) {
+      case "term-confirm":
+        return (
+          <TermConfirmQuestion
+            key={key}
+            {...common}
+            question={question}
+            onSaved={(line, announcement) => {
+              fold(question, line, announcement, false);
+              // The term row changed on the server; the page holds a copy of it
+              // in three places (this card, the course header, the terms panel),
+              // and only a refetch reconciles all three.
+              onAnswered?.();
+            }}
+          />
+        );
       case "term-start":
         return (
           <TermStartQuestion
@@ -521,12 +563,15 @@ function QuestionActions({
   pending,
   error,
   onSkip,
+  extra,
 }: {
   saveLabel: string;
   savingLabel: string;
   pending: boolean;
   error: string | null;
   onSkip: () => void;
+  /** A second choice that belongs in this row — "Edit dates", so far. */
+  extra?: ReactNode;
 }) {
   return (
     <>
@@ -547,6 +592,7 @@ function QuestionActions({
           )}
           {saveLabel}
         </Button>
+        {extra}
         {/* Always offered. A question a student cannot answer right now -- the
             syllabus is on a laptop in another room -- must not be a wall. */}
         <button
@@ -595,6 +641,148 @@ function AnsweredLine({
         </button>
       ) : null}
     </p>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Create Fall 2026?                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The term the upload inferred, offered rather than imposed.
+ *
+ * The server had to file the course somewhere to save it at all, so the row
+ * already exists -- but it exists unconfirmed, and nothing about it is treated as
+ * settled until this question is answered. That is the whole point of the
+ * `confirmed_at = null` state (docs/TERM-PASS.md, "Upload flow"): a term is what
+ * a pass is sold for, so a student must never find themselves looking at a term
+ * they did not agree to.
+ *
+ * Two answers, because there are only two: yes, or these dates are wrong. A
+ * syllabus that stated no dates at all skips straight to the second -- the
+ * inputs are open from the start, since there is nothing to confirm yet.
+ */
+function TermConfirmQuestion({
+  course,
+  question,
+  fieldId,
+  onSaved,
+  onSkip,
+}: {
+  course: Course;
+  question: Extract<SetupQuestion, { kind: "term-confirm" }>;
+  fieldId: string;
+  onSaved: (line: string, announcement: string) => void;
+  onSkip: () => void;
+}) {
+  const term = question.term;
+  const undated = term.startDate === null || term.endDate === null;
+  /** Open from the start when there is nothing to confirm, only something to fill in. */
+  const [editing, setEditing] = useState(undated);
+  const [draft, setDraft] = useState<TermDraft>(() => toTermDraft(term));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft.startDate || !draft.endDate) {
+      setError("Enter the day the term starts and the day it ends.");
+      return;
+    }
+    const checked = validateTermDraft(draft);
+    if ("error" in checked) {
+      setError(checked.error);
+      return;
+    }
+
+    setPending(true);
+    setError(null);
+    /**
+     * `confirm` plus whatever was edited, in one PATCH. Two requests -- save the
+     * dates, then confirm -- would leave a term half-agreed-to if the second one
+     * failed, which is exactly the state this question exists to clear.
+     */
+    const result = await apiPatch<{ term: AcademicTerm }>(
+      `/api/terms/${term.id}`,
+      { confirm: true, ...checked.input },
+    );
+    setPending(false);
+    if (!result.ok) {
+      setError(result.detail ?? result.error);
+      return;
+    }
+
+    const saved = result.data?.term ?? null;
+    const name = saved?.name ?? checked.input.name;
+    const range = formatDateRange(
+      saved?.startDate ?? checked.input.startDate,
+      saved?.endDate ?? checked.input.endDate,
+    );
+    onSaved(
+      `${name} · ${range}`,
+      `Saved — ${name} is now one of your terms, with ${course.code} in it.`,
+    );
+  }
+
+  return (
+    <QuestionCard
+      legend={`Create ${term.name}?`}
+      onSubmit={(event) => void submit(event)}
+    >
+      <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
+        {undated ? (
+          <>
+            This syllabus didn&rsquo;t say when the term runs. Name it and give
+            it dates, and every course from these months groups under it.
+          </>
+        ) : (
+          <>
+            Read from your syllabus. Courses from these months group under it,
+            and your first one is free.
+          </>
+        )}
+      </p>
+
+      {/* The dates as a sentence, not as two form fields, while there is nothing
+          to correct: this is a yes/no question, and a form is what turns one
+          into a chore. */}
+      {!editing ? (
+        <p className="mt-1.5 text-[0.9375rem] leading-snug text-ink">
+          {formatDateRange(term.startDate, term.endDate, "long")}
+        </p>
+      ) : (
+        <div className="mt-2.5">
+          <TermFields
+            draft={draft}
+            fieldId={fieldId}
+            disabled={pending}
+            onChange={(changes) =>
+              setDraft((current) => ({ ...current, ...changes }))
+            }
+          />
+        </div>
+      )}
+
+      <QuestionActions
+        saveLabel="Create term"
+        savingLabel="Creating the term"
+        pending={pending}
+        error={error}
+        onSkip={onSkip}
+        extra={
+          editing ? null : (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => setEditing(true)}
+              className={`rounded-md px-1.5 py-1 text-[0.75rem] font-medium text-muted underline decoration-line-strong underline-offset-2 transition-colors hover:text-ink disabled:no-underline disabled:opacity-55 ${TOUCH_TARGET}`}
+            >
+              Edit dates
+            </button>
+          )
+        }
+      />
+    </QuestionCard>
   );
 }
 

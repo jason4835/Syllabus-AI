@@ -80,6 +80,47 @@ export function formatWeekday(value: string | Date | null): string {
   return date ? DAYS_LONG[date.getDay()] : "";
 }
 
+const MONTHS_LONG = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * A term's window, as a term is written down: "Sep 3 – Dec 17, 2026", or
+ * "September 3 – December 17, 2026" in `long` style.
+ *
+ * The year is said once when both ends share it, and on both ends when they do
+ * not ("Dec 28, 2026 – Jan 20, 2027") -- a J-term that reads as ending seven
+ * months before it starts is worse than a longer line. Either date missing
+ * means the term has no window yet, which is a real state for a term inferred
+ * from a syllabus that never stated one, so it gets a sentence rather than a
+ * dash.
+ */
+export function formatDateRange(
+  start: string | Date | null,
+  end: string | Date | null,
+  style: "short" | "long" = "short",
+): string {
+  const from = start instanceof Date ? start : parseDate(start);
+  const to = end instanceof Date ? end : parseDate(end);
+  if (!from || !to) return "Dates not set yet";
+  const day = (date: Date) =>
+    style === "long"
+      ? `${MONTHS_LONG[date.getMonth()]} ${date.getDate()}`
+      : `${MONTHS[date.getMonth()]} ${date.getDate()}`;
+  if (from.getFullYear() === to.getFullYear()) {
+    return `${day(from)} – ${day(to)}, ${to.getFullYear()}`;
+  }
+  return `${day(from)}, ${from.getFullYear()} – ${day(to)}, ${to.getFullYear()}`;
+}
+
+/** "Jan 3, 2027" — one date with its year, for an expiry a student is told about. */
+export function formatDateWithYear(value: string | Date | null): string {
+  const date = value instanceof Date ? value : parseDate(value);
+  if (!date) return "No date";
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
 /** "Oct 14 – Oct 20" for the week beginning at `weekStart`. */
 export function formatWeekRange(weekStart: string): string {
   const start = parseDate(weekStart);

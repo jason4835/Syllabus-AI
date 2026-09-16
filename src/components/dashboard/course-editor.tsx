@@ -3,10 +3,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import type { Course, MeetingKind, MeetingTime } from "@/lib/types";
-import { apiPatch } from "@/components/api-client";
+import { apiPatch, paywallOf } from "@/components/api-client";
+import type { AppConfig, TermSummary } from "@/components/api-client";
 import { Button, Spinner, TOUCH_TARGET } from "@/components/ui/button";
 import { CheckIcon } from "@/components/icons";
 import { MEETING_KIND_LABEL } from "@/components/labels";
+import { formatDateRange } from "@/components/format";
+import { TermPassCard } from "@/components/dashboard/term-pass-card";
 import {
   FORM_INPUT,
   FORM_LABEL,
@@ -32,7 +35,13 @@ interface CoursePatch {
   code?: string;
   title?: string;
   instructor?: string | null;
-  term?: string | null;
+  /**
+   * The term ROW this course belongs to, or null for none. The free-text
+   * `course.term` the syllabus stated is deliberately NOT sent from here any
+   * more: it is the display fallback for a course with no term row, and
+   * overwriting it from a select would erase what the document actually said.
+   */
+  termId?: string | null;
   startDate?: string | null;
   endDate?: string | null;
   meetingTimes?: MeetingTime[];
@@ -43,7 +52,8 @@ interface Draft {
   code: string;
   title: string;
   instructor: string;
-  term: string;
+  /** A term id, or "" for "No term". */
+  termId: string;
   startDate: string;
   endDate: string;
   meetings: MeetingDraft[];
@@ -131,7 +141,7 @@ function toDraft(course: Course): Draft {
     code: course.code,
     title: course.title,
     instructor: course.instructor ?? "",
-    term: course.term ?? "",
+    termId: course.termId ?? "",
     startDate: course.startDate ?? "",
     endDate: course.endDate ?? "",
     meetings: (course.meetingTimes ?? []).map(toMeetingDraft),
@@ -163,8 +173,8 @@ function buildPatch(
   const instructor = draft.instructor.trim() || null;
   if (instructor !== course.instructor) patch.instructor = instructor;
 
-  const term = draft.term.trim() || null;
-  if (term !== course.term) patch.term = term;
+  const termId = draft.termId || null;
+  if (termId !== (course.termId ?? null)) patch.termId = termId;
 
   const startDate = draft.startDate.trim() || null;
   const endDate = draft.endDate.trim() || null;
@@ -207,6 +217,8 @@ function buildPatch(
 export function CourseEditor({
   course,
   color,
+  terms = [],
+  config = null,
   focusField = "code",
   onSaved,
   onCancel,
@@ -214,6 +226,10 @@ export function CourseEditor({
   course: Course;
   /** The course's accent, so the form reads as part of its card. */
   color: string;
+  /** The terms this course can be moved between, for the Term select. */
+  terms?: TermSummary[];
+  /** Needed only if a move hits the paywall; null while `/api/config` is in flight. */
+  config?: AppConfig | null;
   /** Where the cursor lands — the heatmap's "Set term dates" aims at the dates. */
   focusField?: "code" | "startDate";
   onSaved: (updated: Course) => void;
@@ -224,6 +240,12 @@ export function CourseEditor({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<RowErrors>({});
+  /**
+   * Moving a course into a term whose free slot is taken is the same 402 the
+   * upload answers, so it gets the same card — inside the form, under the field
+   * that caused it, with the rest of the edit still on screen and unsaved.
+   */
+  const [paywall, setPaywall] = useState<TermSummary | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
   const startRef = useRef<HTMLInputElement>(null);
 
@@ -308,12 +330,18 @@ export function CourseEditor({
     }
     setPending(true);
     setError(null);
+    setPaywall(null);
     const result = await apiPatch<Course>(
       `/api/courses/${course.id}`,
       built.patch,
     );
     setPending(false);
     if (!result.ok) {
+      const blocked = paywallOf(result);
+      if (blocked) {
+        setPaywall(blocked.term);
+        return;
+      }
       // A 422 names the offending field in `detail`; that is the useful half.
       setError(result.detail ?? result.error);
       return;
@@ -384,22 +412,38 @@ export function CourseEditor({
           />
         </FormField>
 
+        {/* A select, not a text field: a term is a row now, and two courses
+            that both said "Fall 2026" in prose were never in the same term.
+            "No term" is a real answer — a course that belongs to none. */}
         <FormField
           label="Term"
           htmlFor={`${fieldId}-term`}
-          onClear={draft.term ? () => patch("term", "") : undefined}
-          clearLabel={`Clear the term for ${course.code}`}
+          hint={
+            course.term && !draft.termId
+              ? `The syllabus says “${course.term}”. That stays on the course either way.`
+              : null
+          }
         >
-          <input
+          <select
             id={`${fieldId}-term`}
-            type="text"
-            autoComplete="off"
-            placeholder="Fall 2026"
-            value={draft.term}
+            value={draft.termId}
             disabled={pending}
-            onChange={(event) => patch("term", event.target.value)}
+            aria-describedby={
+              course.term && !draft.termId ? `${fieldId}-term-hint` : undefined
+            }
+            onChange={(event) => {
+              setPaywall(null);
+              patch("termId", event.target.value);
+            }}
             className={FORM_INPUT}
-          />
+          >
+            <option value="">No term</option>
+            {terms.map((term) => (
+              <option key={term.id} value={term.id}>
+                {term.name} — {formatDateRange(term.startDate, term.endDate)}
+              </option>
+            ))}
+          </select>
         </FormField>
 
         <FormField
@@ -657,6 +701,23 @@ export function CourseEditor({
           </button>
         </div>
       </section>
+
+      {/* Nothing was saved: the move was refused, and the form is still exactly
+          as it was. Unlocking the term or picking another one are the two ways
+          on, and both are one control away. */}
+      {paywall && config ? (
+        <div className="mt-3">
+          <TermPassCard term={paywall} config={config} />
+        </div>
+      ) : paywall ? (
+        <p
+          role="alert"
+          className="mt-3 rounded-md border border-warn-line bg-warn-soft px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-ink"
+        >
+          {paywall.name} already has its free course, so this course was not
+          moved.
+        </p>
+      ) : null}
 
       {error ? (
         <p

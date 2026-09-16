@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { track } from "@/lib/analytics";
+import {
+  PaywallError,
+  assertCanAddCourse,
+  paywallResponse,
+  resolveTermForUpload,
+  summarizeTermFor,
+  type TermSummary,
+} from "@/lib/entitlement";
 import { deleteCalendarEvents } from "@/lib/google/calendar";
 import { logApiError } from "@/lib/log";
 import { isNotionConfigured } from "@/lib/notion/oauth";
@@ -11,6 +20,7 @@ import { AiBusyError } from "@/lib/parse/extract";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { store } from "@/lib/store";
 import type { Assessment, Course } from "@/lib/types";
+import { Invalid } from "@/lib/validation";
 import { attachWeights } from "@/lib/weights";
 import { resolveVisitor } from "@/lib/demo";
 
@@ -56,6 +66,16 @@ export async function POST(req: Request) {
   // has to hold the parsed syllabus between two requests.
   let replaceId: string | null = null;
   let allowDuplicate = false;
+  /**
+   * Which term this syllabus belongs to, when the client knows: an existing term
+   * (`termId`) or one the student just typed (`newTerm`, a JSON object in a
+   * multipart field). Neither is required -- the server infers a term from the
+   * parse when they are absent, which is what keeps the first upload a single
+   * step (docs/TERM-PASS.md, "Upload flow").
+   */
+  let termId: string | null = null;
+  let newTerm: unknown;
+  let newTermUnreadable = false;
   try {
     const form = await req.formData();
     const field = form.get("file");
@@ -63,8 +83,23 @@ export async function POST(req: Request) {
     const replace = form.get("replace");
     if (typeof replace === "string" && replace.trim()) replaceId = replace.trim();
     allowDuplicate = form.get("allowDuplicate") === "1";
+    const chosenTerm = form.get("termId");
+    if (typeof chosenTerm === "string" && chosenTerm.trim()) termId = chosenTerm.trim();
+    const typedTerm = form.get("newTerm");
+    if (typeof typedTerm === "string" && typedTerm.trim()) {
+      try {
+        newTerm = JSON.parse(typedTerm);
+      } catch {
+        // Reported after the form is read rather than thrown, so a bad term
+        // field cannot be mistaken for an unreadable upload.
+        newTermUnreadable = true;
+      }
+    }
   } catch {
     return fail("Could not read the upload.", 400);
+  }
+  if (newTermUnreadable) {
+    return fail("Could not read the term you entered.", 422, "newTerm must be JSON");
   }
   if (!file) return fail("No file received. Attach your syllabus.", 400);
   if (file.size === 0) return fail("That file is empty.", 400);
@@ -131,7 +166,38 @@ export async function POST(req: Request) {
       return fail("That course is not the one this upload duplicates.", 409);
     }
 
-    const { course, assessments } = await store.createCourse(userId, parsed);
+    /**
+     * The term, then the paywall, then the write -- in that order, and all of it
+     * before anything is created. A student who is going to be refused must be
+     * refused before a course exists, or the 402 would be a lie told next to a
+     * new course on their dashboard.
+     *
+     * A replace is exempted from its own count: the course being replaced is
+     * about to be deleted, so counting it would make "re-upload a corrected
+     * syllabus" hit the paywall in a term the student is not adding anything to.
+     */
+    let term;
+    let termSuggested: boolean;
+    let before: TermSummary;
+    try {
+      const resolved = await resolveTermForUpload(userId, parsed, { termId, newTerm });
+      term = resolved.term;
+      termSuggested = resolved.suggested;
+      before = await assertCanAddCourse(userId, term, {
+        excludingCourseId: replacing ?? undefined,
+      });
+    } catch (err) {
+      if (err instanceof PaywallError) return paywallResponse(err);
+      if (err instanceof Invalid) return fail("Invalid term.", 422, err.message);
+      throw err;
+    }
+
+    const { course, assessments } = await store.createCourse(userId, parsed, term.id);
+    // The activation moment, counted once: a replace is not a first course, even
+    // when it is the only one in the term.
+    if (!replacing && before.courseCount === 0) {
+      track("first_course_created", { userId, termId: term.id });
+    }
     // Deleted only after the new course is safely stored: the reverse order
     // would lose the old syllabus if the write failed.
     //
@@ -189,6 +255,12 @@ export async function POST(req: Request) {
       warnings: parsed.warnings,
       replaced: replacing,
       notion,
+      // Recomputed after the write (and after a replace's delete), so the count
+      // and the free slot the client reads are the ones that are now true.
+      term: await summarizeTermFor(userId, term),
+      // True only when the server INFERRED this term: the setup card asks the
+      // student to confirm it, and nothing else in the flow does.
+      termSuggested,
     });
   } catch (err) {
     logApiError("upload.failed", err, { userId, filename: name, bytes: file.size });

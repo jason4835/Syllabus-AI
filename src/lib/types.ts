@@ -122,6 +122,13 @@ export interface Course {
   title: string;
   instructor: string | null;
   term: string | null;
+  /**
+   * The `AcademicTerm` this course belongs to, or null for a course that
+   * predates terms and has not been through `ensureTermsBackfilled` yet. The
+   * `term` text above stays as the display fallback for exactly that case:
+   * nothing is dropped when a course gains a term row.
+   */
+  termId: string | null;
   /** ISO dates bounding the term, when derivable. */
   startDate: string | null;
   endDate: string | null;
@@ -154,9 +161,91 @@ export interface CoursePolicy {
   sourceText: string | null;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Academic terms                                                             */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * What a school calls the stretch of time a course runs for. These are LABELS:
+ * a type never sets or implies dates, because the same word means different
+ * months at different schools and a guessed date is worse than an absent one.
+ * `custom` is the honest answer when nothing else fits.
+ */
+export type TermType =
+  | "semester"
+  | "quarter"
+  | "trimester"
+  | "summer"
+  | "winter"
+  | "j_term"
+  | "custom";
+
+/** The `TermType` union as runtime data -- see `ASSESSMENT_KINDS` for the pattern. */
+export const TERM_TYPES: readonly TermType[] = [
+  "semester",
+  "quarter",
+  "trimester",
+  "summer",
+  "winter",
+  "j_term",
+  "custom",
+];
+
+/**
+ * One term of one student's, and the unit premium is sold in: the Academic Term
+ * Pass unlocks a term, not an account (docs/TERM-PASS.md).
+ *
+ * Everything about payment lives here rather than on `User` for that reason --
+ * a student who buys a pass in the spring and comes back in the autumn is
+ * buying again, and an expiry hanging off the account could not express that.
+ */
+export interface AcademicTerm {
+  id: string;
+  userId: string;
+  /** Whatever the student calls it: "Fall 2026", "Quarter 2", "Block 3". */
+  name: string;
+  termType: TermType;
+  /** ISO dates. Null only while the term was inferred from a syllabus that stated none and the student has not filled them in; a confirmed term always has both. */
+  startDate: string | null;
+  endDate: string | null;
+  /** The free allowance: 1 for a new term; the number of courses migrated into it for a term the backfill created. */
+  freeCourses: number;
+  /** Null while inferred from a syllabus and not yet confirmed by the student. */
+  confirmedAt: string | null;
+  premium: boolean;
+  premiumStartedAt: string | null;
+  premiumExpiresAt: string | null;
+  /** endDate at the moment of purchase; later edits are bounded against it. */
+  paidEndDate: string | null;
+  stripeCheckoutSessionId: string | null;
+  stripePaymentIntentId: string | null;
+  stripeCustomerId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * The part of a term a person supplies -- on the create form, in the setup
+ * card, or from `suggestTerm`. Everything else about a term is either identity
+ * or a consequence of paying for it, and neither is reachable from a request
+ * body.
+ */
+export interface TermInput {
+  name: string;
+  termType: TermType;
+  startDate: string | null;
+  endDate: string | null;
+}
+
 /** What the extractor returns for one uploaded syllabus, before persistence. */
 export interface ParsedSyllabus {
-  course: Omit<Course, "id" | "userId" | "createdAt">;
+  /**
+   * `termId` is omitted along with the identity fields because a parser cannot
+   * know it: which term a syllabus belongs to is decided after the parse, from
+   * the student's choice or `suggestTerm`, and is passed to `createCourse`
+   * separately. Nothing in `@/lib/parse` had to change for terms to exist.
+   */
+  course: Omit<Course, "id" | "userId" | "createdAt" | "termId">;
   assessments: Omit<Assessment, "id" | "courseId">[];
   /** Extractor-level warnings: ambiguous dates, missing weights, low OCR quality. */
   warnings: string[];

@@ -59,6 +59,15 @@ authorized redirect URI.
 Each capability degrades independently — an OpenAI key with no Google
 credentials gives you real extraction and a dry-run sync.
 
+The **Academic Term Pass** — a one-time $5.99 payment that unlocks premium
+access for a term past its free course — needs `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET` and `STRIPE_TERM_PASS_PRICE_ID`. Without all three set
+the paywall shows "not configured" copy and everything else keeps working.
+Setup (creating the product and price, the webhook endpoint, local testing
+with the Stripe CLI, going live) is [docs/DEPLOY.md](docs/DEPLOY.md) section
+9; the product rules — the 183-day term cap, the 14-day grace period, the
+free-course rule — are [docs/TERM-PASS.md](docs/TERM-PASS.md).
+
 **Deploying it for other people to use? Read [docs/DEPLOY.md](docs/DEPLOY.md)**,
 which covers the Google OAuth verification traps, why Supabase is mandatory on
 serverless, and cost control. `GET /api/health` tells you whether a running
@@ -80,6 +89,13 @@ src/
     log.ts             Structured logging with credential redaction
     health.ts          What GET /api/health reports
     weights.ts         Joins the grading table onto individual assessments
+    terms.ts           Academic Term Pass rules: term validity, premium
+                       access, the free-course limit (docs/TERM-PASS.md)
+    stripe.ts          Stripe SDK client: Checkout Sessions + webhook
+                       verification, server-only
+    pricing.ts         Display price for the Term Pass; the Stripe price id
+                       comes from env, never hardcoded
+    analytics.ts       track(event, fields) -> one structured log line
     store/             Supabase driver + local JSON driver, chosen by env
     parse/             PDF -> text -> AI structured extraction, with a
                        deterministic heuristic fallback

@@ -12,14 +12,15 @@ import type {
   SemesterPlan,
   User,
 } from "@/lib/types";
-import { apiGet, apiPost } from "@/components/api-client";
-import type { AppConfig } from "@/components/api-client";
+import { apiGet, apiPost, trackEvent } from "@/components/api-client";
+import type { AppConfig, TermSummary } from "@/components/api-client";
 import { accentVar, buildAccentMap } from "@/components/course-accents";
 import { formatDateTime, pluralize } from "@/components/format";
-import { Logo, RefreshIcon } from "@/components/icons";
+import { CheckIcon, Logo, RefreshIcon } from "@/components/icons";
 import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
 import { AccountPanel } from "@/components/dashboard/account-panel";
+import { TermsPanel } from "@/components/dashboard/terms-panel";
 import { UploadPanel } from "@/components/dashboard/upload-panel";
 import type { UploadResult } from "@/components/dashboard/upload-panel";
 import { UpcomingPanel } from "@/components/dashboard/upcoming-panel";
@@ -57,12 +58,21 @@ interface CoursesPayload {
   assessments: Assessment[];
 }
 
+interface TermsPayload {
+  terms: TermSummary[];
+}
+
+/** How long the success redirect waits for the webhook, and how often it looks. */
+const CHECKOUT_POLL_MS = 2_000;
+const CHECKOUT_POLL_LIMIT_MS = 30_000;
+
 export function DashboardShell() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [user, setUser] = useState<User | null>(null);
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [terms, setTerms] = useState<TermSummary[]>([]);
   const [plan, setPlan] = useState<SemesterPlan | null>(null);
 
   const [coursesLoading, setCoursesLoading] = useState(true);
@@ -70,7 +80,15 @@ export function DashboardShell() {
   const [configLoading, setConfigLoading] = useState(true);
 
   const [coursesError, setCoursesError] = useState<Failure | undefined>();
+  const [termsError, setTermsError] = useState<Failure | undefined>();
   const [planError, setPlanError] = useState<Failure | undefined>();
+
+  /**
+   * The one thing the checkout return has to say. A live region rather than a
+   * banner with a dismiss button: it is news about something that already
+   * happened, and it goes away on the next reload.
+   */
+  const [checkoutStatus, setCheckoutStatus] = useState("");
 
   // Notion status is fetched here, not in the panel, because the roadmap needs
   // its `coursePages` map too and one mount must mean one request.
@@ -120,13 +138,37 @@ export function DashboardShell() {
    */
   const loadCourses = useCallback(async (quiet = false) => {
     if (!quiet) setCoursesLoading(true);
-    const result = await apiGet<CoursesPayload>("/api/courses");
-    if (result.ok) {
-      setCourses(result.data.courses ?? []);
-      setAssessments(result.data.assessments ?? []);
+    /**
+     * Terms travel with the courses, in the same round trip and behind the same
+     * `quiet` flag. They are read together everywhere they are read at all: a
+     * course header prints its term's name, the setup card asks about a term the
+     * upload inferred, and the paywall is decided per term. Fetching them
+     * separately would mean a render where a course points at a term the page
+     * does not have yet, which is exactly the flicker the setup card refetch
+     * exists to avoid.
+     */
+    const [coursesResult, termsResult] = await Promise.all([
+      apiGet<CoursesPayload>("/api/courses"),
+      apiGet<TermsPayload>("/api/terms"),
+    ]);
+    if (coursesResult.ok) {
+      setCourses(coursesResult.data.courses ?? []);
+      setAssessments(coursesResult.data.assessments ?? []);
       setCoursesError(undefined);
     } else {
-      setCoursesError({ error: result.error, detail: result.detail });
+      setCoursesError({
+        error: coursesResult.error,
+        detail: coursesResult.detail,
+      });
+    }
+    // A terms route that has not shipped, or is erroring, must not take the
+    // roadmap down with it: the terms panel says so and everything else falls
+    // back to the syllabus's own term text.
+    if (termsResult.ok) {
+      setTerms(termsResult.data.terms ?? []);
+      setTermsError(undefined);
+    } else {
+      setTermsError({ error: termsResult.error, detail: termsResult.detail });
     }
     setCoursesLoading(false);
   }, []);
@@ -224,6 +266,78 @@ export function DashboardShell() {
       `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
     );
   }, [loadNotion]);
+
+  // Same guard as the Notion return, for the same reason: StrictMode runs the
+  // effect twice and Stripe sends the student back exactly once.
+  const checkoutReturnHandled = useRef(false);
+
+  /**
+   * Stripe sends the student back to `?checkout=success&term=…`.
+   *
+   * The redirect grants nothing -- premium is granted by the verified webhook
+   * and by nothing else (docs/TERM-PASS.md) -- so this polls its own API until
+   * the term reads premium. Thirty seconds is longer than a webhook takes and
+   * short enough not to spin all afternoon; when it runs out, the message says
+   * unlocking is still in progress, because a slow webhook is the only thing
+   * this page can actually know, and "payment failed" would be a claim it has no
+   * evidence for.
+   *
+   * The params are stripped immediately, so a refresh is not read as a second
+   * return from Stripe, and the success line is not resurrected by the back
+   * button hours later.
+   */
+  useEffect(() => {
+    // After `/api/config`, like everything else: a request fired before the
+    // session cookie is settled can mint a second sandbox.
+    if (configLoading || checkoutReturnHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("checkout");
+    if (outcome !== "success" && outcome !== "cancelled") return;
+    checkoutReturnHandled.current = true;
+
+    const termId = params.get("term");
+    params.delete("checkout");
+    params.delete("term");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
+
+    if (outcome === "cancelled") {
+      // No message: nothing happened, and the paywall is still wherever they
+      // left it. The event is how we find out how often that is.
+      trackEvent("term_checkout_abandoned", termId ? { termId } : undefined);
+      return;
+    }
+
+    void (async () => {
+      const deadline = Date.now() + CHECKOUT_POLL_LIMIT_MS;
+      for (;;) {
+        const result = await apiGet<TermsPayload>("/api/terms");
+        if (result.ok) {
+          const fresh = result.data.terms ?? [];
+          setTerms(fresh);
+          setTermsError(undefined);
+          const paid = fresh.find((term) => term.id === termId);
+          if (paid && paid.access === "premium") {
+            setCheckoutStatus(
+              `Your Academic Term Pass is active. ${paid.name} is unlocked.`,
+            );
+            return;
+          }
+        }
+        if (Date.now() >= deadline) {
+          setCheckoutStatus(
+            "Payment received — unlocking can take a minute. Refresh to check.",
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, CHECKOUT_POLL_MS));
+      }
+    })();
+  }, [configLoading]);
 
   /**
    * The Notion panel sits below the heatmap and roadmap, whose heights only
@@ -460,6 +574,8 @@ export function DashboardShell() {
     <UploadPanel
       demoMode={demoMode}
       accent={nextAccent}
+      terms={terms}
+      config={config}
       onUploaded={onUploaded}
       onAssessmentChanged={onAssessmentChanged}
       onCourseChanged={onCourseChanged}
@@ -535,6 +651,25 @@ export function DashboardShell() {
           </div>
         ) : null}
 
+        {/* The one thing the checkout return has to say, in the reading order
+            it happened in: above the panels, below the page's own title. */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={
+            checkoutStatus
+              ? "mb-6 flex items-start gap-2 rounded-xl border border-accent-line bg-accent-soft px-4 py-3 text-[0.875rem] leading-relaxed text-ink sm:px-5"
+              : "sr-only"
+          }
+        >
+          {checkoutStatus ? (
+            <span aria-hidden="true" className="mt-0.5 shrink-0 text-ok">
+              <CheckIcon width={16} height={16} />
+            </span>
+          ) : null}
+          {checkoutStatus}
+        </p>
+
         <div className="space-y-6">
           {/* A signed-in first-timer met three empty panels before the one
               control that fills them — twelve thousand pixels down at 375px.
@@ -574,6 +709,8 @@ export function DashboardShell() {
                 courses={courses}
                 assessments={assessments}
                 accents={accents}
+                terms={terms}
+                config={config}
                 onAssessmentChanged={onAssessmentChanged}
                 onAssessmentAdded={onAssessmentAdded}
                 onAssessmentDeleted={onAssessmentDeleted}
@@ -590,6 +727,20 @@ export function DashboardShell() {
 
             <div className="min-w-0 space-y-6">
               {noCourses ? null : uploadPanel}
+              {/* Directly under the upload panel, because that is where a term
+                  gets chosen — and only once there is a term to show. A student
+                  with none has nothing to manage here, and the upload panel's own
+                  chooser is how they get their first one. */}
+              {terms.length > 0 ? (
+                <TermsPanel
+                  loading={coursesLoading}
+                  error={termsError}
+                  terms={terms}
+                  config={config}
+                  onRetry={() => void loadCourses()}
+                  onChanged={() => void loadCourses(true)}
+                />
+              ) : null}
               <SyncPanel
                 demoMode={demoMode}
                 googleReady={config?.googleReady ?? false}

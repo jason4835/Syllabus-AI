@@ -24,9 +24,10 @@
 --   drop table if exists public.calendar_links, public.assessments,
 --                        public.courses, public.users cascade;
 --
--- `notion_connections` and `notion_links` are NEW. A database created before
--- they existed simply does not have them, and because they are additions rather
--- than alterations, re-running this file does create them -- no drop needed.
+-- `notion_connections`, `notion_links`, `academic_terms` and `stripe_events` are
+-- NEW. A database created before they existed simply does not have them, and
+-- because they are additions rather than alterations, re-running this file does
+-- create them -- no drop needed.
 --
 -- COLUMNS ADDED TO EXISTING TABLES need an explicit `alter table ... add column
 -- if not exists` line, since `create table if not exists` will not add them.
@@ -40,6 +41,7 @@
 --   courses.no_class              -- term days when the class does not meet
 --   courses.section               -- the section the student picked, of the many listed
 --   courses.sections              -- one section per question the syllabus asks
+--   courses.term_id               -- the academic term the course belongs to
 --   calendar_links.user_id        -- who a synced event belongs to
 --
 -- `calendar_links` also RESHAPED: its `assessment_id uuid` primary key became
@@ -352,6 +354,94 @@ create table if not exists public.notion_links (
 create index if not exists notion_links_user_id_idx on public.notion_links (user_id);
 
 -- ---------------------------------------------------------------------------
+-- academic_terms
+--
+-- One row per term of one user's, and the unit premium is sold in: the Academic
+-- Term Pass unlocks a term, not an account (docs/TERM-PASS.md). The payment
+-- columns therefore live here rather than on `users` -- a student who buys a
+-- pass in the spring and comes back in the autumn is buying again, which an
+-- expiry hanging off the account could not express.
+--
+-- `term_type` is a LABEL and never implies dates: the same word means different
+-- months at different schools, so nothing in this app derives a date from it.
+-- Dates are `text` for the reason stated at the top of this file.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.academic_terms (
+  id                          uuid primary key default gen_random_uuid(),
+  -- text, to match users.id above.
+  user_id                     text not null references public.users (id) on delete cascade,
+  -- Whatever the student calls it: "Fall 2026", "Quarter 2", "Block 3".
+  name                        text not null,
+  term_type                   text not null default 'custom',
+  -- Null only while the term was inferred from a syllabus that stated no dates
+  -- and the student has not filled them in. A confirmed term always has both:
+  -- without an end date there is nothing to compute an expiry from.
+  start_date                  text,
+  end_date                    text,
+  -- The free allowance. 1 for a term somebody created, and the number of
+  -- courses migrated in for a term `ensureTermsBackfilled` created -- a user who
+  -- had three courses keeps all three free. Not a column anybody edits.
+  free_courses                integer not null default 1,
+  -- When the student confirmed this term; null while it is still the app's
+  -- guess from a syllabus. Nothing inferred is silently final.
+  confirmed_at                text,
+  -- Set ONLY by the verified `checkout.session.completed` webhook (see
+  -- grantTermPremium in src/lib/store/supabase.ts). The success redirect polls;
+  -- it activates nothing. Stays true after expiry, because the record of a
+  -- purchase is not something to erase -- `premium_expires_at` is what says
+  -- whether it still grants anything today.
+  premium                     boolean not null default false,
+  premium_started_at          text,
+  -- end_date + 14 days, computed by `premiumExpiresAt` in src/lib/terms.ts,
+  -- which is the only place that arithmetic lives.
+  premium_expires_at          text,
+  -- `end_date` as it stood at the moment of purchase. An edit to a paid term is
+  -- bounded against THIS, not against the current end date, so a term can be
+  -- corrected but not renewed (`premiumEndDateAllowed`).
+  paid_end_date               text,
+  stripe_checkout_session_id  text,
+  stripe_payment_intent_id    text,
+  stripe_customer_id          text,
+  created_at                  text not null,
+  updated_at                  text not null,
+  constraint academic_terms_term_type_check check (
+    term_type in ('semester','quarter','trimester','summer','winter','j_term','custom')
+  )
+);
+
+create index if not exists academic_terms_user_id_idx on public.academic_terms (user_id);
+
+-- Migration for databases created before terms existed. `on delete set null`,
+-- NOT cascade, and the difference matters: deleting a term is tidying a label,
+-- and it must never take a semester of coursework with it. The course keeps its
+-- own `term` text, which is what the UI falls back to.
+alter table public.courses
+  add column if not exists term_id uuid references public.academic_terms (id) on delete set null;
+
+create index if not exists courses_term_id_idx on public.courses (term_id);
+
+-- ---------------------------------------------------------------------------
+-- stripe_events
+--
+-- Webhook idempotency, and nothing else. Stripe retries deliveries and can send
+-- the same event twice, so the handler records the id before it acts: the INSERT
+-- is the lock, a `unique_violation` is the answer "already handled", and two
+-- concurrent deliveries cannot both grant premium. A check-then-write would let
+-- them.
+--
+-- No `user_id`: an event id is Stripe's record of a message, not a user's data,
+-- which is also why deleting an account leaves these rows alone -- forgetting
+-- one would re-open the door to processing it twice.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.stripe_events (
+  id            text primary key,
+  type          text not null,
+  processed_at  text not null
+);
+
+-- ---------------------------------------------------------------------------
 -- Row level security
 --
 -- The server routes connect with the SERVICE ROLE key, which bypasses RLS
@@ -364,9 +454,17 @@ create index if not exists notion_links_user_id_idx on public.notion_links (user
 alter table public.users               enable row level security;
 alter table public.courses             enable row level security;
 alter table public.assessments         enable row level security;
+alter table public.academic_terms      enable row level security;
 alter table public.calendar_links      enable row level security;
 alter table public.notion_connections  enable row level security;
 alter table public.notion_links        enable row level security;
+-- No policy for stripe_events, deliberately: enabling RLS with none defined
+-- denies every anon and authenticated request outright, which is exactly right.
+-- These rows are the webhook's own bookkeeping -- they belong to no user, they
+-- are never read by a browser, and the only client that touches them is the
+-- server on the service-role key, which bypasses RLS entirely. A policy here
+-- could only widen access to something nobody should be reading.
+alter table public.stripe_events       enable row level security;
 
 drop policy if exists users_self_access on public.users;
 create policy users_self_access on public.users
@@ -376,6 +474,16 @@ create policy users_self_access on public.users
 
 drop policy if exists courses_owner_access on public.courses;
 create policy courses_owner_access on public.courses
+  for all
+  using (user_id = auth.uid()::text)
+  with check (user_id = auth.uid()::text);
+
+-- Terms carry their owner directly, so the policy is a plain self-check. Note
+-- that the payment columns are covered by it too: nothing but the server on the
+-- service-role key can write `premium`, and an anon client reading its own term
+-- learns only what the UI already shows it.
+drop policy if exists academic_terms_owner_access on public.academic_terms;
+create policy academic_terms_owner_access on public.academic_terms
   for all
   using (user_id = auth.uid()::text)
   with check (user_id = auth.uid()::text);
