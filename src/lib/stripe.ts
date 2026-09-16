@@ -59,6 +59,7 @@ export async function createTermPassCheckout(input: TermPassCheckoutInput): Prom
   const session = await stripe().checkout.sessions.create(
     {
       mode: "payment",
+      allow_promotion_codes: true,
       line_items: [{ price, quantity: 1 }],
       client_reference_id: input.termId,
       metadata: { user_id: input.userId, term_id: input.termId },
