@@ -382,6 +382,49 @@ export function intensityForHours(
   return 3;
 }
 
+/**
+ * How a week compares to the student's OWN typical week.
+ *
+ * The absolute tiers above are calibrated to a full-time load, and that is the
+ * right calibration for a student carrying five courses. It is the wrong one
+ * for a student carrying one -- which is every student on the free tier, i.e.
+ * everyone deciding whether the heatmap is worth paying for. A single course
+ * never crosses 10.5h in a week, so for them every bar was the same green: the
+ * week the warning called "your heaviest" was painted identically to the week
+ * with a third of the work, and the legend's Busy and Crunch were words that
+ * never appeared.
+ *
+ * So a second signal: the ratio of a week to the median of the non-empty
+ * weeks. A week carrying twice the student's usual load is a crunch week FOR
+ * THAT STUDENT whatever the absolute number is -- that is what "crunch" means
+ * to the person looking at it.
+ *
+ *   <= 1.25x median  -> no opinion (the absolute tier stands)
+ *   <= 2.0x  median  -> at least busy
+ *    > 2.0x  median  -> crunch
+ *
+ * Combined with `Math.max`, so it can only ever RAISE a week, never soften
+ * one: a 20h week is a crunch in any semester, and a flat semester -- every
+ * week within a quarter of the median -- has no crunch invented for it.
+ */
+export const RELATIVE_THRESHOLDS = { busy: 1.25, crunch: 2.0 } as const;
+
+export function relativeIntensity(hours: number, medianHours: number): 0 | 2 | 3 {
+  if (medianHours <= 0 || hours <= 0) return 0;
+  const ratio = hours / medianHours;
+  if (ratio > RELATIVE_THRESHOLDS.crunch) return 3;
+  if (ratio > RELATIVE_THRESHOLDS.busy) return 2;
+  return 0;
+}
+
+/** Median of the non-zero values, or 0 when there are none. */
+export function medianNonZero(values: readonly number[]): number {
+  const sorted = values.filter((v) => v > 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Week building                                                               */
 /* -------------------------------------------------------------------------- */
@@ -836,6 +879,12 @@ export function buildWeeksFromBlocks(
   const peakCount = draft.filter((w) => w.estimatedHours === peak).length;
   const scoredByBlocks = studyByWeek !== null;
 
+  /**
+   * Second pass, because the relative tier needs every week's hours before it
+   * can judge any one of them. See `relativeIntensity` for why this exists.
+   */
+  const median = medianNonZero(draft.map((w) => w.estimatedHours));
+
   return draft.map((w): WeekLoad => {
     const cluster = clusterByWeek.get(w.weekStart);
     const parts: string[] = [];
@@ -879,7 +928,10 @@ export function buildWeeksFromBlocks(
       estimatedHours: w.estimatedHours,
       studyHours: w.studyHours,
       dueHours: w.dueHours,
-      intensity: w.intensity,
+      intensity: Math.max(
+        w.intensity,
+        relativeIntensity(w.estimatedHours, median),
+      ) as WeekLoad["intensity"],
       warning,
     };
   });

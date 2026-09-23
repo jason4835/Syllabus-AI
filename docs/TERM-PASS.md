@@ -110,6 +110,35 @@ Before parsing, the client already knows whether the selected term is full
 and not premium, and shows the paywall instead of uploading. The server
 check after the parse is the enforcement; the client check is the courtesy.
 
+### Pending uploads (what the paywall does with the file)
+
+A refused upload is not thrown away. The parse has already happened by the time
+the 402 is decided — it is the parse that told us which term the syllabus
+belongs to — so it is written to `pending_uploads` against the refusing term,
+and the 402 (and every later `GET /api/terms`) names it: "CHEM 104 is parsed
+and waiting". When the term reads premium, the dashboard replays it with
+`pendingId` and no file, through the same create path as any upload.
+
+This replaced a flow where the client held the file back and the student, on
+returning from Stripe (a full-page redirect that drops the `File`), found an
+empty dropzone and had to re-pick the same syllabus. The client-side "term is
+full, hold the file" pre-check is gone for the same reason: spending the parse
+is fine when the parse is kept, and a paywall that names the waiting course
+converts better than one that can only say no.
+
+Deleted on successful replay; removed with the account otherwise.
+
+### The paid term is sticky
+
+`suggestTerm` has one more rule after overlap and label matching fail: if the
+syllabus states **no dates and no term label**, and the student has **exactly
+one** term with premium access today, the upload goes there. Before this, such a
+syllabus became a fresh "New term" — free for its first course, full for the
+next — and a student holding a valid pass was shown the paywall for the term
+they were standing in. Dated syllabi still follow their dates: a spring course
+never lands in an autumn pass. The upload panel's default selection prefers the
+premium term for the same reason.
+
 ### Checkout and webhook
 
 `POST /api/terms/[id]/checkout`: real (non-demo) user, owns the term, term

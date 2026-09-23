@@ -130,6 +130,18 @@ export interface SyncOptions {
   prefs?: CalendarPrefs;
   /** Compute the plan and the counts without touching the network. Powers demo mode. */
   dryRun?: boolean;
+  /**
+   * Called after each event is written or removed, so a caller can show a real
+   * progress bar. A full-semester sync is one Google API call per event, one
+   * at a time, and a couple of hundred of those is long enough that a spinner
+   * reads as "hung". `total` is the number of events to write until the
+   * removal pass has listed what it will delete, and then grows by that count
+   * -- so it can step up once, mid-run, which is honest and the bar tolerates.
+   *
+   * Never awaited and never allowed to throw into the sync: a progress
+   * callback that fails must not fail the write it was reporting on.
+   */
+  onProgress?: (progress: { done: number; total: number }) => void;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -593,6 +605,19 @@ export async function syncToCalendar(
     errors: [...plan.errors],
   };
 
+  /**
+   * Progress, guarded. `done` counts writes AND removals; `total` starts at the
+   * events to write and gains the removals once they are known.
+   */
+  const progress = { done: 0, total: plan.events.length };
+  const report = () => {
+    try {
+      opts.onProgress?.({ ...progress });
+    } catch {
+      // A caller's progress handler is not allowed to fail the sync.
+    }
+  };
+
   let api: calendar_v3.Calendar | null = null;
 
   if (!dryRun) {
@@ -610,6 +635,11 @@ export async function syncToCalendar(
   }
 
   for (const event of plan.events) {
+    // Counted whatever happens to it: a skipped or failed event still moves
+    // the bar, because the bar measures work attempted, and a bar that stalls
+    // on an error looks exactly like a hang.
+    progress.done += 1;
+    report();
     try {
       // `event.key` is an assessment id, a study-block id, or `mt_<course>_<n>`.
       // The link table's key column is plain text and has never cared which --
@@ -683,7 +713,10 @@ export async function syncToCalendar(
   const completedSessions = () =>
     (completed ??= pastStudySessionKeys(opts, timeZone, prefs));
 
-  await removeStaleEvents(userId, opts, plan, dryRun ? null : api, result, completedSessions);
+  await removeStaleEvents(userId, opts, plan, dryRun ? null : api, result, completedSessions, {
+    state: progress,
+    report,
+  });
 
   return result;
 }
@@ -714,6 +747,7 @@ async function removeStaleEvents(
   api: calendar_v3.Calendar | null,
   result: CalendarSyncResult,
   completedSessions: () => ReadonlySet<string>,
+  progress?: { state: { done: number; total: number }; report: () => void },
 ): Promise<void> {
   const desired = new Set(plan.events.map((e) => e.key));
   const { keys, keyPrefixes } = reconciliationScope(opts);
@@ -727,6 +761,12 @@ async function removeStaleEvents(
     // cleanup that cannot read its own links simply has nothing to do.
     result.errors.push(`Could not list existing calendar links: ${describeGoogleError(err).message}`);
     return;
+  }
+  // Now the removals are known, so the bar's denominator can include them.
+  const stale = links.filter((link) => !desired.has(link.key));
+  if (progress) {
+    progress.state.total += stale.length;
+    progress.report();
   }
 
   /**
@@ -764,6 +804,11 @@ async function removeStaleEvents(
 
   for (const link of links) {
     if (desired.has(link.key)) continue;
+    // Same rule as the write loop: attempted counts, so an error cannot stall it.
+    if (progress) {
+      progress.state.done += 1;
+      progress.report();
+    }
     // A session the student already sat through is not stale, it is history.
     // The link stays too, so a later sync still knows the event is ours.
     if (link.key.startsWith("sb_") && completedSessions().has(link.key)) continue;

@@ -9,12 +9,7 @@ import type {
   User,
 } from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
-import {
-  apiGet,
-  apiPatch,
-  apiPost,
-  parseRetryAfterSeconds,
-} from "@/components/api-client";
+import { apiGet, apiPatch, apiPost, apiStreamPost, parseRetryAfterSeconds } from "@/components/api-client";
 import { Panel } from "@/components/ui/panel";
 import { Button, Spinner } from "@/components/ui/button";
 import { ErrorState, Note } from "@/components/ui/states";
@@ -31,7 +26,7 @@ type SyncResponse = CalendarSyncResult & { dryRun?: boolean };
 type State =
   | { kind: "idle" }
   /** `dry` is what was asked for; the result says what actually ran. */
-  | { kind: "running"; dry: boolean }
+  | { kind: "running"; dry: boolean; progress?: { done: number; total: number } }
   | { kind: "done"; dry: boolean; result: SyncResponse }
   /**
    * `dry` is carried here too, so a retry repeats what was asked for. Without
@@ -128,10 +123,17 @@ export function SyncPanel({
 
   async function sync(dry: boolean) {
     setState({ kind: "running", dry });
-    const result = await apiPost<SyncResponse>(
-      "/api/sync",
-      dry ? { dryRun: true } : {},
-    );
+    /**
+     * The real sync streams its progress; the preview does not need to, it is
+     * a diff with no network calls and returns at once. One Google API call
+     * per event, in sequence, is long enough that a spinner alone read as
+     * "hung" -- students refreshed mid-run and raced the run they had left.
+     */
+    const result = dry
+      ? await apiPost<SyncResponse>("/api/sync", { dryRun: true })
+      : await apiStreamPost<SyncResponse>("/api/sync", {}, (progress) =>
+          setState({ kind: "running", dry: false, progress }),
+        );
     if (!result.ok) {
       setState({ kind: "error", dry, error: result.error, detail: result.detail });
       const seconds = parseRetryAfterSeconds(result.error, result.detail);
@@ -206,6 +208,34 @@ export function SyncPanel({
             </p>
           ) : null}
         </div>
+
+        {/* A determinate bar, fed by the stream. Hidden until the first
+            progress line so a fast sync never flashes an empty track. */}
+        {running && !state.dry && state.progress && state.progress.total > 0 ? (
+          <div className="mt-3">
+            <p className="flex items-center justify-between text-[0.8125rem] text-muted">
+              <span>Writing to Google Calendar…</span>
+              <span className="tabular-nums">
+                {state.progress.done} / {state.progress.total}
+              </span>
+            </p>
+            <div
+              role="progressbar"
+              aria-label="Calendar sync progress"
+              aria-valuemin={0}
+              aria-valuemax={state.progress.total}
+              aria-valuenow={state.progress.done}
+              className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-track"
+            >
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-200"
+                style={{
+                  width: `${Math.max(4, Math.round((100 * state.progress.done) / state.progress.total))}%`,
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
 
         {cooldownLeft > 0 ? (
           <p

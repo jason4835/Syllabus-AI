@@ -31,10 +31,13 @@ import type {
   NotionConnection,
   NotionLink,
   ParsedSyllabus,
+  PendingUpload,
   TermInput,
   User,
 } from "@/lib/types";
-import { FREE_COURSES_PER_TERM } from "@/lib/terms";
+import { isDemoUser } from "@/lib/types";
+import { FREE_COURSES_PER_TERM, todayIso } from "@/lib/terms";
+import { foldPaidTerms, isoDaysAgo } from "@/lib/metrics";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -103,6 +106,7 @@ interface Database {
   notionConnections: NotionConnection[];
   notionLinks: NotionLink[];
   stripeEvents: StripeEventRecord[];
+  pendingUploads: PendingUpload[];
 }
 
 /**
@@ -130,6 +134,7 @@ function emptyDatabase(): Database {
     notionConnections: [],
     notionLinks: [],
     stripeEvents: [],
+    pendingUploads: [],
   };
 }
 
@@ -223,6 +228,7 @@ function normalizeUser(row: User): User {
     timezone: row.timezone ?? null,
     calendarFeedToken: row.calendarFeedToken ?? null,
     calendarPrefs: mergeCalendarPrefs(row.calendarPrefs),
+    profile: row.profile ?? {},
   };
 }
 
@@ -289,6 +295,9 @@ async function readDatabase(): Promise<Database> {
         : [],
       stripeEvents: Array.isArray(shape.stripeEvents)
         ? (shape.stripeEvents as StripeEventRecord[])
+        : [],
+      pendingUploads: Array.isArray(shape.pendingUploads)
+        ? (shape.pendingUploads as PendingUpload[])
         : [],
     };
   } catch {
@@ -490,6 +499,80 @@ export function createLocalStore(): Store {
   }
 
   return {
+    /**
+     * One pass over the in-memory snapshot. The whole database is already a
+     * single JSON file that every other read loads in full, so counting here
+     * costs nothing the driver was not paying anyway.
+     */
+    async metrics() {
+      return readOnly((db) => {
+        const real = db.users.filter((u) => !isDemoUser(u.id));
+        const since7 = isoDaysAgo(7);
+        const since30 = isoDaysAgo(30);
+        return {
+          signups: real.length,
+          signupsLast7Days: real.filter((u) => u.createdAt >= since7).length,
+          signupsLast30Days: real.filter((u) => u.createdAt >= since30).length,
+          demoSandboxes: db.users.length - real.length,
+          ...foldPaidTerms(
+            db.terms.filter((t) => t.premium),
+            todayIso(),
+          ),
+          generatedAt: new Date().toISOString(),
+        };
+      });
+    },
+
+    async setUserProfile(userId, patch) {
+      return mutate((db) => {
+        const user = db.users.find((u) => u.id === userId);
+        if (!user) return null;
+        user.profile = { ...(user.profile ?? {}), ...patch };
+        return clone(normalizeUser(user));
+      });
+    },
+
+    async savePendingUpload(userId, termId, fileName, parsed) {
+      return mutate((db) => {
+        const record: PendingUpload = {
+          id: randomUUID(),
+          userId,
+          termId,
+          fileName,
+          parsed: clone(parsed),
+          createdAt: new Date().toISOString(),
+        };
+        db.pendingUploads.push(record);
+        return clone(record);
+      });
+    },
+
+    async getPendingUpload(userId, id) {
+      return readOnly((db) => {
+        // Owner-scoped: a stranger's id reads as "no such upload".
+        const found = db.pendingUploads.find((p) => p.id === id && p.userId === userId);
+        return found ? clone(found) : null;
+      });
+    },
+
+    async listPendingUploads(userId) {
+      return readOnly((db) =>
+        clone(
+          db.pendingUploads
+            .filter((p) => p.userId === userId)
+            .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+        ),
+      );
+    },
+
+    async deletePendingUpload(userId, id) {
+      return mutate((db) => {
+        const before = db.pendingUploads.length;
+        db.pendingUploads = db.pendingUploads.filter((p) => !(p.id === id && p.userId === userId));
+        return db.pendingUploads.length < before;
+      });
+    },
+
     async getUser(id) {
       return readOnly((db) => {
         const found = db.users.find((u) => u.id === id);

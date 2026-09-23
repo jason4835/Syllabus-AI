@@ -13,12 +13,21 @@ import type {
   User,
 } from "@/lib/types";
 import { apiGet, apiPost, trackEvent } from "@/components/api-client";
+import {
+  capturePageview,
+  identifyUser,
+  installGlobalErrorHandlers,
+  registerExperiments,
+  startAnalytics,
+} from "@/lib/analytics-client";
 import type { AppConfig, TermSummary } from "@/components/api-client";
 import { accentVar, buildAccentMap } from "@/components/course-accents";
 import { formatDateTime, pluralize } from "@/components/format";
 import { CheckIcon, Logo, RefreshIcon } from "@/components/icons";
 import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
+import { PanelBoundary } from "@/components/ui/panel-boundary";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
 import { AccountPanel } from "@/components/dashboard/account-panel";
 import { TermsPanel } from "@/components/dashboard/terms-panel";
 import { UploadPanel } from "@/components/dashboard/upload-panel";
@@ -225,6 +234,31 @@ export function DashboardShell() {
     if (configResult.ok) setConfig(configResult.data);
     const meResult = await apiGet<User | null>("/api/me");
     if (meResult.ok) setUser(meResult.data);
+
+    /**
+     * Analytics starts here rather than in the layout, and in this order.
+     *
+     * The assignments have to be registered BEFORE the first event, or that
+     * event lands without a variant property and the experiment it belongs to
+     * is unreadable for exactly the visitors who arrived fastest. And the
+     * identity has to come from `/api/config`, because a visitor's id is the
+     * thing that decides their variant -- starting analytics earlier would mean
+     * identifying a sandbox that the next line is about to replace.
+     */
+    startAnalytics();
+    // After `startAnalytics`, so a crash during the very first render still has
+    // somewhere to go -- and idempotent, so StrictMode's double effect does not
+    // double every report.
+    installGlobalErrorHandlers();
+    if (configResult.ok) {
+      registerExperiments(configResult.data.experiments ?? {});
+      if (meResult.ok && meResult.data?.id) {
+        identifyUser(meResult.data.id, configResult.data.demoMode);
+      }
+      capturePageview("/dashboard");
+      if (configResult.data.demoMode) trackEvent("demo_started");
+    }
+
     setConfigLoading(false);
   }, []);
 
@@ -571,17 +605,19 @@ export function DashboardShell() {
    * layouts cannot drift apart.
    */
   const uploadPanel = (
-    <UploadPanel
-      demoMode={demoMode}
-      accent={nextAccent}
-      terms={terms}
-      config={config}
-      onUploaded={onUploaded}
-      onAssessmentChanged={onAssessmentChanged}
-      onCourseChanged={onCourseChanged}
-      onCourseReplaced={onCourseReplaced}
-      onAnswerQuestions={onAnswerQuestions}
-    />
+    <PanelBoundary id="upload-boundary" title="Upload a syllabus">
+      <UploadPanel
+        demoMode={demoMode}
+        accent={nextAccent}
+        terms={terms}
+        config={config}
+        onUploaded={onUploaded}
+        onAssessmentChanged={onAssessmentChanged}
+        onCourseChanged={onCourseChanged}
+        onCourseReplaced={onCourseReplaced}
+        onAnswerQuestions={onAnswerQuestions}
+      />
+    </PanelBoundary>
   );
   // Only once the answer is known: moving the panel mid-load would be a jump
   // for every visitor, including the ones who do have courses.
@@ -674,55 +710,71 @@ export function DashboardShell() {
           {/* A signed-in first-timer met three empty panels before the one
               control that fills them — twelve thousand pixels down at 375px.
               With no courses, the upload box is the page. */}
+          {/* Once, for a signed-in student who has not answered or skipped it.
+              Above the panels and never blocking them -- see the component. */}
+          {user && !demoMode && !user.profile?.completedAt ? (
+            <PanelBoundary id="onboarding-boundary" title="Quick one, before your semester">
+              <OnboardingCard
+                onDone={(profile) => setUser((current) => (current ? { ...current, profile } : current))}
+              />
+            </PanelBoundary>
+          ) : null}
+
           {noCourses ? uploadPanel : null}
 
-          <HeatmapPanel
-            loading={planLoading}
-            error={planError}
-            weeks={weeks}
-            term={plan?.term ?? null}
-            courses={courses}
-            assessments={assessments}
-            accents={accents}
-            onRetry={() => void loadPlan()}
-            onSetTermDates={courses.length > 0 ? onSetTermDates : undefined}
-          />
+          <PanelBoundary id="heatmap-boundary" title="Workload heatmap">
+            <HeatmapPanel
+              loading={planLoading}
+              error={planError}
+              weeks={weeks}
+              term={plan?.term ?? null}
+              courses={courses}
+              assessments={assessments}
+              accents={accents}
+              onRetry={() => void loadPlan()}
+              onSetTermDates={courses.length > 0 ? onSetTermDates : undefined}
+            />
+          </PanelBoundary>
 
           {/* `min-w-0` on both children: a grid child's min-width is `auto`,
               so a long unbreakable string (a feed URL) pushed the whole
               dashboard wider than a 320px viewport. */}
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] lg:items-start">
             <div className="min-w-0 space-y-6">
-              <UpcomingPanel
-                loading={coursesLoading}
-                error={coursesError}
-                courses={courses}
-                assessments={assessments}
-                accents={accents}
-                onAssessmentChanged={onAssessmentChanged}
-                onAssessmentDeleted={onAssessmentDeleted}
-                onRetry={() => void loadCourses()}
-              />
-              <RoadmapPanel
-                loading={coursesLoading}
-                error={coursesError}
-                courses={courses}
-                assessments={assessments}
-                accents={accents}
-                terms={terms}
-                config={config}
-                onAssessmentChanged={onAssessmentChanged}
-                onAssessmentAdded={onAssessmentAdded}
-                onAssessmentDeleted={onAssessmentDeleted}
-                onCourseChanged={onCourseChanged}
-                onCourseDeleted={onCourseDeleted}
-                editingCourseId={editingCourseId}
-                editFocusField={editFocusField}
-                onEditCourse={onEditCourse}
-                onSetupAnswered={onSetupAnswered}
-                coursePages={notionStatus?.coursePages ?? {}}
-                onRetry={() => void loadCourses()}
-              />
+              <PanelBoundary id="upcoming-boundary" title="Upcoming">
+                <UpcomingPanel
+                  loading={coursesLoading}
+                  error={coursesError}
+                  courses={courses}
+                  assessments={assessments}
+                  accents={accents}
+                  onAssessmentChanged={onAssessmentChanged}
+                  onAssessmentDeleted={onAssessmentDeleted}
+                  onRetry={() => void loadCourses()}
+                />
+              </PanelBoundary>
+              <PanelBoundary id="roadmap-boundary" title="Semester roadmap">
+                <RoadmapPanel
+                  loading={coursesLoading}
+                  error={coursesError}
+                  courses={courses}
+                  assessments={assessments}
+                  accents={accents}
+                  terms={terms}
+                  config={config}
+                  onAssessmentChanged={onAssessmentChanged}
+                  onAssessmentAdded={onAssessmentAdded}
+                  onAssessmentDeleted={onAssessmentDeleted}
+                  onCourseChanged={onCourseChanged}
+                  onCourseDeleted={onCourseDeleted}
+                  editingCourseId={editingCourseId}
+                  editFocusField={editFocusField}
+                  onEditCourse={onEditCourse}
+                  onSetupAnswered={onSetupAnswered}
+                  coursePages={notionStatus?.coursePages ?? {}}
+                  onRetry={() => void loadCourses()}
+                />
+              </PanelBoundary>
             </div>
 
             <div className="min-w-0 space-y-6">
@@ -732,36 +784,44 @@ export function DashboardShell() {
                   with none has nothing to manage here, and the upload panel's own
                   chooser is how they get their first one. */}
               {terms.length > 0 ? (
-                <TermsPanel
-                  loading={coursesLoading}
-                  error={termsError}
-                  terms={terms}
-                  config={config}
-                  onRetry={() => void loadCourses()}
-                  onChanged={() => void loadCourses(true)}
-                />
+                <PanelBoundary id="terms-boundary" title="Academic terms">
+                  <TermsPanel
+                    loading={coursesLoading}
+                    error={termsError}
+                    terms={terms}
+                    config={config}
+                    onRetry={() => void loadCourses()}
+                    onChanged={() => void loadCourses(true)}
+                  />
+                </PanelBoundary>
               ) : null}
-              <SyncPanel
-                demoMode={demoMode}
-                googleReady={config?.googleReady ?? false}
-                hasCourses={courses.length > 0}
-                courses={courses}
-                assessments={assessments}
-                onAnswerQuestions={onAnswerQuestions}
-              />
-              <div ref={notionRef}>
-                <NotionPanel
-                  status={notionStatus}
-                  loading={notionLoading}
-                  error={notionError}
+              <PanelBoundary id="sync-boundary" title="Calendar sync">
+                <SyncPanel
+                  demoMode={demoMode}
+                  googleReady={config?.googleReady ?? false}
                   hasCourses={courses.length > 0}
                   courses={courses}
-                  justConnected={notionJustConnected}
-                  onStatus={setNotionStatus}
-                  onReload={() => void loadNotion()}
+                  assessments={assessments}
+                  onAnswerQuestions={onAnswerQuestions}
                 />
+              </PanelBoundary>
+              <div ref={notionRef}>
+                <PanelBoundary id="notion-boundary" title="Notion">
+                  <NotionPanel
+                    status={notionStatus}
+                    loading={notionLoading}
+                    error={notionError}
+                    hasCourses={courses.length > 0}
+                    courses={courses}
+                    justConnected={notionJustConnected}
+                    onStatus={setNotionStatus}
+                    onReload={() => void loadNotion()}
+                  />
+                </PanelBoundary>
               </div>
-              <ChatPanel openaiReady={config?.openaiReady ?? false} />
+              <PanelBoundary id="chat-boundary" title="Ask about your semester">
+                <ChatPanel openaiReady={config?.openaiReady ?? false} />
+              </PanelBoundary>
             </div>
           </div>
 
@@ -769,17 +829,19 @@ export function DashboardShell() {
               not the thing you work in. `scroll-mt` clears the sticky header
               when the menu jumps here. */}
           <div ref={accountRef} tabIndex={-1} className="scroll-mt-20 outline-none">
-            <AccountPanel
-              user={user}
-              loading={configLoading}
-              demoMode={demoMode}
-              notionConnected={
-                (notionStatus?.connected ?? false) &&
-                notionStatus?.status !== "revoked"
-              }
-              notionWorkspace={notionStatus?.workspaceName ?? null}
-              onUser={setUser}
-            />
+            <PanelBoundary id="account-boundary" title="Account">
+              <AccountPanel
+                user={user}
+                loading={configLoading}
+                demoMode={demoMode}
+                notionConnected={
+                  (notionStatus?.connected ?? false) &&
+                  notionStatus?.status !== "revoked"
+                }
+                notionWorkspace={notionStatus?.workspaceName ?? null}
+                onUser={setUser}
+              />
+            </PanelBoundary>
           </div>
         </div>
       </main>

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { canonicalOrigin } from "@/lib/origin";
 import "./globals.css";
 
 /**
@@ -7,10 +8,7 @@ import "./globals.css";
  * LinkedIn, Discord) drop relative `og:image` values, so this has to resolve —
  * `APP_URL` when the host sets it, the production domain otherwise.
  */
-const metadataBase = new URL(
-  (process.env.APP_URL ?? "").trim().replace(/\/+$/, "") ||
-    "https://syllabuscenter.com",
-);
+const metadataBase = new URL(canonicalOrigin());
 
 const DESCRIPTION =
   "Upload your syllabus PDFs. Syllabus Center extracts every assignment, exam and grading weight, builds a semester roadmap with a workload heatmap, and syncs it to your Google Calendar.";

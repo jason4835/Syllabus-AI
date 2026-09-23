@@ -6,6 +6,7 @@ import { resolveVisitor } from "@/lib/demo";
 import { logApiError } from "@/lib/log";
 import { checkLimit, describeLimit } from "@/lib/ratelimit";
 import { store } from "@/lib/store";
+import { variantOf } from "@/lib/experiments";
 import { createTermPassCheckout, isStripeConfigured } from "@/lib/stripe";
 import { termHasPremiumAccess } from "@/lib/terms";
 
@@ -76,9 +77,20 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     const origin = publicOrigin(req);
+    /**
+     * Resolved here, from the user id, and never read from the request.
+     *
+     * This is the line that makes the price experiment safe: the same pure
+     * function that decided which price the paywall displayed decides which
+     * Stripe price is charged, so the two cannot disagree, and a client that
+     * posts `{"variant":"control"}` at this route changes nothing.
+     */
+    const priceVariant = variantOf("termPassPrice", userId);
+
     const checkout = await createTermPassCheckout({
       userId,
       termId: term.id,
+      priceVariant,
       customerEmail: customerEmailOf((await store.getUser(userId))?.email ?? null),
       // The redirect grants nothing -- the dashboard polls `GET /api/terms`
       // until the webhook has granted premium, and activates nothing itself.
@@ -91,7 +103,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     // that the session already exists either way, but a failure here is a real
     // failure of the route: the student has not been sent anywhere yet.
     await store.updateTerm(userId, id, { stripeCheckoutSessionId: checkout.sessionId });
-    track("term_checkout_started", { userId, termId: term.id });
+    track("term_checkout_started", { userId, termId: term.id, priceVariant });
 
     return ok({ url: checkout.url });
   } catch (err) {

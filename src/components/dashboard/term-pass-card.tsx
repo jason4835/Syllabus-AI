@@ -5,6 +5,7 @@ import {
   apiPost,
   errorCodeOf,
   trackEvent,
+  variantFor,
 } from "@/components/api-client";
 import type { AppConfig, TermSummary } from "@/components/api-client";
 import { Button, LinkButton, Spinner } from "@/components/ui/button";
@@ -50,6 +51,24 @@ type Phase =
   | { kind: "sign_in" }
   | { kind: "error"; error: string; detail?: string };
 
+/**
+ * The two paywall framings under test. Same price, same palette, same button.
+ *
+ * Declared here rather than inline so both arms are readable side by side --
+ * an A/B test whose variants are scattered through JSX is one nobody can
+ * review, and reviewing the copy is most of the work of writing it.
+ */
+const PAYWALL_COPY = {
+  control: {
+    heading: "Build your full term",
+    body: "Your first course is free. Unlock all of your classes for this academic term.",
+  },
+  outcome: {
+    heading: "Put the whole semester on your calendar",
+    body: "One course is free. A Term Pass covers every class you are taking this term \u2014 every deadline, every study block, one payment, no subscription.",
+  },
+} as const;
+
 export function TermPassCard({
   term,
   config,
@@ -67,6 +86,21 @@ export function TermPassCard({
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
   /**
+   * The paywall copy experiment.
+   *
+   * Control states the mechanism ("your first course is free"); `outcome`
+   * states what the money buys. Same price in both arms -- the price is a
+   * separate experiment, resolved on the server, and mixing the two into one
+   * card would make neither result readable.
+   *
+   * Read through `variantFor`, so a server that has retired this experiment
+   * renders the control rather than an empty card.
+   */
+  const variant = variantFor(config, "paywall_copy");
+  const copy = PAYWALL_COPY[variant as keyof typeof PAYWALL_COPY] ?? PAYWALL_COPY.control;
+
+
+  /**
    * Once per term. Also once per StrictMode double-effect, which the set handles
    * for free -- a development-only double count is the kind of thing that
    * quietly halves a conversion rate on the way out.
@@ -77,8 +111,12 @@ export function TermPassCard({
     trackEvent("second_course_paywall_viewed", {
       termId: term.id,
       courseCount: term.courseCount,
+      // The denominator of the paywall conversion rate. Without the arm on the
+      // view event, the purchases can be split by variant and the views cannot,
+      // which makes the rate itself unmeasurable.
+      variant,
     });
-  }, [term.id, term.courseCount]);
+  }, [term.id, term.courseCount, config]);
 
   const billing = config.billing;
   const pass = billing?.termPass ?? null;
@@ -108,13 +146,11 @@ export function TermPassCard({
   return (
     <div className="rise rounded-lg border border-accent-line bg-accent-soft p-4 sm:p-5">
       <h3 className="text-[1.0625rem] leading-tight text-ink">
-        Build your full term
+        {copy.heading}
       </h3>
 
       <p className="mt-1.5 text-[0.875rem] leading-relaxed text-ink-soft">
-        Your first course is free.
-        <br />
-        Unlock all of your classes for this academic term.
+        {copy.body}
       </p>
 
       {/* Which term this is about. The card can appear in three places, and in
@@ -127,6 +163,24 @@ export function TermPassCard({
       {term.access === "expired" ? (
         <p className="mt-2 text-[0.8125rem] leading-relaxed text-ink-soft">
           The pass you bought for this term has run out. A new one covers it
+          again.
+        </p>
+      ) : null}
+
+      {/* The syllabus that was refused is not gone. Saying which one, by name,
+          is the difference between a paywall and a receipt for work already
+          done -- and it is what the purchase will finish. */}
+      {term.pendingUpload ? (
+        <p className="mt-2.5 rounded-md border border-accent-line bg-surface px-3 py-2 text-[0.8125rem] leading-relaxed text-ink-soft">
+          <span className="font-medium text-ink">
+            {term.pendingUpload.courseCode}
+            {term.pendingUpload.courseTitle ? ` \u2014 ${term.pendingUpload.courseTitle}` : ""}
+          </span>{" "}
+          is parsed and waiting
+          {term.pendingUpload.assessmentCount > 0
+            ? ` (${term.pendingUpload.assessmentCount} deadline${term.pendingUpload.assessmentCount === 1 ? "" : "s"} found)`
+            : ""}
+          . Unlock the term and it is added automatically \u2014 no need to upload it
           again.
         </p>
       ) : null}

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 
-import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, demoBudgetSpent, demoSpendVerdict, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { track } from "@/lib/analytics";
 import {
   PaywallError,
   assertCanAddCourse,
   paywallResponse,
   resolveTermForUpload,
+  summarizePendingUpload,
   summarizeTermFor,
   type TermSummary,
 } from "@/lib/entitlement";
@@ -40,8 +41,17 @@ export async function POST(req: Request) {
   const { userId } = await resolveVisitor();
   if (!userId) return fail("Sign in first.", 401);
 
-  const limit = checkLimit(`user:${userId}`, "upload:user");
-  if (!limit.allowed) return rateLimited(describeLimit(limit));
+  /**
+   * The network budget BEFORE the per-user one, because the per-user one does
+   * not bind a visitor who can mint a new user for free -- see `demoSpendVerdict`.
+   * Checked before the body is read, so an exhausted budget costs no bandwidth
+   * and no parse.
+   *
+   * Denies rather than degrading. Falling back to the heuristic parser would
+   * silently hand a first-time visitor the worst extraction the app can produce
+   * at the exact moment they are deciding whether it works -- a quiet
+   * downgrade is worse here than an honest "sign in".
+   */
 
 
   /**
@@ -64,6 +74,8 @@ export async function POST(req: Request) {
   // Both duplicate answers ride on the same multipart body as the file: the
   // client re-posts the identical form with one extra field, so nothing here
   // has to hold the parsed syllabus between two requests.
+  /** A stash to replay instead of a file -- see `PendingUpload`. */
+  let pendingId: string | null = null;
   let replaceId: string | null = null;
   let allowDuplicate = false;
   /**
@@ -80,6 +92,8 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const field = form.get("file");
     if (field instanceof File) file = field;
+    const replayField = form.get("pendingId");
+    if (typeof replayField === "string" && replayField.trim()) pendingId = replayField.trim();
     const replace = form.get("replace");
     if (typeof replace === "string" && replace.trim()) replaceId = replace.trim();
     allowDuplicate = form.get("allowDuplicate") === "1";
@@ -101,13 +115,55 @@ export async function POST(req: Request) {
   if (newTermUnreadable) {
     return fail("Could not read the term you entered.", 422, "newTerm must be JSON");
   }
-  if (!file) return fail("No file received. Attach your syllabus.", 400);
-  if (file.size === 0) return fail("That file is empty.", 400);
-  if (file.size > MAX_BYTES) {
+
+  /**
+   * Budgets, decided once it is known whether a parse is about to happen.
+   *
+   * A replay spends no model call -- the parse it needs already exists in the
+   * stash -- so charging it against the upload budget would punish a paying
+   * student for coming back from Stripe, and metering it by demo network
+   * makes no sense for a flow only a signed-in buyer reaches. It takes the
+   * edit budget, which exists to stop scripts and nothing else.
+   *
+   * Everything with a file is metered exactly as before. The order changed
+   * (the form is now read first) but the money-protecting checks still run
+   * before a single byte reaches the parser.
+   */
+  if (pendingId) {
+    const limit = checkLimit(`user:${userId}`, "edit:user");
+    if (!limit.allowed) return rateLimited(describeLimit(limit));
+  } else {
+    const demoBudget = demoSpendVerdict(req, userId);
+    if (demoBudget && !demoBudget.allowed) return demoBudgetSpent("trial uploads");
+    const limit = checkLimit(`user:${userId}`, "upload:user");
+    if (!limit.allowed) return rateLimited(describeLimit(limit));
+  }
+
+  /**
+   * A replay: the syllabus was parsed earlier, refused with the paywall, and
+   * kept. Load it and continue through the SAME path as a fresh upload --
+   * duplicate check, term, paywall, create -- so there is one way to make a
+   * course and the stash cannot bypass any of it. The paywall check will pass
+   * now if the term was unlocked, and correctly refuse again if it was not.
+   */
+  let stash: Awaited<ReturnType<typeof store.getPendingUpload>> = null;
+  if (pendingId) {
+    stash = await store.getPendingUpload(userId, pendingId);
+    if (!stash) return fail("That upload is no longer waiting.", 404);
+    // The stash remembers which term it was refused for; the client may still
+    // override by choosing another. Absent both, `resolveTermForUpload` would
+    // infer a term from the parse -- and might infer a NEW one, which is the
+    // exact outcome the stash exists to avoid.
+    if (!termId && !newTerm && stash.termId) termId = stash.termId;
+  } else if (!file) {
+    return fail("No file received. Attach your syllabus.", 400);
+  }
+  if (file && file.size === 0) return fail("That file is empty.", 400);
+  if (file && file.size > MAX_BYTES) {
     return fail(`That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is 15 MB.`, 413);
   }
 
-  const name = file.name || "syllabus.pdf";
+  const name = stash ? stash.fileName : (file?.name || "syllabus.pdf");
   /**
    * Extension only, deliberately: what the bytes actually are is decided in the
    * parser, which has the header checks and the wording for each way a file can
@@ -117,15 +173,17 @@ export async function POST(req: Request) {
    * Both Word formats pass: the parser reads a legacy `.doc` as well as a
    * `.docx`, and tells the two apart by their bytes, not their names.
    */
-  if (!/\.(pdf|docx?|txt)$/i.test(name)) {
+  if (!stash && !/\.(pdf|docx?|txt)$/i.test(name)) {
     return fail("Upload a PDF, a Word document (.docx or .doc), or a .txt syllabus.", 415);
   }
 
   try {
-    const buf = Buffer.from(await file.arrayBuffer());
     // The grading table and the schedule are extracted separately; join them
-    // before persisting so the workload model sees real weights.
-    const parsed = attachWeights(await parseSyllabus(buf, name));
+    // before persisting so the workload model sees real weights. A stash was
+    // joined when it was written, so it is used as it is.
+    const parsed = stash
+      ? stash.parsed
+      : attachWeights(await parseSyllabus(Buffer.from(await (file as File).arrayBuffer()), name));
 
     // Duplicate check BEFORE the write: the common way to end up with two
     // copies of one class is uploading the same PDF twice (a failed-looking
@@ -187,12 +245,48 @@ export async function POST(req: Request) {
         excludingCourseId: replacing ?? undefined,
       });
     } catch (err) {
-      if (err instanceof PaywallError) return paywallResponse(err);
+      if (err instanceof PaywallError) {
+        /**
+         * The parse is kept, not thrown away. It already did its job -- it is
+         * what decided which term this syllabus belongs to -- and discarding
+         * it meant a student who then bought the pass came back from Stripe to
+         * an empty dropzone and had to find the same file again. Kept against
+         * the refusing term, and told to the client, the paywall can name the
+         * course that is waiting and the purchase can finish the upload.
+         *
+         * A replay that is refused again is already stashed; re-stashing would
+         * leave two copies of one syllabus waiting.
+         */
+        const kept = stash ?? (await store.savePendingUpload(userId, err.term.id, name, parsed));
+        return paywallResponse(err, summarizePendingUpload(kept));
+      }
       if (err instanceof Invalid) return fail("Invalid term.", 422, err.message);
       throw err;
     }
 
     const { course, assessments } = await store.createCourse(userId, parsed, term.id);
+    // The stash has become a course; nothing is waiting any more.
+    if (stash) await store.deletePendingUpload(userId, stash.id);
+
+    /**
+     * The product has done its job. Counts and flags only -- never the course
+     * code, the title, or anything else read out of the document.
+     *
+     * `extractor` is the field worth having: a plan built by the heuristic
+     * fallback is measurably worse, and if retention splits along that line it
+     * is the parser that needs the work, not the funnel.
+     */
+    track("syllabus_uploaded", {
+      userId,
+      termId: term.id,
+      assessmentCount: assessments.length,
+      warningCount: parsed.warnings.length,
+      extractor: parsed.extractor ?? "unknown",
+      isReplace: Boolean(replacing),
+      // A stash finishing after purchase: the conversion the stash exists for.
+      isReplay: Boolean(stash),
+    });
+
     // The activation moment, counted once: a replace is not a first course, even
     // when it is the only one in the term.
     if (!replacing && before.courseCount === 0) {
@@ -263,7 +357,7 @@ export async function POST(req: Request) {
       termSuggested,
     });
   } catch (err) {
-    logApiError("upload.failed", err, { userId, filename: name, bytes: file.size });
+    logApiError("upload.failed", err, { userId, filename: name, bytes: file?.size ?? 0 });
     if (err instanceof AiBusyError) {
       return fail(
         "The syllabus reader is busy right now.",

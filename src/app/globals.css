@@ -276,6 +276,75 @@
   animation: sa-rise 0.32s ease-out both;
 }
 
+/* --------------------------------------------------------------------------
+   Motion
+   --------------------------------------------------------------------------
+   Everything below animates ONLY `opacity` and `transform`. Those two are the
+   properties a browser can hand to the compositor, so they run off the main
+   thread and cost nothing while a syllabus is being parsed on it. Animating
+   height, top or box-shadow instead is how a page that looks alive becomes a
+   page that feels slow.
+
+   There is no animation library here on purpose. What this app wants -- things
+   arriving as you scroll, a button that answers a press, a card that lifts --
+   is all native CSS now, and a JS animation runtime would be 30-something
+   kilobytes of main-thread work to reproduce effects the compositor already
+   does for free. Reach for one when there is a real gesture, a drag, or a
+   spring to model; `rise` and `reveal` are not that.
+   -------------------------------------------------------------------------- */
+
+/*
+ * Reveal-on-scroll, with no JavaScript and no observer.
+ *
+ * `animation-timeline: view()` drives the animation from the element's own
+ * position in the viewport, which is the effect an IntersectionObserver is
+ * usually imported to fake -- except this version cannot jank, because it never
+ * touches the main thread.
+ *
+ * Wrapped in `@supports` so the fallback is the right one: a browser without
+ * scroll-driven animations skips the rule entirely and the content is simply
+ * there, fully visible, from the first paint. The failure mode of getting this
+ * backwards -- content that starts at `opacity: 0` and waits for a feature the
+ * browser does not have -- is an invisible page, which is why the hidden state
+ * lives inside the guard rather than outside it.
+ */
+@utility reveal {
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      animation: sa-rise 1s linear both;
+      animation-timeline: view();
+      /* Finish while the element is still entering: the animation should be
+         over by the time it is worth reading, not chasing the scroll. */
+      animation-range: entry 0% cover 28%;
+    }
+  }
+}
+
+/*
+ * A surface that answers the pointer. For cards that are themselves links or
+ * buttons -- never for a panel that just sits there, where movement under the
+ * cursor is noise rather than feedback.
+ */
+@utility lift {
+  transition:
+    transform 0.18s ease-out,
+    box-shadow 0.18s ease-out,
+    border-color 0.18s ease-out;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lift);
+  }
+
+  /* Press beats hover: the release should feel like the surface coming back. */
+  &:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-card);
+    transition-duration: 0.06s;
+  }
+}
+
+
 /* Dotted fill — the non-color cue for a "busy" week. */
 @utility dotted {
   background-image: radial-gradient(

@@ -1,4 +1,5 @@
-import type { AcademicTerm, ApiResult } from "@/lib/types";
+import { capture } from "@/lib/analytics-client";
+import type { AcademicTerm, ApiResult, PendingUploadSummary } from "@/lib/types";
 import type { TermAccess } from "@/lib/terms";
 
 /**
@@ -39,6 +40,31 @@ export interface AppConfig {
    * Never defaulted to a hard-coded price: nothing in the client says 5.99.
    */
   billing?: BillingConfig;
+  /**
+   * This visitor's A/B assignments, keyed by experiment (`paywall_copy`,
+   * `term_pass_price`, `landing_hero`). Decided on the server from the session
+   * -- see `@/lib/experiments` for why the client is told rather than asked.
+   *
+   * Optional and read through `variantFor` below, so a server that predates an
+   * experiment, or one where it has been retired, renders the control branch
+   * instead of `undefined`.
+   */
+  experiments?: Record<string, string>;
+}
+
+/**
+ * The arm this visitor is in, or the control.
+ *
+ * Every read goes through here so a missing assignment is a control render
+ * rather than a blank one -- an experiment must never be able to break the page
+ * it is testing.
+ */
+export function variantFor(
+  config: AppConfig | null,
+  experiment: string,
+  control: string = "control",
+): string {
+  return config?.experiments?.[experiment] ?? control;
 }
 
 /**
@@ -55,6 +81,12 @@ export type TermSummary = AcademicTerm & {
   courseCount: number;
   access: TermAccess;
   canAddCourse: boolean;
+  /**
+   * A syllabus parsed for this term and refused with the paywall, waiting to be
+   * added once the term is unlocked. Optional: an older server omits it, and
+   * the honest reading of "not mentioned" is "nothing waiting".
+   */
+  pendingUpload?: PendingUploadSummary | null;
 };
 
 /** The body of the 402 the upload and course routes answer a full free term with. */
@@ -107,15 +139,26 @@ export function errorCodeOf(result: unknown): string | null {
 }
 
 /**
- * One funnel event, fired and forgotten. `apiPost` never rejects, so there is
- * nothing to catch and nothing a student could do with the news that an
- * analytics line did not land.
+ * One funnel event, fired and forgotten, to both destinations.
+ *
+ * `/api/analytics` writes the durable `analytics.<name>` log line and is the
+ * record that outlives any vendor; PostHog gets the same event directly, which
+ * is what makes it joinable with the ones the server fires (a purchase is a
+ * webhook moment, and a funnel has to cross that boundary -- see
+ * `@/lib/analytics`).
+ *
+ * Direct to PostHog rather than proxied through the server, because the browser
+ * knows things the server does not: referrer, viewport, the session's own
+ * pageview chain. `apiPost` never rejects and `capture` is a no-op when PostHog
+ * is unconfigured or the visitor has opted out, so there is nothing to catch and
+ * nothing a student could do with the news that an analytics line did not land.
  */
 export function trackEvent(
   event: string,
   fields?: Record<string, unknown>,
 ): void {
   void apiPost("/api/analytics", { event, ...(fields ? { fields } : {}) });
+  capture(event, fields);
 }
 
 export type ChatRole = "user" | "assistant";
@@ -207,6 +250,82 @@ export function apiPost<T>(path: string, body?: unknown): Promise<ClientResult<T
   );
 }
 
+/**
+ * A POST whose answer arrives as newline-delimited JSON: progress lines, then
+ * one final envelope. Used by the calendar sync, which is one Google API call
+ * per event and long enough that a spinner reads as "hung".
+ *
+ * Each `{"progress": {...}}` line is handed to `onProgress`; the last line is
+ * the ordinary `ApiResult` and is returned exactly as `apiPost` would return
+ * it. A transport failure, a cut stream, or a body with no final envelope all
+ * degrade to `{ ok: false }` -- the same contract as every other call here, so
+ * the panel's existing error state handles them without knowing streaming
+ * exists.
+ */
+export async function apiStreamPost<T>(
+  path: string,
+  body: unknown,
+  onProgress: (progress: { done: number; total: number }) => void,
+): Promise<ClientResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { Accept: "application/x-ndjson", "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch {
+    return { ok: false, error: WIRE_FAILURE };
+  }
+
+  // A server that does not stream (older deploy, an error before the stream
+  // opened) answers with plain JSON; read it the ordinary way.
+  if (!response.body || !(response.headers.get("content-type") ?? "").includes("ndjson")) {
+    return envelope<T>(Promise.resolve(response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let last: unknown = null;
+
+  const consume = (line: string) => {
+    if (!line.trim()) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return; // a torn line is dropped; the next one is whole
+    }
+    const progress = (parsed as { progress?: { done?: unknown; total?: unknown } }).progress;
+    if (progress && typeof progress.done === "number" && typeof progress.total === "number") {
+      onProgress({ done: progress.done, total: progress.total });
+      return;
+    }
+    last = parsed;
+  };
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        consume(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf("\n");
+      }
+    }
+    consume(buffer);
+  } catch {
+    return { ok: false, error: WIRE_FAILURE };
+  }
+
+  if (isApiResult(last)) return last as ClientResult<T>;
+  return { ok: false, error: WIRE_FAILURE };
+}
+
 /** Partial updates — the row editor and its Confirm button both come through here. */
 export function apiPatch<T>(path: string, body: unknown): Promise<ClientResult<T>> {
   return envelope<T>(
@@ -280,12 +399,13 @@ export interface UploadHandlers {
  */
 export function apiUpload<T>(
   path: string,
-  file: File,
+  /** Null for a replay of a stashed parse: the fields carry `pendingId` instead. */
+  file: File | null,
   handlers: UploadHandlers = {},
 ): Promise<ClientResult<T>> {
   return new Promise((resolve) => {
     const form = new FormData();
-    form.append("file", file);
+    if (file) form.append("file", file);
     for (const [name, value] of Object.entries(handlers.fields ?? {})) {
       form.append(name, value);
     }

@@ -39,6 +39,11 @@ heatmap has a real crunch week to warn you about.
 
 To reset the demo back to a clean state, delete `.data/` and reload.
 
+**New to this codebase?** [docs/ONBOARDING.md](docs/ONBOARDING.md) is the hour
+that saves you a week: the mental model, how a request flows, the two boundaries
+not to cross, and the list of things that have already cost somebody an
+afternoon.
+
 ## Going live
 
 Copy `.env.example` to `.env.local` and fill in what you want:
@@ -51,6 +56,10 @@ Copy `.env.example` to `.env.local` and fill in what you want:
 | `SESSION_SECRET` | Signed sessions (`openssl rand -hex 32`). **Required in production** — without it the app refuses to serve requests, because the dev fallback is a published constant |
 | `DATA_DIR` | Durable storage on a mounted volume — the JSON store writes to `$DATA_DIR/db.json`. Single instance only |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Postgres instead of local JSON — run `supabase/schema.sql` first. Needed once you run more than one instance |
+| `ADMIN_EMAILS` | The `/admin` metrics page — sign-ups, paying members, passes sold. Comma-separated addresses. Unset means the page 404s for everybody |
+| `NEXT_PUBLIC_POSTHOG_KEY` | Funnel and retention charts. Without it events still hit your log drain and the A/B tests still run — you just lose the charts |
+| `RESEND_API_KEY` / `ALERT_EMAIL_TO` | Email alerts for failures worth acting on — a payment that did not grant access, a route that started throwing. Throttled to one per event per hour |
+| `STRIPE_TERM_PASS_PRICE_ID_HIGHER` | The second arm of the price A/B test. Unset means the test is off and everyone pays the normal price |
 
 For Google: create a **Web application** OAuth client, enable the **Google
 Calendar API**, and add `http://localhost:3000/api/auth/callback` as an
@@ -68,6 +77,20 @@ with the Stripe CLI, going live) is [docs/DEPLOY.md](docs/DEPLOY.md) section
 9; the product rules — the 183-day term cap, the 14-day grace period, the
 free-course rule — are [docs/TERM-PASS.md](docs/TERM-PASS.md).
 
+Once people are actually using it, set `ADMIN_EMAILS` to your own address and
+open `/admin`: sign-ups, paying members, passes sold, and the live list of
+Google OAuth scopes this deployment requests. Counted straight from your own
+tables on every load, so those numbers are exact. Details in
+[docs/DEPLOY.md](docs/DEPLOY.md) section 10.
+
+`/admin` answers *how many*. For *where people drop out* and *whether they come
+back*, set `NEXT_PUBLIC_POSTHOG_KEY` and the funnel lands in PostHog —
+autocapture and session replay deliberately off, so no syllabus content ever
+leaves the server. Three A/B tests ship wired up (landing hero, paywall copy,
+and the Term Pass price), assigned by a hash on the server rather than by a flag
+service, so the same person always sees the same arm and the browser can never
+choose its own price. Section 11 covers running and reading them.
+
 **Deploying it for other people to use? Read [docs/DEPLOY.md](docs/DEPLOY.md)**,
 which covers the Google OAuth verification traps, why Supabase is mandatory on
 serverless, and cost control. `GET /api/health` tells you whether a running
@@ -80,7 +103,10 @@ src/
   app/
     page.tsx           Landing page
     dashboard/         Upload, upcoming, heatmap, roadmap, sync, chat
+    admin/             Operator metrics, gated by ADMIN_EMAILS
     api/               Route handlers (see docs/API.md)
+  middleware.ts        One anonymous visitor id, for landing-page bucketing
+  instrumentation.ts   Catches server errors thrown outside a route's own try
   lib/
     types.ts           Frozen domain contract — every layer speaks these types
     session.ts         Signed HMAC cookie sessions; hard-fails in production
@@ -95,7 +121,12 @@ src/
                        verification, server-only
     pricing.ts         Display price for the Term Pass; the Stripe price id
                        comes from env, never hardcoded
-    analytics.ts       track(event, fields) -> one structured log line
+    analytics.ts       track(event, fields) -> a log line and a PostHog event
+    analytics-client.ts  The browser half. Autocapture and replay off, by design
+    experiments.ts     A/B assignment: a pure hash, decided on the server
+    metrics.ts         The counts behind /admin, and who may read them
+    alerts.ts          Emails the failures a log drain would never surface
+    origin.ts          The public origin, where there is no request to read it from
     store/             Supabase driver + local JSON driver, chosen by env
     parse/             PDF -> text -> AI structured extraction, with a
                        deterministic heuristic fallback
@@ -105,6 +136,7 @@ src/
                        (design: docs/NOTION.md)
 supabase/schema.sql    Postgres DDL with RLS
 fixtures/              Three sample syllabi used by demo mode
+docs/ONBOARDING.md     Read this first if you are new to the code
 docs/API.md            API contract
 docs/DEPLOY.md         Deploying it for real users
 ```

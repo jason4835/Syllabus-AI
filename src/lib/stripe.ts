@@ -7,6 +7,7 @@
  */
 import Stripe from "stripe";
 
+import type { VariantOf } from "@/lib/experiments";
 import { log } from "@/lib/log";
 
 /** Which environment variables make billing usable, so /api/config can say so. */
@@ -27,6 +28,66 @@ function stripe(): Stripe {
   return client;
 }
 
+/**
+ * The Stripe price id for one arm of the price experiment.
+ *
+ * The control arm is `STRIPE_TERM_PASS_PRICE_ID`, which is the variable that
+ * already existed -- an existing deployment keeps working and is simply not
+ * running the test. Each other arm reads `STRIPE_TERM_PASS_PRICE_ID_<ARM>`, and
+ * **falls back to the control when that is unset**. That fallback is the whole
+ * on/off switch: set the second price id to start the experiment, unset it to
+ * end it, no deploy either way, and a half-configured environment charges the
+ * normal price rather than failing checkout.
+ */
+export function termPassPriceId(variant: VariantOf<"termPassPrice">): string {
+  const control = process.env.STRIPE_TERM_PASS_PRICE_ID?.trim();
+  if (variant === "control") {
+    if (!control) throw new Error("Billing is not configured (STRIPE_TERM_PASS_PRICE_ID is unset).");
+    return control;
+  }
+  const arm = process.env[`STRIPE_TERM_PASS_PRICE_ID_${variant.toUpperCase()}`]?.trim();
+  if (arm) return arm;
+  if (!control) throw new Error("Billing is not configured (STRIPE_TERM_PASS_PRICE_ID is unset).");
+  return control;
+}
+
+export interface PriceFacts {
+  amountCents: number;
+  currency: string;
+}
+
+/**
+ * What Stripe will actually charge for a price id.
+ *
+ * Read from Stripe rather than configured anywhere, because the Terms promise
+ * that the price a student is shown is the price they are charged, and the only
+ * way to keep that promise is to never hold a second copy of the number. An env
+ * variable carrying the amount alongside the price id would be exactly that
+ * second copy, and it would be wrong the first time somebody edited a price in
+ * the Dashboard and forgot the deploy.
+ *
+ * Cached for the life of the process, keyed by price id. A price is immutable in
+ * Stripe -- changing an amount means creating a new price and pointing the env
+ * at it -- so there is nothing to invalidate, and this keeps a Stripe round trip
+ * off the dashboard's first paint after the first visitor of each cold start.
+ */
+const priceCache = new Map<string, PriceFacts>();
+
+export async function fetchPriceFacts(priceId: string): Promise<PriceFacts> {
+  const cached = priceCache.get(priceId);
+  if (cached) return cached;
+
+  const price = await stripe().prices.retrieve(priceId);
+  if (typeof price.unit_amount !== "number") {
+    // A metered or tiered price has no single amount to print. Nothing here
+    // creates one, so this means the env points at the wrong kind of price.
+    throw new Error(`Stripe price ${priceId} has no unit_amount to display.`);
+  }
+  const facts: PriceFacts = { amountCents: price.unit_amount, currency: price.currency };
+  priceCache.set(priceId, facts);
+  return facts;
+}
+
 export interface TermPassCheckoutInput {
   userId: string;
   termId: string;
@@ -35,6 +96,12 @@ export interface TermPassCheckoutInput {
   /** Absolute URLs on APP_URL; Stripe appends nothing to them. */
   successUrl: string;
   cancelUrl: string;
+  /**
+   * Which arm of the price experiment this student is in, resolved on the
+   * server from their user id. NEVER taken from the request body: a variant the
+   * browser chose is a price the browser chose.
+   */
+  priceVariant: VariantOf<"termPassPrice">;
 }
 
 export interface TermPassCheckout {
@@ -53,8 +120,7 @@ export interface TermPassCheckout {
  * create two sessions for the same purchase.
  */
 export async function createTermPassCheckout(input: TermPassCheckoutInput): Promise<TermPassCheckout> {
-  const price = process.env.STRIPE_TERM_PASS_PRICE_ID?.trim();
-  if (!price) throw new Error("Billing is not configured (STRIPE_TERM_PASS_PRICE_ID is unset).");
+  const price = termPassPriceId(input.priceVariant);
 
   const session = await stripe().checkout.sessions.create(
     {
@@ -62,7 +128,14 @@ export async function createTermPassCheckout(input: TermPassCheckoutInput): Prom
       allow_promotion_codes: true,
       line_items: [{ price, quantity: 1 }],
       client_reference_id: input.termId,
-      metadata: { user_id: input.userId, term_id: input.termId },
+      // The arm rides in metadata so Stripe's own records say which price sold,
+      // independently of anything this app stores -- and so a refund question
+      // months later can be answered from the Dashboard alone.
+      metadata: {
+        user_id: input.userId,
+        term_id: input.termId,
+        price_variant: input.priceVariant,
+      },
       ...(input.customerEmail ? { customer_email: input.customerEmail } : {}),
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,

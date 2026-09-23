@@ -103,6 +103,15 @@ create unique index if not exists users_calendar_feed_token_idx
 alter table public.users
   add column if not exists calendar_prefs jsonb not null default '{}'::jsonb;
 
+-- Optional onboarding answers (school, year, how they found the app). jsonb so
+-- a question can be added or dropped without a migration, and `{}` rather than
+-- null so "never answered" and "skipped" read the same to every caller. This
+-- is the one thing the app asks that a syllabus cannot tell it; nothing in the
+-- product depends on it, and it is never sent to a third party except as a
+-- coarse label on an analytics event (see src/lib/analytics.ts).
+alter table public.users
+  add column if not exists profile jsonb not null default '{}'::jsonb;
+
 create index if not exists users_email_idx on public.users (lower(email));
 
 -- ---------------------------------------------------------------------------
@@ -442,6 +451,38 @@ create table if not exists public.stripe_events (
 );
 
 -- ---------------------------------------------------------------------------
+-- pending_uploads
+--
+-- A parsed syllabus the student could not keep YET. When an upload is refused
+-- with the paywall (the term's free course is taken and it is not premium), the
+-- parse has already happened -- it is what decided which term the syllabus
+-- belongs to -- and throwing it away meant the student paid, came back from
+-- Stripe to an empty dropzone, and had to find and re-upload the same file.
+-- So the parse is kept here instead, keyed to the term it was refused for, and
+-- the moment that term reads premium the client replays it through the upload
+-- route with `pendingId` and no file. Nothing is re-parsed.
+--
+-- `parsed` is the whole ParsedSyllabus as JSON: it is the exact input
+-- `createCourse` takes, so the replay is the normal create path, not a second
+-- one. `term_id` is `on delete set null` for the same reason `courses.term_id`
+-- is -- deleting a term must not delete a syllabus somebody uploaded.
+--
+-- Deleted on successful replay. Rows a student never claims are small and
+-- harmless, and removed with the account like everything else.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.pending_uploads (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     text not null references public.users (id) on delete cascade,
+  term_id     uuid references public.academic_terms (id) on delete set null,
+  file_name   text not null,
+  parsed      jsonb not null,
+  created_at  text not null
+);
+
+create index if not exists pending_uploads_user_id_idx on public.pending_uploads (user_id);
+
+-- ---------------------------------------------------------------------------
 -- Row level security
 --
 -- The server routes connect with the SERVICE ROLE key, which bypasses RLS
@@ -455,6 +496,7 @@ alter table public.users               enable row level security;
 alter table public.courses             enable row level security;
 alter table public.assessments         enable row level security;
 alter table public.academic_terms      enable row level security;
+alter table public.pending_uploads     enable row level security;
 alter table public.calendar_links      enable row level security;
 alter table public.notion_connections  enable row level security;
 alter table public.notion_links        enable row level security;
@@ -484,6 +526,12 @@ create policy courses_owner_access on public.courses
 -- learns only what the UI already shows it.
 drop policy if exists academic_terms_owner_access on public.academic_terms;
 create policy academic_terms_owner_access on public.academic_terms
+  for all
+  using (user_id = auth.uid()::text)
+  with check (user_id = auth.uid()::text);
+
+drop policy if exists pending_uploads_owner_access on public.pending_uploads;
+create policy pending_uploads_owner_access on public.pending_uploads
   for all
   using (user_id = auth.uid()::text)
   with check (user_id = auth.uid()::text);
