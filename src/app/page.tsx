@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 
 import { variantOf } from "@/lib/experiments";
-import { readSession } from "@/lib/session";
+import { isDemoUser, readSession } from "@/lib/session";
 import { VISITOR_COOKIE_NAME } from "@/middleware";
 import { HeroPreview } from "@/components/landing/hero-preview";
 import { LandingAnalytics } from "@/components/landing/landing-analytics";
@@ -109,10 +109,23 @@ export default async function LandingPage() {
    * the fallback, and a visitor who somehow has neither gets the control.
    */
   const jar = await cookies();
-  const subject =
-    (await readSession()) ?? jar.get(VISITOR_COOKIE_NAME)?.value ?? null;
+  const session = await readSession();
+  const subject = session ?? jar.get(VISITOR_COOKIE_NAME)?.value ?? null;
   const heroVariant = variantOf("landingHero", subject);
   const hero = HERO_COPY[heroVariant];
+
+  /**
+   * A signed-in student is not a prospect. Every call to action below exists
+   * to get a stranger into the product -- "try the demo", "sign in" -- and to
+   * someone who already has an account they read as the site having forgotten
+   * them: the nav said "Demo" and the hero offered a sign-in they had already
+   * done. So for them the page has exactly one action, their dashboard.
+   *
+   * "Signed in" means a session that is NOT a demo sandbox. A sandbox cookie
+   * is a visitor, and a visitor should still see the sign-in. Read from the
+   * cookie alone, no store lookup: this page is deliberately I/O-free.
+   */
+  const signedIn = session !== null && !isDemoUser(session);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -130,14 +143,23 @@ export default async function LandingPage() {
             </span>
           </a>
           <nav aria-label="Primary" className="flex items-center gap-1.5 sm:gap-2">
-            <LinkButton href="/dashboard" variant="ghost" size="sm">
-              Demo
-            </LinkButton>
-            <LinkButton href="/api/auth/google" variant="primary" size="sm">
-              <GoogleMark />
-              <span className="hidden sm:inline">Sign in with Google</span>
-              <span className="sm:hidden">Sign in</span>
-            </LinkButton>
+            {signedIn ? (
+              <LinkButton href="/dashboard" variant="primary" size="sm">
+                Your dashboard
+                <ArrowRightIcon width={14} height={14} />
+              </LinkButton>
+            ) : (
+              <>
+                <LinkButton href="/dashboard" variant="ghost" size="sm">
+                  Demo
+                </LinkButton>
+                <LinkButton href="/api/auth/google" variant="primary" size="sm">
+                  <GoogleMark />
+                  <span className="hidden sm:inline">Sign in with Google</span>
+                  <span className="sm:hidden">Sign in</span>
+                </LinkButton>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -158,17 +180,28 @@ export default async function LandingPage() {
                 {hero.subhead}
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <LinkButton href="/dashboard" size="lg">
-                  {hero.cta}
-                  <ArrowRightIcon width={16} height={16} />
-                </LinkButton>
-                <LinkButton href="/api/auth/google" variant="secondary" size="lg">
-                  <GoogleMark />
-                  Sign in with Google
-                </LinkButton>
+                {signedIn ? (
+                  <LinkButton href="/dashboard" size="lg">
+                    Go to your dashboard
+                    <ArrowRightIcon width={16} height={16} />
+                  </LinkButton>
+                ) : (
+                  <>
+                    <LinkButton href="/dashboard" size="lg">
+                      {hero.cta}
+                      <ArrowRightIcon width={16} height={16} />
+                    </LinkButton>
+                    <LinkButton href="/api/auth/google" variant="secondary" size="lg">
+                      <GoogleMark />
+                      Sign in with Google
+                    </LinkButton>
+                  </>
+                )}
               </div>
               <p className="mt-4 text-[0.8125rem] text-muted">
-                Starts on a sample semester you can upload over — no account, no calendar access until you ask for it.
+                {signedIn
+                  ? "You\u2019re signed in \u2014 your semester is where you left it."
+                  : "Starts on a sample semester you can upload over \u2014 no account, no calendar access until you ask for it."}
               </p>
             </div>
 
@@ -273,14 +306,23 @@ export default async function LandingPage() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
-                <LinkButton href="/dashboard" size="lg">
-                  Try it — no account
-                  <ArrowRightIcon width={16} height={16} />
-                </LinkButton>
-                <LinkButton href="/api/auth/google" variant="secondary" size="lg">
-                  <GoogleMark />
-                  Sign in with Google
-                </LinkButton>
+                {signedIn ? (
+                  <LinkButton href="/dashboard" size="lg">
+                    Go to your dashboard
+                    <ArrowRightIcon width={16} height={16} />
+                  </LinkButton>
+                ) : (
+                  <>
+                    <LinkButton href="/dashboard" size="lg">
+                      Try it — no account
+                      <ArrowRightIcon width={16} height={16} />
+                    </LinkButton>
+                    <LinkButton href="/api/auth/google" variant="secondary" size="lg">
+                      <GoogleMark />
+                      Sign in with Google
+                    </LinkButton>
+                  </>
+                )}
               </div>
             </div>
           </div>
