@@ -13,8 +13,17 @@ export type ButtonSize = "sm" | "md" | "lg";
 export const TOUCH_TARGET =
   "[@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11";
 
+/**
+ * `active:scale-[0.97]` is the whole press interaction: a transform, so it is
+ * composited, and 30ms so the button feels like it answered rather than like it
+ * played an animation. `transform` joins the transition list for the release --
+ * the press itself is faster than the transition and reads as instant.
+ *
+ * Excluded while disabled: a control that shrinks under the finger and then
+ * does nothing is worse feedback than a control that does not move at all.
+ */
 const BASE =
-  `inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-[background-color,border-color,color,box-shadow] duration-150 disabled:cursor-not-allowed disabled:opacity-55 ${TOUCH_TARGET}`;
+  `inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-150 active:duration-[30ms] not-disabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-55 ${TOUCH_TARGET}`;
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:

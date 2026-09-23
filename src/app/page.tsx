@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
+
+import { variantOf } from "@/lib/experiments";
+import { readSession } from "@/lib/session";
+import { VISITOR_COOKIE_NAME } from "@/middleware";
 import { HeroPreview } from "@/components/landing/hero-preview";
+import { LandingAnalytics } from "@/components/landing/landing-analytics";
 import { SiteFooter } from "@/components/site-footer";
 import { LinkButton } from "@/components/ui/button";
 import {
@@ -16,6 +22,45 @@ import {
 export const metadata: Metadata = {
   title: "Syllabus Center — organize your semester in 60 seconds",
 };
+
+/**
+ * Rendered per request, so the hero A/B test can be decided on the server.
+ *
+ * This page was static, and the cost of giving that up is real -- but small and
+ * bounded: the render does a cookie read and a hash, with no database call, no
+ * network call and no `await` on anything but `cookies()`. What it buys is an
+ * assignment made before the first byte, so there is no flash of the control
+ * variant and no result skewed by how fast somebody's JavaScript ran.
+ *
+ * Nothing else on the page changed shape, so the payload is the same size it
+ * was; only where it is assembled moved.
+ */
+export const dynamic = "force-dynamic";
+
+/**
+ * The two hero framings under test.
+ *
+ * Control leads with the mechanism ("upload your syllabus"); `outcome` leads
+ * with the result the student actually wants. Same product, same price, same
+ * palette -- the variable is the promise, which is the one thing on a landing
+ * page worth testing first.
+ */
+const HERO_COPY = {
+  control: {
+    eyebrow: "For students carrying five syllabi and no plan",
+    headline: "Upload your syllabus. Let AI organize your semester in 60 seconds.",
+    subhead:
+      "Every assignment, exam and grading weight gets pulled out of your PDFs and turned into a semester plan. It syncs to your calendar and keeps adjusting all term — a living study system instead of six documents you never open again.",
+    cta: "Try it — no account",
+  },
+  outcome: {
+    eyebrow: "Week one, already behind",
+    headline: "Never miss another deadline you were told about in week one.",
+    subhead:
+      "Hand over your syllabi and get back one calendar with every assignment, exam and study block already on it — plus a heatmap that shows you the week 11 pile-up while there is still time to do something about it.",
+    cta: "Build my semester — free",
+  },
+} as const;
 
 const STEPS = [
   {
@@ -56,9 +101,22 @@ const DIFFERENTIATORS = [
   },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  /**
+   * A signed-in user's own id wins over the anonymous one, so somebody who
+   * signs in does not jump arms -- and so the landing funnel and the dashboard
+   * funnel are about the same person. `sylb_vid` (set by `middleware.ts`) is
+   * the fallback, and a visitor who somehow has neither gets the control.
+   */
+  const jar = await cookies();
+  const subject =
+    (await readSession()) ?? jar.get(VISITOR_COOKIE_NAME)?.value ?? null;
+  const heroVariant = variantOf("landingHero", subject);
+  const hero = HERO_COPY[heroVariant];
+
   return (
     <div className="flex min-h-dvh flex-col">
+      <LandingAnalytics variant={heroVariant} />
       <header className="sticky top-0 z-40 border-b border-line bg-paper/85 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <a
@@ -91,21 +149,17 @@ export default function LandingPage() {
             <div className="max-w-xl">
               <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-accent-line bg-accent-soft px-3 py-1 text-[0.75rem] font-medium tracking-wide text-accent">
                 <SparkIcon width={14} height={14} />
-                For students carrying five syllabi and no plan
+                {hero.eyebrow}
               </p>
               <h1 className="text-[2.125rem] leading-[1.08] font-semibold tracking-[-0.02em] text-balance text-ink sm:text-hero lg:text-[3.125rem]">
-                Upload your syllabus. Let AI organize your semester in 60
-                seconds.
+                {hero.headline}
               </h1>
               <p className="mt-5 max-w-lg text-[1.0625rem] leading-relaxed text-ink-soft">
-                Every assignment, exam and grading weight gets pulled out of your
-                PDFs and turned into a semester plan. It syncs to your calendar
-                and keeps adjusting all term — a living study system instead of
-                six documents you never open again.
+                {hero.subhead}
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
                 <LinkButton href="/dashboard" size="lg">
-                  Try it — no account
+                  {hero.cta}
                   <ArrowRightIcon width={16} height={16} />
                 </LinkButton>
                 <LinkButton href="/api/auth/google" variant="secondary" size="lg">
@@ -133,13 +187,13 @@ export default function LandingPage() {
             <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-muted uppercase">
               How it works
             </p>
-            <h2 id="how-it-works" className="mt-2 max-w-lg text-display text-ink">
+            <h2 id="how-it-works" className="reveal mt-2 max-w-lg text-display text-ink">
               Three steps, then it runs itself.
             </h2>
 
             <ol className="mt-10 grid gap-6 sm:grid-cols-3 sm:gap-5">
               {STEPS.map((step, index) => (
-                <li key={step.n} className="relative">
+                <li key={step.n} className="reveal relative">
                   <div className="flex h-full flex-col rounded-xl border border-line bg-paper p-5">
                     <div className="mb-4 flex items-center justify-between">
                       <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-soft text-accent">
@@ -189,7 +243,7 @@ export default function LandingPage() {
               {DIFFERENTIATORS.map((item) => (
                 <li
                   key={item.title}
-                  className="panel flex flex-col p-5"
+                  className="reveal panel flex flex-col p-5"
                 >
                   <span className="mb-3.5 flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-raised text-accent">
                     {item.icon}

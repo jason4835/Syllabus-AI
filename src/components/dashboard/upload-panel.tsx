@@ -100,6 +100,10 @@ function todayIso(now = new Date()): string {
  */
 function defaultTermId(terms: TermSummary[], now = new Date()): string {
   const today = todayIso(now);
+  // The term the student has PAID for, first: an upload defaulting anywhere
+  // else is how a paying student meets a paywall for the term they are in.
+  const paid = terms.find((term) => term.access === "premium");
+  if (paid) return paid.id;
   const current = terms.find(
     (term) =>
       term.startDate !== null &&
@@ -129,17 +133,6 @@ type Phase =
   | { kind: "done"; result: UploadResult }
   /** The file is held here, so answering the question never means re-picking it. */
   | { kind: "duplicate"; file: File; duplicate: DuplicateCourse }
-  /**
-   * A file was picked for a term whose free course is already used, so nothing
-   * was sent. The file is HELD -- it never left the browser, so re-attempting it
-   * against a term with room costs nothing and must not cost the student a trip
-   * back to the file picker.
-   *
-   * This is an answer to an attempt, never a state the panel opens in: a card
-   * that appeared on load, before anyone had done anything, would read as a
-   * popup no matter how it was styled.
-   */
-  | { kind: "blocked"; file: File; term: TermSummary }
   /**
    * The server's 402, after a parse. The file is NOT held here -- the parse
    * already happened and re-sending the same bytes would spend another one -- so
@@ -240,6 +233,46 @@ export function UploadPanel({
    * every refetch would quietly undo a choice the student had already made --
    * and a refetch happens after every upload.
    */
+  /**
+   * Finishes an upload the paywall interrupted.
+   *
+   * When the student bought the pass, the syllabus they were refused is
+   * waiting on the server (`pendingUpload` on the term). The shell polls
+   * `/api/terms` after checkout and hands the fresh list down here; the first
+   * time a term reads premium WITH something waiting, that something is
+   * replayed -- no file, just its id -- and lands on the dashboard through the
+   * ordinary `onUploaded` path. Once per stash id, so a refetch cannot replay
+   * a course that has already been created.
+   */
+  const replayed = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const ready = terms.find(
+      (term) => term.access === "premium" && term.pendingUpload && !replayed.current.has(term.pendingUpload.id),
+    );
+    if (!ready?.pendingUpload) return;
+    const pending = ready.pendingUpload;
+    replayed.current.add(pending.id);
+
+    void (async () => {
+      setPhase({ kind: "uploading", fileName: pending.fileName, percent: 100 });
+      const result = await apiUpload<UploadResult>("/api/upload", null, {
+        fields: { pendingId: pending.id, termId: ready.id },
+      });
+      if (result.ok) {
+        setPhase({ kind: "idle" });
+        onUploaded(result.data);
+        return;
+      }
+      // Not retried automatically: the stash is still there, and the next
+      // terms refetch will not re-fire for this id. The message says what to do.
+      setPhase({
+        kind: "error",
+        error: result.error,
+        detail: result.detail ?? `${pending.fileName} is still waiting -- pick it again to retry.`,
+      });
+    })();
+  }, [terms, onUploaded]);
+
   const defaulted = useRef(false);
   useEffect(() => {
     if (defaulted.current || terms.length === 0) return;
@@ -256,18 +289,13 @@ export function UploadPanel({
   const [unlockOpen, setUnlockOpen] = useState(false);
 
   /**
-   * The paywall as an ANSWER: a file was picked for a full term (nothing sent),
-   * or the server refused one after the parse. Both replace the dropzone,
-   * because in both cases the next step is a decision about the term and not
-   * another file. Neither is derived from the selection alone -- see the
-   * `blocked` phase.
+   * The paywall as an ANSWER: the server refused a file after parsing it, and
+   * kept the parse. It replaces the dropzone, because the next step is a
+   * decision about the term and not another file -- the one that was refused
+   * is named on the card and finishes itself when the term is unlocked.
    */
-  const attempt: { term: TermSummary; fileName: string | null } | null =
-    phase.kind === "blocked"
-      ? { term: phase.term, fileName: phase.file.name }
-      : phase.kind === "paywall"
-        ? { term: phase.term, fileName: null }
-        : null;
+  const attempt: { term: TermSummary } | null =
+    phase.kind === "paywall" ? { term: phase.term } : null;
 
   /** A term is selected, and it has no room for another course. */
   const selectedIsFull = selectedTerm !== null && !selectedTerm.canAddCourse;
@@ -364,8 +392,7 @@ export function UploadPanel({
       choice: string,
     ):
       | { kind: "ok"; fields: Record<string, string> }
-      | { kind: "invalid"; error: string }
-      | { kind: "blocked"; term: TermSummary } => {
+      | { kind: "invalid"; error: string } => {
       if (choice === NEW_TERM) {
         const checked = validateTermDraft(termDraft);
         if ("error" in checked) return { kind: "invalid", error: checked.error };
@@ -377,9 +404,17 @@ export function UploadPanel({
           : (terms.find((candidate) => candidate.id === choice) ?? null);
       // Nothing sent: the server reads the term out of the syllabus itself.
       if (term === null) return { kind: "ok", fields: {} };
-      // The courtesy check. The server repeats it after the parse; doing it here
-      // is what stops a student paying for an extraction they cannot keep.
-      if (!term.canAddCourse) return { kind: "blocked", term };
+      /**
+       * A term with no room is sent anyway, on purpose.
+       *
+       * This used to stop here and hold the file, so the student would not
+       * pay for a parse they could not keep. The server now KEEPS the parse it
+       * refuses -- see `pendingUpload` on the 402 -- so the extraction is not
+       * wasted: it is exactly the one that completes the upload the moment
+       * the term is unlocked, without the file being picked again. And a
+       * paywall that can say "your CHEM 104 syllabus is parsed and waiting"
+       * is a better paywall than one that can only say "no".
+       */
       return { kind: "ok", fields: { termId: term.id } };
     },
     [termDraft, terms],
@@ -448,10 +483,6 @@ export function UploadPanel({
       const resolved = resolveTermFields(choiceOverride ?? termChoice);
       if (resolved.kind === "invalid") {
         setTermError(resolved.error);
-        return;
-      }
-      if (resolved.kind === "blocked") {
-        setPhase({ kind: "blocked", file, term: resolved.term });
         return;
       }
       setTermError(null);
@@ -602,16 +633,6 @@ export function UploadPanel({
                   // it. The parse it cost is gone either way, so there is no file
                   // to pick back up.
                   if (phase.kind === "paywall") setPhase({ kind: "idle" });
-                  /**
-                   * A held file and a term with room: carry on. The student
-                   * already said "upload this" once, and asking them to say it
-                   * again is the panel forgetting what it is holding. A choice
-                   * with no room re-blocks against the new term, which is the
-                   * truthful answer rather than a stale card.
-                   */
-                  if (phase.kind === "blocked" && next !== NEW_TERM) {
-                    void send(phase.file, undefined, next);
-                  }
                 }}
                 className={FORM_INPUT}
               >
@@ -654,9 +675,24 @@ export function UploadPanel({
                 click away for anyone who wants it now. */}
             {selectedIsFull && !attempt ? (
               <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-[0.75rem] leading-relaxed text-muted">
+                {/* If a syllabus is waiting, say so HERE, without a click: a
+                    student who was refused last time and comes back should
+                    learn their file is not lost before they learn the price. */}
                 <span>
-                  This term&rsquo;s free course is used — the next one needs a
-                  Term Pass.
+                  {selectedTerm?.pendingUpload ? (
+                    <>
+                      <span className="font-medium text-ink-soft">
+                        {selectedTerm.pendingUpload.courseCode}
+                      </span>{" "}
+                      is parsed and waiting — unlock this term and it is added
+                      automatically.
+                    </>
+                  ) : (
+                    <>
+                      This term&rsquo;s free course is used — the next one needs a
+                      Term Pass.
+                    </>
+                  )}
                 </span>
                 <button
                   type="button"
@@ -678,17 +714,6 @@ export function UploadPanel({
 
           {attempt ? (
             <div className="space-y-2">
-              {/* The file is still here. Saying so is the difference between
-                  "nothing happened" and "your file is gone". */}
-              {attempt.fileName ? (
-                <p className="text-[0.8125rem] leading-relaxed text-ink-soft">
-                  <span className="break-all font-medium text-ink">
-                    {attempt.fileName}
-                  </span>{" "}
-                  wasn&rsquo;t uploaded — {attempt.term.name} already has its free
-                  course. Pick a term with room and it goes straight through.
-                </p>
-              ) : null}
               {config ? (
                 <TermPassCard
                   term={attempt.term}
@@ -702,17 +727,6 @@ export function UploadPanel({
                 </Note>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                {/* The way on for a term typed into the form above, which the
-                    select's own change cannot send on its own. */}
-                {phase.kind === "blocked" && termChoice === NEW_TERM ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void send(phase.file)}
-                  >
-                    Upload into this new term
-                  </Button>
-                ) : null}
                 <Button
                   type="button"
                   size="sm"

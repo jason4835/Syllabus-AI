@@ -1,3 +1,4 @@
+import { track } from "@/lib/analytics";
 import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { isGoogleConfigured } from "@/lib/google/oauth";
@@ -61,11 +62,77 @@ export async function POST(req: Request) {
     // returns are the counts a real run would produce.
     const dryRun = previewOnly || !isGoogleConfigured() || !user?.googleRefreshToken;
 
-    const result = await syncToCalendar(userId, {
-      courses,
-      assessments,
-      studyBlocks: plan.studyBlocks,
+    /**
+     * Streamed when the client asks for it, so a progress bar can be real.
+     *
+     * A full-semester sync is one Google API call per event, in sequence, and
+     * a couple of hundred of those takes long enough that a spinner reads as
+     * "hung" -- students refreshed mid-run, which then raced the run they had
+     * just abandoned. Newline-delimited JSON: `{"progress":{done,total}}` per
+     * event, then the same `ApiResult` envelope this route has always
+     * returned as the final line. A client that sends the ordinary `Accept`
+     * gets the ordinary JSON, so nothing older breaks and the tests need no
+     * stream reader.
+     *
+     * The status is 200 even when the sync fails partway: the failure travels
+     * in the final envelope, because an HTTP status cannot be changed after
+     * the first progress byte has been sent.
+     */
+    const wantsStream = (req.headers.get("accept") ?? "").includes("application/x-ndjson");
+    const run = (onProgress?: (p: { done: number; total: number }) => void) =>
+      syncToCalendar(userId, {
+        courses,
+        assessments,
+        studyBlocks: plan.studyBlocks,
+        dryRun,
+        onProgress,
+      });
+
+    if (wantsStream) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const line = (value: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
+          try {
+            const result = await run((progress) => line({ progress }));
+            // Analytics, same fields as the non-streamed path below.
+            track("calendar_synced", {
+              userId,
+              dryRun,
+              created: result.created,
+              updated: result.updated,
+              removed: result.removed,
+              scope: courseId ? "course" : "all",
+            });
+            line({ ok: true, data: { ...result, dryRun } });
+          } catch (err) {
+            logApiError("sync.failed", err, { userId, courseId });
+            line({ ok: false, error: "Calendar sync failed.", detail: messageOf(err) });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+
+    const result = await run();
+    /**
+     * Deadlines reaching a real calendar is the strongest retention signal the
+     * app has -- it is the point at which the plan stops living in this tab.
+     * Dry runs are recorded too, flagged: a student whose sync is always a dry
+     * run has not connected Google, which is a funnel problem, not a sync one.
+     */
+    track("calendar_synced", {
+      userId,
       dryRun,
+      created: result.created,
+      updated: result.updated,
+      removed: result.removed,
+      scope: courseId ? "course" : "all",
     });
     return ok({ ...result, dryRun });
   } catch (err) {

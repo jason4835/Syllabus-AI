@@ -250,6 +250,20 @@ export interface ParsedSyllabus {
   /** Extractor-level warnings: ambiguous dates, missing weights, low OCR quality. */
   warnings: string[];
   /**
+   * Which path produced this, as a fact rather than a sentence.
+   *
+   * The `warnings` above already SAY when pattern matching was used, but they
+   * say it in prose written for a student, and anything that needs the answer
+   * mechanically (the `syllabus_uploaded` funnel event, which splits retention
+   * by extraction quality) would otherwise have to grep English and break the
+   * day somebody reworded a message. `"hybrid"` is the real case where the
+   * model read the header and the heuristic pass supplied the schedule.
+   *
+   * Optional because a `ParsedSyllabus` assembled anywhere but `parseSyllabus`
+   * has no honest answer, and guessing one would be worse than admitting it.
+   */
+  extractor?: "ai" | "heuristic" | "hybrid";
+  /**
    * True when the document weights exams by rank -- "35% for the exam with the
    * highest grade, 15% for the lowest". Read from the source text, not from the
    * model's grading rows, because the model rewrote those rows as "Exam 1 45%"
@@ -257,6 +271,38 @@ export interface ParsedSyllabus {
    * this is set no exam can carry a fixed percentage, whatever the rows say.
    */
   rankBasedExamWeights?: boolean;
+}
+
+/**
+ * A parsed syllabus the student could not keep yet.
+ *
+ * Written when an upload is refused with the paywall, replayed the moment the
+ * term is unlocked. See `supabase/schema.sql` (`pending_uploads`) for why it
+ * exists; the short version is that the parse it holds is the parse that
+ * decided which term the file belonged to, and discarding it meant a paying
+ * student came back from Stripe to an empty dropzone.
+ */
+export interface PendingUpload {
+  id: string;
+  userId: string;
+  /** The term it was refused for. Null if that term has since been deleted. */
+  termId: string | null;
+  fileName: string;
+  parsed: ParsedSyllabus;
+  createdAt: string;
+}
+
+/**
+ * What a client is told about a pending upload: enough to say "your CHEM 104
+ * syllabus is parsed and waiting" on the paywall, and to replay it. Never the
+ * parse itself -- the client has no use for it and it is not small.
+ */
+export interface PendingUploadSummary {
+  id: string;
+  fileName: string;
+  courseCode: string;
+  courseTitle: string;
+  assessmentCount: number;
 }
 
 /** A recommended study session the planner generates (not from the syllabus). */
@@ -356,7 +402,44 @@ export interface User {
   calendarFeedToken: string | null;
   /** What the calendar sync and feed include. Office hours are opt-in. */
   calendarPrefs: CalendarPrefs;
+  /**
+   * Optional onboarding answers. `{}` until asked; `completedAt` set once the
+   * card has been answered OR skipped, so it is shown exactly once. Absent on
+   * rows written before the column existed, hence optional -- the store
+   * normalises it to `{}` on read.
+   */
+  profile?: UserProfile;
   createdAt: string;
+}
+
+/**
+ * The one thing the app asks that a syllabus cannot tell it.
+ *
+ * Every field optional and every value a short free-text or enum label: this
+ * is a three-question card a student can skip, not a form. Nothing in the
+ * product reads it; it exists so an ad campaign can be judged by who it
+ * actually brought in (which schools, which years, which channel), and each
+ * answer reaches analytics only as a coarse label -- never joined to a name or
+ * an email there.
+ */
+export interface UserProfile {
+  /**
+   * A CANONICAL name from `@/lib/schools`, never what was typed -- "nyu",
+   * "NYU" and "NYU Gallatin" all store as "New York University", which is
+   * what makes a breakdown by school readable without cleaning.
+   */
+  school?: string;
+  /**
+   * What was typed when it matched nothing canonical. Kept so the answer is
+   * not lost and so the list can be grown from what students actually enter;
+   * never mixed into `school`.
+   */
+  schoolOther?: string;
+  year?: "freshman" | "sophomore" | "junior" | "senior" | "grad" | "other";
+  /** How they found the app. The label an ad is judged by. */
+  source?: "search" | "social" | "friend" | "ad" | "professor" | "other";
+  /** ISO instant the card was answered or dismissed. */
+  completedAt?: string;
 }
 
 export interface CalendarPrefs {

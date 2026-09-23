@@ -27,12 +27,15 @@ import type {
   NotionLink,
   NotionLinkKind,
   ParsedSyllabus,
+  PendingUpload,
   TermInput,
   TermType,
   User,
+  UserProfile,
 } from "@/lib/types";
-import { TERM_TYPES } from "@/lib/types";
-import { FREE_COURSES_PER_TERM } from "@/lib/terms";
+import { DEMO_USER_PREFIX, TERM_TYPES } from "@/lib/types";
+import { FREE_COURSES_PER_TERM, todayIso } from "@/lib/terms";
+import { foldPaidTerms, isoDaysAgo, type PaidTerm } from "@/lib/metrics";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -65,6 +68,24 @@ interface UserRow {
   timezone: string | null;
   calendar_feed_token: string | null;
   calendar_prefs: unknown;
+  /** Absent from rows written before the column existed; read as `{}`. */
+  profile?: unknown;
+  created_at: string;
+}
+
+/** The two columns `metrics()` projects a paid term down to. */
+interface PaidTermRow {
+  user_id: string;
+  premium_expires_at: string | null;
+}
+
+/** `parsed` is the whole ParsedSyllabus as jsonb -- the exact input createCourse takes. */
+interface PendingUploadRow {
+  id: string;
+  user_id: string;
+  term_id: string | null;
+  file_name: string;
+  parsed: unknown;
   created_at: string;
 }
 
@@ -267,6 +288,7 @@ function userToDomain(row: UserRow): User {
     // Laid over the defaults rather than read straight: the column defaults to
     // `{}`, rows written before it existed have nothing, and a preference
     // reading `undefined` would silently mean "do not sync that".
+    profile: (row.profile && typeof row.profile === "object" ? (row.profile as UserProfile) : {}),
     calendarPrefs: mergeCalendarPrefs(row.calendar_prefs),
     createdAt: row.created_at,
   };
@@ -281,6 +303,7 @@ function userToRow(user: User): UserRow {
     google_refresh_token: user.googleRefreshToken,
     timezone: user.timezone,
     calendar_feed_token: user.calendarFeedToken,
+    profile: user.profile ?? {},
     calendar_prefs: user.calendarPrefs,
     created_at: user.createdAt,
   };
@@ -444,6 +467,17 @@ function assessmentPatchToRow(
   if (patch.reviewedAt !== undefined) row.reviewed_at = patch.reviewedAt;
   if (patch.notes !== undefined) row.notes = patch.notes;
   return row;
+}
+
+function pendingToDomain(row: PendingUploadRow): PendingUpload {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    termId: row.term_id,
+    fileName: row.file_name,
+    parsed: row.parsed as ParsedSyllabus,
+    createdAt: row.created_at,
+  };
 }
 
 function termToDomain(row: TermRow): AcademicTerm {
@@ -870,7 +904,172 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     ];
   }
 
+  /**
+   * `users` rows matching a filter, excluding demo sandboxes.
+   *
+   * The demo predicate is a LIKE on the id prefix, and the backslash matters:
+   * unescaped, `_` is a single-character wildcard in SQL LIKE, so `demo_%`
+   * would also match a hypothetical `demoXY` account. `\\_` pins it to a
+   * literal underscore, which is what `DEMO_USER_PREFIX` actually is.
+   */
+  const DEMO_ID_PATTERN = `${DEMO_USER_PREFIX.replace("_", "\\_")}%`;
+
+  /** Real signups, optionally only those created at or after an ISO instant. */
+  async function countUsers(createdSince?: string): Promise<number> {
+    // `head: true` asks Postgres for the count and no rows at all.
+    const query = client
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .not("id", "like", DEMO_ID_PATTERN);
+    const { count, error } = await (createdSince
+      ? query.gte("created_at", createdSince)
+      : query);
+    if (error) fail("metrics signup count", error);
+    return count ?? 0;
+  }
+
+  async function countDemoUsers(): Promise<number> {
+    const { count, error } = await client
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .like("id", DEMO_ID_PATTERN);
+    if (error) fail("metrics demo count", error);
+    return count ?? 0;
+  }
+
+  /**
+   * Every paid term, paged.
+   *
+   * Rows, not a count: `foldPaidTerms` needs the buyer ids to deduplicate and
+   * the expiry dates to say which passes are still live, and neither is
+   * something Postgres can answer through this client in one aggregate.
+   *
+   * Paged because PostgREST caps a response at `db-max-rows` (1000 by default)
+   * and answers a larger result by silently truncating it -- which here would
+   * mean under-reporting revenue with no error anywhere. The set is bounded by
+   * purchases, not by sign-ups, so in practice this is one round trip.
+   */
+  async function paidTerms(): Promise<PaidTerm[]> {
+    const PAGE = 1000;
+    const out: PaidTerm[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await client
+        .from("academic_terms")
+        .select("user_id, premium_expires_at")
+        .eq("premium", true)
+        // A stable order, so paging cannot skip or repeat a row.
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) fail("metrics paid terms", error);
+
+      const rows = (data ?? []) as PaidTermRow[];
+      for (const row of rows) {
+        out.push({ userId: row.user_id, premiumExpiresAt: row.premium_expires_at });
+      }
+      // A short page is the last page.
+      if (rows.length < PAGE) return out;
+    }
+  }
+
   return {
+    async metrics() {
+      // Four count-only queries plus the paid terms. Postgres does the
+      // sign-up counting, so that half stays a fixed amount of work however
+      // many students sign up -- pulling the rows back to count them in JS
+      // would not.
+      const [signups, signups7, signups30, demoSandboxes, paid] = await Promise.all([
+        countUsers(),
+        countUsers(isoDaysAgo(7)),
+        countUsers(isoDaysAgo(30)),
+        countDemoUsers(),
+        paidTerms(),
+      ]);
+
+      return {
+        signups,
+        signupsLast7Days: signups7,
+        signupsLast30Days: signups30,
+        demoSandboxes,
+        ...foldPaidTerms(paid, todayIso()),
+        generatedAt: new Date().toISOString(),
+      };
+    },
+
+    async setUserProfile(userId, patch) {
+      // Read-merge-write rather than a jsonb `||` in SQL, so the local driver
+      // and this one apply the same merge and a test against either is a test
+      // of both. Two concurrent onboarding submissions from one student are
+      // not a race worth a round trip to prevent.
+      const { data: existing, error: readError } = await client
+        .from("users")
+        .select("profile")
+        .eq("id", userId)
+        .maybeSingle();
+      if (readError && readError.code !== NO_ROWS) fail("setUserProfile read", readError);
+      if (!existing) return null;
+      const current =
+        existing.profile && typeof existing.profile === "object"
+          ? (existing.profile as UserProfile)
+          : {};
+      const { data, error } = await client
+        .from("users")
+        .update({ profile: { ...current, ...patch } })
+        .eq("id", userId)
+        .select("*")
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("setUserProfile", error);
+      return data ? userToDomain(data as UserRow) : null;
+    },
+
+    async savePendingUpload(userId, termId, fileName, parsed) {
+      const { data, error } = await client
+        .from("pending_uploads")
+        .insert({
+          user_id: userId,
+          term_id: termId,
+          file_name: fileName,
+          parsed,
+          created_at: new Date().toISOString(),
+        })
+        .select("*")
+        .single();
+      if (error) fail("savePendingUpload", error);
+      return pendingToDomain(data as PendingUploadRow);
+    },
+
+    async getPendingUpload(userId, id) {
+      // The user_id predicate IS the ownership check, as with getTerm.
+      const { data, error } = await client
+        .from("pending_uploads")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (error && error.code !== NO_ROWS) fail("getPendingUpload", error);
+      return data ? pendingToDomain(data as PendingUploadRow) : null;
+    },
+
+    async listPendingUploads(userId) {
+      const { data, error } = await client
+        .from("pending_uploads")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+      if (error) fail("listPendingUploads", error);
+      return ((data ?? []) as PendingUploadRow[]).map(pendingToDomain);
+    },
+
+    async deletePendingUpload(userId, id) {
+      const { data, error } = await client
+        .from("pending_uploads")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", userId)
+        .select("id");
+      if (error) fail("deletePendingUpload", error);
+      return ((data ?? []) as { id: string }[]).length > 0;
+    },
+
     async getUser(id) {
       const { data, error } = await client
         .from("users")

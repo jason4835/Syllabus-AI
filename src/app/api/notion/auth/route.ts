@@ -1,3 +1,11 @@
+/**
+ * Notion connect, leg 1 of 2: send the browser to Notion's consent screen.
+ *
+ * Same two-leg shape as Google sign-in, with its own state cookie, and leg 2 is
+ * `/api/notion/callback`. The difference is that this one requires an existing
+ * session: connecting Notion is something a signed-in student does to an
+ * account that already exists, not a way to get one.
+ */
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";

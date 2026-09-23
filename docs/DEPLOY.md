@@ -5,7 +5,8 @@ their own Google accounts and upload their own syllabi.
 
 Work through it in order. Steps 1–4 are setup, 5 is cost control, 6 is the smoke
 test that tells you whether it actually works, 7 is what to send your testers,
-8 is what to tell them it can't do.
+8 is what to tell them it can't do, 9 turns on payments, 10 is the metrics page
+you watch afterwards, and 11 is analytics and A/B testing.
 
 Budget an hour. Most of it is Google Cloud.
 
@@ -256,37 +257,42 @@ accept that sign-in only works on production and on localhost.
 
 ### 3c. Sensitive scope, Testing status, and the 7-day cliff
 
-`src/lib/google/oauth.ts` requests four scopes:
+`src/lib/google/oauth.ts` requests four scopes, and that array is the single
+source of truth for the whole app:
 
-```
-openid
-email
-profile
-https://www.googleapis.com/auth/calendar
-```
+| Requested in code | How the Cloud Console spells it |
+|---|---|
+| `openid` | `openid` |
+| `email` | `https://www.googleapis.com/auth/userinfo.email` |
+| `profile` | `https://www.googleapis.com/auth/userinfo.profile` |
+| `https://www.googleapis.com/auth/calendar` | `https://www.googleapis.com/auth/calendar` |
 
-That last one is full read-write Calendar access — the code takes it rather than
-`calendar.events` because creating the dedicated "Syllabus Center" calendar requires
-it. Google classes it as a **sensitive scope**, which is what puts the app under
-the verification regime.
+That mismatch in spelling matters more than it looks — see 3d. `/admin` prints
+this table live from the code, so you never have to retype it to compare.
 
-While your OAuth consent screen's publishing status is **Testing**:
+The last scope is full read-write Calendar access. The code takes it rather than
+`calendar.events` because creating the dedicated "Syllabus Center" calendar
+requires it. Google classes it as a **sensitive scope**, which is what puts the
+app under the verification regime. Sensitive, *not* restricted: no third-party
+security assessment is required. (Google's own published example of an
+acceptable scope justification is for this exact scope — see
+[Verification requirements](https://support.google.com/cloud/answer/13464321).)
+
+While your publishing status is **Testing**:
 
 - **Only listed test users can sign in at all.** Everyone else gets "access
   blocked" — not a bug in your app.
-- Testing projects are limited to **100 test users** ([Google Cloud support:
-  test user limits](https://support.google.com/cloud/answer/15549945)). Test
-  users consume quota once added.
+- Testing projects are limited to **100 test users** ([Manage App
+  Audience](https://support.google.com/cloud/answer/15549945)). Test users
+  consume quota once added.
 - Every tester sees an **"unverified app"** interstitial with a warning triangle
   before the consent screen. They have to click **Advanced → Go to \<app\>
   (unsafe)** to continue. It looks exactly like a phishing warning. Warn them
   first — see step 7.
-- **Refresh tokens expire after 7 days.** Google's own words: a project
-  "configured for an external user type and a publishing status of 'Testing' is
-  issued a refresh token expiring in 7 days, unless the only OAuth scopes
-  requested are a subset of name, email address, and user profile." We request
-  `calendar`, so we are not in the exemption
-  ([OAuth 2.0 refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration)).
+- **Authorizations expire after 7 days**, refresh token included. Google's
+  exemption covers only "a subset of name, email address, and user profile"
+  (`userinfo.email`, `userinfo.profile`, `openid`). We also request `calendar`,
+  so we are not in the exemption.
 
 The 7-day expiry is the one that will look like a product bug. Sync works all
 week, then a tester comes back on day eight, hits **Sync to Google Calendar**,
@@ -294,20 +300,96 @@ and it fails. What they see is a sync error; what happened is that Google
 revoked the refresh token stored on their user row. The fix for them is to sign
 out and sign in again. The fix for you is publishing.
 
-Add your testers explicitly: **APIs & Services → OAuth consent screen → Audience
-→ Test users → Add users**, one Google account address per friend.
+Add your testers explicitly: **Google Auth Platform → Audience → Test users →
+Add users**, one Google account address per friend.
 
-Moving the app to **In production** publishing status is what removes the 7-day
-expiry and the interstitial — and for a sensitive scope that means going through
-Google's verification (app homepage, privacy policy, demo video, domain
-ownership). Plan for weeks, not hours. For a handful of friends over a couple of
-weeks, staying in Testing and telling everyone to re-consent when sync breaks is
-the reasonable trade.
+Moving to **In production** is what removes the 7-day expiry and the
+interstitial — and for a sensitive scope that means verification (app homepage
+on a domain you own, privacy policy, demo video, domain ownership in Search
+Console). Google quotes **10 business days** for sensitive-scope review, plus
+2–3 for brand verification. For a handful of friends over a couple of weeks,
+staying in Testing and telling everyone to re-consent when sync breaks is the
+reasonable trade.
 
 **Google changes these policies.** Confirm the current test-user cap, the expiry
 rule, and the verification requirements in your own Cloud Console and in
-Google's docs before you invite anyone — the two pages linked above are the
+Google's docs before you invite anyone — the pages linked here are the
 authoritative source, this guide is not.
+
+---
+
+### 3d. "Google hasn't verified this app" when you *are* verified
+
+This is the one that makes people think verification silently failed. It did
+not. Google gives a single, specific cause, in two places
+([Manage App Audience](https://support.google.com/cloud/answer/15549945),
+[Verification FAQ](https://support.google.com/cloud/answer/13463817)):
+
+> If your users are seeing the "unverified app" screen, it is because your OAuth
+> request includes additional scopes that haven't been approved.
+
+So the warning is almost never about the verification *submission*. It is about
+a **mismatch between the scopes your code sends and the scopes the project was
+approved for**. Work down this list in order; the first three account for nearly
+all of it.
+
+**1. Publishing status is still "Testing".**
+Submitting the verification form does not move it. **Google Auth Platform →
+Audience** must say *In production*, which happens only after you click
+**Publish app**. In Testing the interstitial always shows, for every user,
+verified or not.
+
+**2. A scope in the code is not on the approved list.**
+Open **Google Auth Platform → Data Access** and compare it against the table in
+3c above — or just open `/admin` on your own deployment, which prints the same
+four strings straight from `src/lib/google/oauth.ts`.
+
+The classic miss is `email` and `profile`. The code requests the short aliases;
+the Console lists them as `.../auth/userinfo.email` and
+`.../auth/userinfo.profile`. If those two rows are not in Data Access, the
+request carries unapproved scopes and every new user sees the warning — no
+matter how green the verification status looks. Same story if Data Access has
+`calendar.events` but the code asks for `calendar`: those are different scopes.
+
+It has to match in **both** directions. An extra approved scope the code never
+asks for is harmless; a requested scope that is not approved is the bug.
+
+**3. The deployed client belongs to a different Cloud project.**
+Verification is per **project**, not per credential. A dev project and a prod
+project are two separate verification states, and it is easy to verify one and
+deploy the other's client ID. Check that the `GOOGLE_CLIENT_ID` in your hosting
+environment is a credential of the project whose Data Access page you have been
+looking at.
+
+**4. Verification is submitted but still pending.**
+Sensitive-scope review is quoted at 10 business days. Until it completes, the
+warning and the 100-user cap stay. Nothing to do but wait — and watch the inbox
+on the project's contact address, because a reviewer asking a question and
+getting no reply is what turns 10 days into 10 weeks.
+
+**5. A scope was added after approval.**
+Adding one re-triggers verification *for that scope* and puts the warning back
+until it is approved. Google's guidance: get the scope approved **before**
+shipping code that requests it, and use a separate Cloud project for testing new
+scopes.
+
+Worth knowing what does *not* cause it: changing the app name, logo, redirect
+URI, homepage link or privacy policy link requires **brand re-verification**,
+but Google states explicitly that those changes "do not trigger the unverified
+app screen or the 100-user cap" — the old name and logo just keep showing until
+the re-review lands.
+
+**What the code does to stay out of this.** `getAuthUrl` deliberately does *not*
+pass `include_granted_scopes`. That flag is for incremental authorization, which
+this app has no use for — `SCOPES` is fixed and requested in full on every
+sign-in. Left on, it folds a returning user's previously granted scopes back
+into the request, which is exactly the "additional scopes that haven't been
+approved" condition above. If you ever add it back, you own that failure mode.
+
+**Checking the user cap.** **Google Auth Platform → Audience → OAuth user cap**
+shows how much of the 100 is spent. It applies over the project's whole lifetime
+and cannot be reset, so an app that burned through it while unverified needs
+verification, not a new day.
 
 ---
 
@@ -794,6 +876,13 @@ running it again on a database that predates the Term Pass adds the new
 `academic_terms` and `stripe_events` tables and the `courses.term_id` column
 without touching anything that already exists.
 
+Two later additions follow the same idempotent pattern and need only the same
+re-run: `pending_uploads` (a parse the paywall refused, kept until the term is
+unlocked — see `docs/TERM-PASS.md`, "Pending uploads") and `users.profile`
+(the onboarding card's answers, `jsonb`, defaults to `{}`). Both are guarded
+`create table if not exists` / `add column if not exists`, so re-running
+`schema.sql` on a live database adds them and touches nothing else.
+
 There is no data-migration script to run. Existing courses have no `term_id`
 until `ensureTermsBackfilled(userId)` groups a user's term-less courses into
 terms on their **next dashboard load** — the same read-side pattern the
@@ -801,6 +890,298 @@ codebase already uses for every earlier schema addition. Nothing needs to be
 scheduled or backfilled ahead of the deploy; the first login after this
 release does the work per user, lazily. See "Existing users (migration and
 grandfathering)" in `docs/TERM-PASS.md` for exactly how courses get grouped.
+
+---
+
+## 10. Watching the numbers (`/admin`)
+
+`/admin` is a metrics page for you, the operator: sign-ups, paying members,
+passes sold, and the live OAuth scope table from 3d. It is a server-rendered
+page that reads the store directly — no API route, no client JavaScript, no
+second login.
+
+Turn it on by listing yourself:
+
+```
+ADMIN_EMAILS=you@gmail.com
+```
+
+Comma-separated for more than one, matched case-insensitively against the
+signed-in user's email. **Unset means nobody**: the page 404s for everyone,
+including you. It also 404s rather than 403s for a signed-in non-admin, so the
+URL does not confirm to a curious student that a metrics page exists.
+
+What the numbers mean:
+
+| Stat | Exactly what it counts |
+|---|---|
+| Sign-ups | Rows in `users` whose id is not a `demo_…` sandbox |
+| New in the last 7 / 30 days | Same, filtered on `created_at` |
+| Demo sandboxes | `demo_…` rows. Listed so the `users` table's size is not a mystery |
+| Paying members | Distinct `user_id` over `academic_terms` where `premium` is true |
+| Passes sold | Those rows, not deduplicated — the repeat-purchase signal |
+| Passes active today | Of those, the ones whose `premium_expires_at` has not passed |
+| Gross revenue | Passes sold x the current display price. **An estimate** — Stripe is the ledger, and this ignores refunds and any past price |
+
+The counts are taken live on every load and are never cached. On Supabase they
+are four `count`-only queries plus one small select over paid terms, so the cost
+does not grow with sign-ups.
+
+**This is not a funnel tool.** How many people saw the paywall, started a
+checkout and abandoned it are moments in time, not rows, and they go to the log
+drain as `analytics.*` lines from `src/lib/analytics.ts`. If you want those
+charted, that is where a real analytics vendor would plug in — one function,
+`track()`, not the call sites.
+
+---
+
+## 11. Analytics and A/B tests
+
+Two systems, doing two different jobs. Keep them straight and neither will
+mislead you.
+
+| | `/admin` | PostHog |
+|---|---|---|
+| Answers | How many signed up, how many paid | Where people drop out, whether they come back, which variant won |
+| Source | Your own `users` and `academic_terms` tables | Named events from the browser and the server |
+| Accuracy | Exact | Best-effort — ad blockers and opt-outs cost you some |
+| Use it for | Revenue, totals, anything you'd quote | Funnels, retention, experiments |
+
+If the two disagree on revenue, `/admin` is right and PostHog is under-counting.
+That is expected, not a bug.
+
+### 11a. Turning PostHog on
+
+```
+NEXT_PUBLIC_POSTHOG_KEY=phc_xxxxxxxx
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+```
+
+The **project** key from PostHog → Settings → Project. It is public by design:
+it can write events and read nothing. Never put a personal API key here.
+
+Without a key everything still works — events still hit your log drain, the A/B
+tests still run and are still assigned identically. You lose the charts, nothing
+else.
+
+`next.config.ts` reads the same two variables to open exactly one host in the
+Content-Security-Policy. No other host is opened, and `script-src` is untouched
+because `posthog-js` is bundled from npm rather than loaded from a CDN.
+
+### 11b. What is deliberately not collected
+
+`src/lib/analytics-client.ts` disables **autocapture** and **session replay**.
+That is not a default left in place — both are switched off on purpose, and the
+privacy policy is written against that configuration:
+
+- Autocapture records the text of whatever was clicked. Here that text is course
+  codes, assignment titles and instructors' names.
+- A session replay of the dashboard is a recording of somebody's semester.
+
+Also never sent: email addresses, names, Google data, tokens, chat messages, the
+calendar feed token. `identify()` gets an account id and nothing else, and demo
+sandboxes are not identified at all.
+
+Do Not Track and Global Privacy Control switch analytics off for that visitor
+automatically. GPC has legal weight in California; honouring it is what makes the
+privacy policy's claim true.
+
+**If you change any of this, change the privacy policy in the same commit.** A
+privacy policy describing a configuration you no longer run is the one kind of
+documentation bug with legal consequences.
+
+### 11c. The funnel
+
+```
+demo_started -> landing_cta_clicked -> signed_in
+             -> syllabus_uploaded -> first_course_created -> calendar_synced
+             -> second_course_paywall_viewed -> term_checkout_started -> term_pass_purchased
+```
+
+Server and browser events share a `distinct_id`, so a funnel crosses the
+boundary — which it has to, because "saw the paywall" happens in a browser and
+"paid" happens in a Stripe webhook.
+
+`calendar_synced` is the retention event worth watching. It is the point at which
+the plan stops living in a tab, and it predicts whether somebody comes back.
+
+Event names are an allow-list in `src/lib/analytics.ts`; adding one means adding
+it there. **No event may carry syllabus content, Google data, or anything that
+names a student.** Ids, counts, variants and enum-ish labels only.
+
+### 11d. Running an A/B test
+
+Experiments live in `src/lib/experiments.ts` and are decided by a hash of the
+experiment key and the subject id — no vendor, no network call, no flag service.
+That buys three things:
+
+1. **The server decides.** The price test picks a Stripe price id. A browser that
+   chose its own variant would be choosing its own price.
+2. **Sticky for free.** Same person, same arm, every visit, every device, because
+   it is a function of their id rather than a coin flip someone stored. Nobody is
+   ever quoted two different prices.
+3. **It cannot fail.** No flag fetch to be slow or down.
+
+Three tests ship wired up:
+
+| Experiment | Arms | Where |
+|---|---|---|
+| `landing_hero` | `control`, `outcome` | Hero headline, subhead and CTA |
+| `paywall_copy` | `control`, `outcome` | Term Pass card heading and body |
+| `term_pass_price` | `control`, `higher` | The actual Stripe price charged |
+
+**To start the price test**, create a second one-time price on the same Stripe
+product and set `STRIPE_TERM_PASS_PRICE_ID_HIGHER` to its id. Unset it and the
+test is off — every arm falls back to `STRIPE_TERM_PASS_PRICE_ID`, so a
+half-configured environment charges the normal price rather than failing
+checkout. No deploy either way.
+
+The displayed amount is read back **from Stripe** for whichever price applies and
+is never configured anywhere. That is what lets the Terms promise the price shown
+is the price charged, and it is why there is no `..._AMOUNT` variable to forget.
+
+**To read the results**, split any funnel in PostHog by the experiment's
+property — every event carries all three assignments as super properties.
+
+**To end a test**, delete it from `EXPERIMENTS` and remove the losing branch. The
+call sites fall back to the control, which should be the arm you keep.
+
+**Never rename a live experiment key.** The key is half the hash input, so a
+rename rebuckets everyone — and mid-flight on the price test that means quoting a
+returning customer a different price. Change the variants, never the key.
+
+### 11e. Reading the results honestly
+
+At a thousand users you will not have significance on a small effect quickly. A
+paywall conversion rate moving from 4% to 5% needs a few thousand views per arm
+before it means anything. PostHog's experiment view will tell you; believe it
+over the shape of the line.
+
+Run one experiment per surface at a time. All three ship enabled because they
+touch three different screens and three different decisions — a landing headline,
+a paywall's words, and its price. Adding a fourth that also touches the paywall
+would make both unreadable.
+
+---
+
+### 11f. Error tracking
+
+There is no Sentry here, and for now that is a decision rather than an omission.
+
+**Server errors** already go to your log drain: 24 of 31 routes call
+`logApiError`, and the ones that do not are redirects that cannot fail into
+JSON. Every webhook failure mode is logged by name, including
+`stripe.webhook_grant_missed` — somebody paid and did not get access.
+
+**Client errors** now go to PostHog. `posthog-js` ships `captureException`, so
+this needed no new dependency:
+
+- `PanelBoundary` wraps each dashboard panel, so one crashing panel shows an
+  inline error and the other nine keep working. Without it, a single
+  `undefined.map` in the heatmap replaced the upload box, the calendar sync and
+  the chat with an error screen.
+- `src/app/error.tsx` and `global-error.tsx` are the outer nets, for the shell
+  and the root layout.
+- `installGlobalErrorHandlers()` catches what no boundary can — rejected
+  promises in event handlers, `setTimeout` callbacks, third-party scripts.
+
+Client errors deliberately do **not** go to the log drain. `/api/analytics`
+allow-lists event names precisely so a client cannot write free text into a
+drain that people read and alert on, and an error message is the most free-text
+thing there is. PostHog is built for untrusted client input and groups
+duplicates, which is the difference between "this broke 400 times for one
+person" and "this broke for 400 people".
+
+A visitor who opted out of analytics reports nothing. That is the cost of
+honouring the opt-out honestly.
+
+#### Email alerts
+
+A log drain answers questions you already thought to ask, after somebody
+complains. These push instead.
+
+```
+RESEND_API_KEY=re_xxxxxxxx
+ALERT_EMAIL_TO=you@gmail.com
+ALERT_EMAIL_FROM=alerts@yourdomain.com
+```
+
+`ALERT_EMAIL_FROM` must be on a domain verified with the provider or every send
+is rejected. Resend's free tier covers this many times over; any provider with
+an HTTP API works, and `send()` in `src/lib/alerts.ts` is the only ~20 lines
+that know which one you use.
+
+**What alerts:**
+
+- Every `error`-level line — which means every route failure, since they all go
+  through `logApiError`.
+- A short allow-list of `warn` events that all mean *a student was charged and
+  something did not happen*: `stripe.webhook_grant_missed`,
+  `webhook_term_not_found`, `webhook_term_without_end_date`,
+  `webhook_missing_metadata`, `webhook_unverified`.
+
+That allow-list is the point. Alerting on severity alone would have missed every
+one of them, because they are all logged at `warn` — the webhook ran fine and
+*decided* not to grant. From the student's side that is indistinguishable from
+the payment failing, except they have been charged.
+
+Each email carries the ids and what to do about it, because an alert that names
+a problem without naming the next step is a notification, not an alert.
+
+**What does not alert:** expected 404s, `notFound()`, rate-limit denials,
+validation failures. Probing `/admin` does not wake you up.
+
+**Throttling — the part that decides whether this survives.** At most one email
+per event name per hour, and at most 20 an hour in total. Without the first, one
+broken route sends an email per request; without the second, a deploy that
+breaks ten things at once sends ten storms. An operator who learns to filter the
+alert address to trash is worse off than one with no alerting, so the caps are
+deliberately tight. Everything suppressed is still in the log drain under the
+same event name.
+
+Counters are in memory, so on serverless they are per-instance: a wide outage
+across N warm instances can send up to N times these numbers. For alerting that
+is the right direction to be wrong in.
+
+#### Where errors are caught
+
+Two layers, because one was not enough:
+
+- `logApiError` in each route's `catch` — the normal path.
+- `src/instrumentation.ts` (`onRequestError`) — everything that throws *outside*
+  a route's `try`. That is not a hypothetical: routes resolve the caller before
+  the try block opens, and `resolveVisitor()` reads and writes the store. When
+  the store is down, roughly twenty routes throw before their own error handling
+  exists, Next turns it into a 500, and nothing in the app is told. The failure
+  most worth being woken up for was the one that could not page anybody.
+
+An error caught and logged by a route never reaches the hook, so nothing is
+reported twice.
+
+#### Verifying it works
+
+Set a deliberately wrong `RESEND_API_KEY`, cause any 500, and look for this in
+the server log:
+
+```
+[alerts] provider rejected the alert for "server.unhandled" (401)
+```
+
+A 401 is a good sign — it means the request was well-formed and reached the
+provider. With a real key that line is an email instead.
+
+#### When to add Sentry
+
+Add it when one of these is true, not before:
+
+- You want **source-mapped stack traces** from minified production bundles.
+  PostHog's are serviceable; Sentry's are better.
+- You want **release tracking** — "this started at deploy 47".
+- You want **alerting on new errors** without building it yourself.
+- Server-side exceptions need grouping too, not just a searchable log.
+
+At that point it is a `@sentry/nextjs` install and a config file, and the
+boundaries built here keep working unchanged — only `reportError` changes.
 
 ---
 

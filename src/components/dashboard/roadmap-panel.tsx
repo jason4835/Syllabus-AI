@@ -158,6 +158,24 @@ export function RoadmapPanel({
    */
   const [collapsed, setCollapsed] = useState<Record<string, boolean | undefined>>({});
   const narrow = useIsNarrow();
+
+  /**
+   * Past a couple of courses, open-by-default stops being a scan and becomes a
+   * wall -- five courses fully expanded is every week of every class stacked
+   * end to end, and the panels a student came for (upload, sync) are somewhere
+   * below all of it. So on a wide screen the default flips to collapsed once
+   * there are three or more, which keeps the term readable as a list of
+   * courses with an open/closed toggle each, and the header offers the whole
+   * set in one click for the student who does want it all.
+   *
+   * Two courses still open by default: side by side they are the comparison
+   * the roadmap exists to show.
+   */
+  const denseDefault = courses.length >= 3;
+  const defaultCollapsed = narrow || denseDefault;
+  const allOpen = courses.every((c) => (collapsed[c.id] ?? defaultCollapsed) === false);
+  const setAll = (value: boolean) =>
+    setCollapsed(Object.fromEntries(courses.map((c) => [c.id, value])));
   const [adding, setAdding] = useState<string | null>(null);
   /** The course whose "are you sure?" is open, and the one being deleted. */
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -206,6 +224,17 @@ export function RoadmapPanel({
     <Panel
       id="roadmap"
       title="Semester roadmap"
+      action={
+        courses.length >= 3 ? (
+          <button
+            type="button"
+            onClick={() => setAll(allOpen)}
+            className="rounded-md px-2 py-1 text-[0.8125rem] font-medium text-accent transition-colors hover:bg-raised"
+          >
+            {allOpen ? "Collapse all" : "Expand all"}
+          </button>
+        ) : undefined
+      }
       icon={<RouteIcon width={17} height={17} />}
       description="Every course, with its work laid out week by week."
     >
@@ -227,7 +256,7 @@ export function RoadmapPanel({
             const color = accentFor(accents, course.id);
             const items = byCourse.get(course.id) ?? [];
             const { weeks, undated } = groupByWeek(items);
-            const isCollapsed = collapsed[course.id] ?? narrow;
+            const isCollapsed = collapsed[course.id] ?? defaultCollapsed;
             const unreviewed = items.filter(needsReview).length;
             const bodyId = `roadmap-course-${course.id}`;
             const notionUrl = coursePages[course.id];

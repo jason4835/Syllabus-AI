@@ -439,7 +439,6 @@ export function suggestTerm(
   // fact about the syllabus, not about today.
   now?: Date,
 ): TermSuggestion {
-  void now;
   const bounds = courseBounds(parsed);
   const label = parsed.course.term?.trim() || null;
 
@@ -485,6 +484,30 @@ export function suggestTerm(
     const match = terms.find((t) => normalizeTermLabel(t.name) === needle);
     if (match) return { kind: "existing", term: match };
   }
+
+  /**
+   * Still nothing -- no dates, and no label that matches. Before inventing a
+   * term, prefer the one the student has PAID for and is inside right now.
+   *
+   * This is the rule that stops a paying customer being asked to pay twice.
+   * Plenty of syllabi state neither a term window nor a term name (or state
+   * them in a way the extractor cannot read), and every such upload used to
+   * land in a fresh "New term" -- free for its first course, and full for the
+   * next one, at which point a student holding a valid Term Pass was shown a
+   * paywall for the term they were standing in.
+   *
+   * Confined to the no-evidence case on purpose. A syllabus WITH dates that
+   * overlap the paid term is already matched above, and one whose dates fall
+   * outside it is genuinely another term -- pulling it in would file a spring
+   * course under an autumn pass. When the evidence is silent, the term the
+   * student paid for is the best guess by a wide margin, and a wrong guess is
+   * one click to fix in the setup card; a wrong paywall is a refund request.
+   *
+   * Exactly one such term, so two overlapping paid terms (a quarter system,
+   * say) still fall through rather than picking one arbitrarily.
+   */
+  const active = terms.filter((t) => termHasPremiumAccess(t, now));
+  if (active.length === 1) return { kind: "existing", term: active[0] };
 
   return {
     kind: "new",

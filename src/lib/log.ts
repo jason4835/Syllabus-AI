@@ -21,8 +21,12 @@
  *    drain (or the bill).
  *
  * No dependencies on purpose: this must be importable from any route, edge or
- * node, without pulling an SDK into the bundle.
+ * node, without pulling an SDK into the bundle. The one import below holds to
+ * that -- `@/lib/alerts` pulls in `@/lib/ratelimit`, which is pure, and reaches
+ * a provider through `fetch` rather than an SDK. It must never import back.
  */
+
+import { maybeAlert } from "@/lib/alerts";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -368,6 +372,22 @@ function emit(level: LogLevel, event: string, bound: LogFields, fields?: LogFiel
     const time = new Date().toISOString();
     if (isProduction()) writeJson(level, event, time, safe);
     else writePretty(level, event, time, safe);
+
+    /**
+     * Alerting hangs off the ONE place every log line passes through, rather
+     * than off the call sites. That is the difference between "the important
+     * failures page somebody" and "the important failures somebody remembered
+     * to annotate page somebody" -- and a new route that starts failing next
+     * year is covered without anyone thinking about it.
+     *
+     * After the write, deliberately: the log line is the durable record and
+     * must land even if alerting is broken. And with `safe`, not the raw
+     * fields, so the redaction that protects the drain protects the inbox too.
+     *
+     * Cheap for the lines that are not alerts -- one string comparison for
+     * every `info` and `debug`, which is almost all of them.
+     */
+    maybeAlert(level, event, safe);
   } catch (err) {
     // Absolute floor: never let logging break the caller.
     try {

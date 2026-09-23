@@ -22,10 +22,13 @@ import type {
   NotionLink,
   NotionLinkKind,
   ParsedSyllabus,
+  PendingUpload,
   TermInput,
   User,
+  UserProfile,
 } from "@/lib/types";
 import { DEFAULT_CALENDAR_PREFS } from "@/lib/types";
+import type { Metrics } from "@/lib/metrics";
 import { createLocalStore } from "@/lib/store/local";
 import { createSupabaseStore } from "@/lib/store/supabase";
 
@@ -300,7 +303,39 @@ export function isFeedTokenShaped(token: string | null | undefined): token is st
 }
 
 export interface Store {
+  /**
+   * Deployment-wide counts for the operator's `/admin` page: signups, paying
+   * members, passes sold. The only method here that is not scoped to one user,
+   * and deliberately the only one -- it answers with numbers, never rows, so
+   * there is no path from it to somebody's email address.
+   */
+  metrics(): Promise<Metrics>;
+
   getUser(id: string): Promise<User | null>;
+  /**
+   * Merges onboarding answers into the user's profile. A patch, so answering
+   * one question later does not blank the others; `completedAt` is what marks
+   * the card as done. Null when the user does not exist.
+   */
+  setUserProfile(userId: string, patch: Partial<UserProfile>): Promise<User | null>;
+
+  /**
+   * Keeps a parse the student could not keep yet -- see `PendingUpload`.
+   *
+   * Written by the upload route on a paywall refusal and read back by the same
+   * route with `pendingId` once the term is unlocked. Scoped by owner like
+   * everything else: a stranger's id reads as "no such upload".
+   */
+  savePendingUpload(
+    userId: string,
+    termId: string | null,
+    fileName: string,
+    parsed: ParsedSyllabus,
+  ): Promise<PendingUpload>;
+  getPendingUpload(userId: string, id: string): Promise<PendingUpload | null>;
+  /** Newest first, so "the one waiting on this term" is the first match. */
+  listPendingUploads(userId: string): Promise<PendingUpload[]>;
+  deletePendingUpload(userId: string, id: string): Promise<boolean>;
   getUserByEmail(email: string): Promise<User | null>;
   upsertUser(u: UserUpsert): Promise<User>;
   /**
@@ -683,7 +718,14 @@ export function getStore(): Store {
  * first use, but callers get plain, fully typed methods.
  */
 export const store: Store = {
+  metrics: () => getStore().metrics(),
   getUser: (id) => getStore().getUser(id),
+  setUserProfile: (userId, patch) => getStore().setUserProfile(userId, patch),
+  savePendingUpload: (userId, termId, fileName, parsed) =>
+    getStore().savePendingUpload(userId, termId, fileName, parsed),
+  getPendingUpload: (userId, id) => getStore().getPendingUpload(userId, id),
+  listPendingUploads: (userId) => getStore().listPendingUploads(userId),
+  deletePendingUpload: (userId, id) => getStore().deletePendingUpload(userId, id),
   getUserByEmail: (email) => getStore().getUserByEmail(email),
   upsertUser: (u) => getStore().upsertUser(u),
   setUserTimezone: (userId, timezone) =>

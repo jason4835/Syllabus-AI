@@ -13,6 +13,8 @@ import path from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { variantOf } from "@/lib/experiments";
+
 import type { ParsedSyllabus } from "@/lib/types";
 
 const DATA_DIR = path.join(
@@ -210,6 +212,12 @@ describe("5. user cannot create checkout for another user's term", () => {
       customerEmail: "owner-happy@example.edu",
       successUrl: `https://app.test/dashboard?checkout=success&term=${term.id}`,
       cancelUrl: `https://app.test/dashboard?checkout=cancelled&term=${term.id}`,
+      // Asserted against the pure assignment rather than a literal, because
+      // which arm "owner-happy" lands in is a property of the hash and would
+      // make this test a tautology if it were spelled out. What matters is that
+      // the route derived it from the USER ID -- the same input the paywall's
+      // displayed price is derived from -- so the two can never disagree.
+      priceVariant: variantOf("termPassPrice", "owner-happy"),
     });
 
     // The session id is on the term, so a delivery can be tied back to it.

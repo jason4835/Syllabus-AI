@@ -19,15 +19,44 @@ import { store } from "@/lib/store";
 export type GoogleOAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 
 /**
+ * Exactly what the consent screen asks for, and the whole of it.
+ *
  * `openid`/`email`/`profile` identify the student; `calendar` is the
  * read-write scope -- `calendar.events` alone would not let us create the
  * dedicated "Syllabus Center" calendar.
+ *
+ * THIS LIST MUST MATCH THE APPROVED SCOPES IN THE CLOUD CONSOLE, exactly.
+ * Google's answer to "my app is verified but users still see the unverified
+ * warning" is that the OAuth request carries a scope the project was not
+ * approved for -- so a scope added here and not there re-breaks a verified
+ * app, silently, for every new user. `GOOGLE_CONSOLE_SCOPES` below is the same
+ * list spelled the way the Console spells it, for comparing the two; `/admin`
+ * prints it, and docs/DEPLOY.md section 3d is the checklist.
  */
-const SCOPES = [
+export const SCOPES = [
   "openid",
   "email",
   "profile",
   "https://www.googleapis.com/auth/calendar",
+] as const;
+
+/**
+ * The same four scopes as they appear in Google Auth Platform > Data Access.
+ *
+ * The Console does not use the short aliases: `email` and `profile` are listed
+ * under their full `userinfo.*` URLs, which is exactly the mismatch that leaves
+ * someone staring at an approved-looking scope list wondering why the warning
+ * is still there. Paired with the alias so the comparison is a diff, not a
+ * memory test.
+ */
+export const GOOGLE_CONSOLE_SCOPES: readonly { requested: string; console: string }[] = [
+  { requested: "openid", console: "openid" },
+  { requested: "email", console: "https://www.googleapis.com/auth/userinfo.email" },
+  { requested: "profile", console: "https://www.googleapis.com/auth/userinfo.profile" },
+  {
+    requested: "https://www.googleapis.com/auth/calendar",
+    console: "https://www.googleapis.com/auth/calendar",
+  },
 ];
 
 const DEFAULT_REDIRECT_URI = "http://localhost:3000/api/auth/callback";
@@ -69,14 +98,23 @@ function createClient(): GoogleOAuth2Client {
  * omits it on every grant after the first, and the user ends up with an
  * account that can never sync again.
  *
+ * No `include_granted_scopes`. That flag is for incremental authorization --
+ * asking for one more scope later and keeping the earlier ones -- and this app
+ * has nothing incremental about it: `SCOPES` is fixed and requested in full on
+ * every sign-in, so the flag could only ever widen the request, never narrow
+ * it. Widening is the exact thing that puts the "Google hasn't verified this
+ * app" screen back in front of users: a returning student who once granted
+ * this client a scope the project is no longer approved for would have it
+ * folded back into the request. Asking for precisely the four declared scopes
+ * keeps the request identical to what the Console approved.
+ *
  * @param state CSRF token the caller must echo-check on the callback.
  */
 export function getAuthUrl(state: string): string {
   return createClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
-    scope: SCOPES,
-    include_granted_scopes: true,
+    scope: [...SCOPES],
     state,
   });
 }

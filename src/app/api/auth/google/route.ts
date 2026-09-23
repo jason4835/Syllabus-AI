@@ -1,3 +1,15 @@
+/**
+ * Google sign-in, leg 1 of 2: send the browser to Google's consent screen.
+ *
+ * Leg 2 is `/api/auth/callback`, and the two are a pair -- the `state` minted
+ * here is what that one verifies, so a change to the cookie name, its lifetime
+ * or its attributes has to be made in both files or sign-in breaks with
+ * `bad_state` for everybody.
+ *
+ * A browser navigation, not a fetch: every failure is a redirect carrying a
+ * reason, never a JSON body. The scopes being asked for live in
+ * `src/lib/google/oauth.ts`; read the note there before adding one.
+ */
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";

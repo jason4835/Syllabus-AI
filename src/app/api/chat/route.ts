@@ -1,4 +1,4 @@
-import { crossSiteDenied, fail, messageOf, ok, rateLimited } from "@/lib/api";
+import { crossSiteDenied, demoSpendVerdict, fail, messageOf, ok, rateLimited } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { answerQuestion, buildSemesterPlan } from "@/lib/plan";
 import { ensureDemoSeed, resolveVisitor } from "@/lib/demo";
@@ -29,8 +29,23 @@ export async function POST(req: Request) {
    * failing -- one heavy user can no longer take chat away from everyone.
    */
   const limit = checkLimit(`user:${userId}`, "chat:user");
-  const budgetSpent = !limit.allowed && limit.rule.startsWith("global:");
-  if (!limit.allowed && !budgetSpent) return rateLimited(describeLimit(limit));
+
+  /**
+   * A third denial, with the same shape as the global one: a visitor with no
+   * account who has used up the trial budget for their network
+   * (`demoSpendVerdict`). Degraded rather than refused, for the reason the
+   * global case is -- the deterministic answerer is a real answer, and it is
+   * the one every visitor gets when no API key is configured at all. Refusing
+   * a question the app can answer for free would be a worse product and a worse
+   * funnel than answering it.
+   */
+  const demoBudget = demoSpendVerdict(req, userId);
+  const budgetSpent =
+    (!limit.allowed && limit.rule.startsWith("global:")) ||
+    (demoBudget !== null && !demoBudget.allowed);
+  if (!limit.allowed && !limit.rule.startsWith("global:")) {
+    return rateLimited(describeLimit(limit));
+  }
 
 
   let message = "";

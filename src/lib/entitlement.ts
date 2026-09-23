@@ -27,7 +27,7 @@ import {
   type TermAccess,
   type TermSuggestionSource,
 } from "@/lib/terms";
-import type { AcademicTerm } from "@/lib/types";
+import type { AcademicTerm, PendingUpload, PendingUploadSummary } from "@/lib/types";
 import { Invalid } from "@/lib/validation";
 
 /**
@@ -44,18 +44,38 @@ export interface TermSummary extends AcademicTerm {
   courseCount: number;
   access: TermAccess;
   canAddCourse: boolean;
+  /**
+   * A syllabus parsed for this term and refused with the paywall, waiting to be
+   * added the moment the term is unlocked. Null when there is none. The
+   * paywall reads it to say WHICH course is waiting, and the upload panel
+   * replays it after purchase without asking for the file again.
+   */
+  pendingUpload: PendingUploadSummary | null;
 }
 
 export function summarizeTerm(
   term: AcademicTerm,
   courseCount: number,
   now?: Date,
+  pendingUpload: PendingUploadSummary | null = null,
 ): TermSummary {
   return {
     ...term,
     courseCount,
     access: termAccess(term, now),
     canAddCourse: canAddCourse(term, courseCount, now).allowed,
+    pendingUpload,
+  };
+}
+
+/** The client-safe view of a stash: what is waiting, never the parse itself. */
+export function summarizePendingUpload(pending: PendingUpload): PendingUploadSummary {
+  return {
+    id: pending.id,
+    fileName: pending.fileName,
+    courseCode: pending.parsed.course.code,
+    courseTitle: pending.parsed.course.title,
+    assessmentCount: pending.parsed.assessments.length,
   };
 }
 
@@ -97,12 +117,24 @@ function countCourses(
  */
 export async function listTermSummaries(userId: string): Promise<TermSummary[]> {
   await ensureTermsBackfilled(userId);
-  const [terms, courses] = await Promise.all([
+  const [terms, courses, pending] = await Promise.all([
     store.listTerms(userId),
     store.listCourses(userId),
+    store.listPendingUploads(userId),
   ]);
   const now = new Date();
-  return terms.map((term) => summarizeTerm(term, countCourses(courses, term.id), now));
+  // Newest first from the store, so the first match per term is the one to
+  // show -- a student who hit the paywall twice sees the syllabus they tried
+  // most recently.
+  return terms.map((term) => {
+    const waiting = pending.find((p) => p.termId === term.id);
+    return summarizeTerm(
+      term,
+      countCourses(courses, term.id),
+      now,
+      waiting ? summarizePendingUpload(waiting) : null,
+    );
+  });
 }
 
 /** The paywall's words, in one place: the route bodies and the log agree. */
@@ -161,7 +193,10 @@ export async function assertCanAddCourse(
  * student was shown the paywall" cannot be counted twice or missed depending on
  * which route refused them.
  */
-export function paywallResponse(err: PaywallError): NextResponse {
+export function paywallResponse(
+  err: PaywallError,
+  pendingUpload: PendingUploadSummary | null = null,
+): NextResponse {
   // Not tracked here: the paywall card tracks its own view, and it is shown
   // before an upload as well as on this answer, so counting here too would
   // double the 402 path and miss the pre-upload one.
@@ -169,7 +204,12 @@ export function paywallResponse(err: PaywallError): NextResponse {
     {
       ok: false as const,
       error: PAYWALL_MESSAGE,
-      paywall: { term: err.term, courseCount: err.term.courseCount },
+      paywall: {
+        // The term as the client already knows it, plus the syllabus that is
+        // now waiting on it -- so the card can say which course, not just that.
+        term: { ...err.term, pendingUpload },
+        courseCount: err.term.courseCount,
+      },
     },
     { status: 402 },
   );

@@ -11,7 +11,7 @@ const CONTACT = "jaappaz7@gmail.com";
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy Policy" updated="September 9, 2026">
+    <LegalPage title="Privacy Policy" updated="September 22, 2026">
       <p>
         Syllabus Center (&ldquo;the app&rdquo;), operated at syllabuscenter.com, turns
         syllabus PDFs into a semester plan and puts it on your calendar. This
@@ -62,9 +62,14 @@ export default function PrivacyPage() {
       <p>
         The app also does not store Google access tokens (only the refresh
         token), does not read any Google Calendar other than the one it created,
-        does not read your email or files, and does not use advertising or
-        cross-site tracking cookies. The only cookie it sets is the signed
-        session cookie that keeps you logged in.
+        and does not read your email or files.
+      </p>
+      <p>
+        There are <strong>no advertising cookies and no cross-site trackers</strong>{" "}
+        here: no ad network, data broker or social network is allowed to follow
+        you from this site. The app does set two first-party cookies — the signed
+        session cookie that keeps you logged in, and an analytics cookie
+        described under <strong>Analytics and cookies</strong> below.
       </p>
 
       <h2>Google user data</h2>
@@ -118,6 +123,17 @@ export default function PrivacyPage() {
           course information and deadlines.
         </li>
         <li>
+          <strong>Stripe</strong> — only if you buy a Term Pass. Stripe collects
+          and holds your payment details directly; the app never sees or stores a
+          card number. It keeps only Stripe&rsquo;s own identifiers for the
+          purchase, so it knows which term you paid for.
+        </li>
+        <li>
+          <strong>PostHog</strong> — product-analytics events, described under{" "}
+          <strong>Analytics and cookies</strong> below. No syllabus content and no
+          Google data.
+        </li>
+        <li>
           <strong>Hosting</strong> — the app runs on Railway, which stores its
           data on that infrastructure.
         </li>
@@ -134,6 +150,119 @@ export default function PrivacyPage() {
         schedule without signing in — that is what makes it work in a calendar
         app. Treat it like a password. You can reset it from the dashboard at any
         time, which immediately breaks the old link.
+      </p>
+
+      <h2>Analytics and cookies</h2>
+      <p>
+        To know whether the app is any good — whether people finish setting up,
+        where they get stuck, whether they come back next week — it records a
+        small set of <strong>product events</strong> through{" "}
+        <a href="https://posthog.com/privacy" target="_blank" rel="noreferrer noopener">
+          PostHog
+        </a>
+        , a product-analytics provider acting as a processor on the
+        operator&rsquo;s instructions.
+      </p>
+      <p>What is sent to PostHog:</p>
+      <ul>
+        <li>
+          <strong>Events</strong> — named actions like &ldquo;signed in,&rdquo;
+          &ldquo;uploaded a syllabus,&rdquo; &ldquo;saw the paywall,&rdquo;
+          &ldquo;started checkout,&rdquo; with counts and timings.
+        </li>
+        <li>
+          <strong>A pseudonymous id</strong> for your account, so a funnel can
+          tell one person from two. Your email address and name are{" "}
+          <strong>not</strong> sent.
+        </li>
+        <li>
+          <strong>Ordinary web context</strong> — page URL, referrer, browser and
+          operating system, approximate country derived from your IP address, and
+          which variant of an experiment you were shown.
+        </li>
+      </ul>
+      <p>
+        <strong>What is never sent:</strong> the contents of your syllabi, your
+        course names, assignments, due dates or grades; anything received from
+        Google; your Google or Notion tokens; your calendar feed token; your
+        chat messages; or your email address. Google user data is never sent to
+        PostHog or to any other analytics provider, in keeping with Google&rsquo;s
+        Limited Use requirements above.
+      </p>
+      <p>
+        <strong>Cookies.</strong> Two first-party cookies, no third-party ones:
+        the session cookie (essential — the app cannot keep you logged in without
+        it) and PostHog&rsquo;s analytics cookie, which holds a random id and
+        nothing else. Neither is used for advertising. If your browser sends a{" "}
+        <a
+          href="https://globalprivacycontrol.org/"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          Global Privacy Control
+        </a>{" "}
+        signal, or you enable Do Not Track, analytics is switched off for you
+        automatically and the app keeps working normally.
+      </p>
+
+      <h2>Experiments</h2>
+      <p>
+        The app sometimes runs A/B tests — two versions of a screen, a different
+        wording, or a different price — to work out which one serves people
+        better. Which version you see is decided by a random id and is not based
+        on anything personal about you. If you are shown a price, that is the
+        price you will be charged; see the Terms for how pricing experiments work.
+      </p>
+
+      <h2>Your privacy rights</h2>
+      <p>
+        Wherever you live, you can see, export, correct or delete everything the
+        app holds about you, yourself, from the Account panel — no request form
+        and no waiting. Export gives you the whole record as JSON; delete is
+        immediate and permanent.
+      </p>
+      <p>
+        <strong>If the GDPR or UK GDPR applies to you</strong>, the lawful bases
+        are: <em>performance of a contract</em> for your account, your syllabi and
+        the plan built from them (there is no service without them);{" "}
+        <em>consent</em> for connecting Google Calendar or Notion, which you give
+        on their own consent screens and can withdraw at any time; and{" "}
+        <em>legitimate interests</em> for the product analytics above and for
+        keeping the service secure and affordable — an interest balanced against
+        your privacy by sending no syllabus content and no directly identifying
+        information. You have the rights of access, rectification, erasure,
+        restriction, portability, and objection (including objection to
+        processing based on legitimate interests), and the right to complain to
+        your local supervisory authority.
+      </p>
+      <p>
+        <strong>If you are in California</strong>, the CCPA/CPRA gives you rights
+        to know, delete, correct, and opt out of sale or sharing. The app{" "}
+        <strong>does not sell or share personal information</strong>, has never
+        done so, and does not use it for cross-context behavioural advertising —
+        so there is nothing to opt out of. Exercising any of these rights will
+        never get you worse service.
+      </p>
+      <p>
+        <strong>If you are a student</strong>, note that this is a service you
+        signed up for personally. It is not operated by your school, it is not a
+        school official under FERPA, and your institution has no access to your
+        account.
+      </p>
+      <p>
+        To exercise anything the Account panel does not cover, email{" "}
+        <a href={`mailto:${CONTACT}`}>{CONTACT}</a>. Requests are answered within
+        thirty days.
+      </p>
+
+      <h2>Where data is processed</h2>
+      <p>
+        The app, its database, and its processors (OpenAI, Google, Notion,
+        Stripe, PostHog, and the hosting provider) are based in or process data
+        in the <strong>United States</strong>. If you use the app from outside the
+        US, your data is transferred there. For transfers out of the EEA or UK,
+        the processors rely on the European Commission&rsquo;s Standard
+        Contractual Clauses.
       </p>
 
       <h2>Deleting your data</h2>
@@ -175,6 +304,12 @@ export default function PrivacyPage() {
         so one user cannot read or modify another&rsquo;s data. No system is
         perfect, and this one is maintained by one person — if you find a
         problem, please report it to the address below.
+      </p>
+      <p>
+        <strong>If there is a breach</strong> affecting your personal
+        information, you will be notified by email without undue delay, along
+        with what happened, what was exposed, and what to do about it. Regulators
+        will be notified where the law requires it.
       </p>
 
       <h2>Children</h2>

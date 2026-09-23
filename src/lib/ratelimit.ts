@@ -52,7 +52,8 @@ export interface LimitVerdict {
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
-const DAY = 24 * 60 * MINUTE;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 /**
  * Every rule is `<family>:<window>`. Two windows apply to each LLM route on
@@ -105,14 +106,91 @@ export const RULES: Record<string, LimitRule> = {
   // every few hours; 30/min only ever trips on a script.
   "feed:token:burst": { limit: 30, windowMs: MINUTE },
 
+  /**
+   * A visitor with no account yet, metered by IP instead of by user id.
+   *
+   * THIS IS THE RULE THAT MAKES THE OTHERS MEAN ANYTHING on the money routes.
+   * Every per-user cap above assumes an account is expensive to obtain, and for
+   * a signed-in user it is -- it costs a Google login. A demo sandbox costs
+   * nothing: send no cookie and the server mints one, with a brand-new upload
+   * budget attached. So a script that drops its cookie between requests has an
+   * unlimited allowance of model calls, and "3 uploads a minute per user" caps
+   * nothing at all. Keying the demo budget to the network the request came from
+   * is what closes that, because an IP is the one thing minting a fresh account
+   * does not change.
+   *
+   * Sized to be generous to the visitor this is FOR -- someone trying the app
+   * before signing up, who uploads one or two syllabi and decides. Beyond that
+   * the answer is "sign in", which is a better funnel anyway than an anonymous
+   * stranger burning model budget.
+   *
+   * Signed-in users never touch these rules. Campus NAT puts a whole dorm on
+   * one address, which would be a real problem if this metered everybody --
+   * it is exactly why the cap applies only before sign-in, and why hitting it
+   * offers a Google button rather than a wait.
+   */
+  "demo:ip:burst": { limit: 3, windowMs: 10 * MINUTE },
+  "demo:ip:daily": { limit: 8, windowMs: DAY },
+
   // Backstop across ALL users, so a single shared or leaked account cannot
   // become the whole bill. Deliberately above any one user's cap and below the
-  // sum of everyone's: honest aggregate use for a dozen testers is a few
-  // hundred calls a day, so 1000 never trips by accident, while 12 users each
-  // maxing their personal daily allowance (2040 calls) trips it early.
-  "global:openai:burst": { limit: 60, windowMs: MINUTE },
-  "global:openai:daily": { limit: 1000, windowMs: DAY },
+  // sum of everyone's.
+  //
+  // Tunable from the environment because the right number is a function of how
+  // many people are using the app, and that changes faster than a deploy: a
+  // dozen invited testers and a thousand students off an ad campaign want very
+  // different ceilings, and the failure mode of leaving it at the smaller one
+  // is that legitimate users get turned away. See OPENAI_GLOBAL_* in
+  // .env.example. The defaults below are sized for roughly a thousand users.
+  //
+  // Held in memory, so on serverless this is a PER-INSTANCE circuit breaker,
+  // not a true global ceiling -- N warm instances means N times the number. It
+  // is a fast local brake, and the hard stop is the monthly spend limit set on
+  // the OpenAI account itself. Set one; this is not a substitute.
+  /**
+   * Alert-email throttling. Not a user limit at all -- the "caller" here is the
+   * logger, and the resource being protected is the operator's inbox.
+   *
+   * Reusing this module rather than writing a second counter, because dedupe IS
+   * a fixed window: "at most one of these per hour" is the same question
+   * `checkLimit` already answers, and a bespoke Map in the alerting code would
+   * be the same bug surface again with none of the tests.
+   *
+   * Two windows, and both are load-bearing. The per-event cooldown is what stops
+   * a single broken route from sending one email per request -- a stream of
+   * identical alerts is how an operator learns to filter the alert address to
+   * trash, which is worse than no alerting at all. The global cap is the
+   * backstop for the case the cooldown cannot catch: a deploy that breaks
+   * everything at once produces many DIFFERENT event names, each of which passes
+   * its own cooldown. Twenty an hour is enough to understand an incident and few
+   * enough that a provider does not start treating the domain as a spammer.
+   */
+  "alert:event:cooldown": { limit: 1, windowMs: HOUR },
+  "global:alerts:hourly": { limit: 20, windowMs: HOUR },
+
+  "global:openai:burst": {
+    limit: envLimit("OPENAI_GLOBAL_BURST_CAP", 120),
+    windowMs: MINUTE,
+  },
+  "global:openai:daily": {
+    limit: envLimit("OPENAI_GLOBAL_DAILY_CAP", 5000),
+    windowMs: DAY,
+  },
 };
+
+/**
+ * A positive integer from the environment, or the default.
+ *
+ * Read once at module load: these are deployment-wide ceilings, not per-request
+ * settings, and re-reading env on every rate-limit check would put a syscall on
+ * the hot path of the thing meant to be cheap. Anything unparseable or
+ * non-positive falls back rather than throwing -- a typo in a hosting dashboard
+ * should degrade to the documented default, not take the site down.
+ */
+function envLimit(name: string, fallback: number): number {
+  const parsed = Number.parseInt((process.env[name] ?? "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 /**
  * What a route asks for. Rules are checked in order and the first failure wins,
@@ -138,6 +216,12 @@ const RULE_SETS: Record<string, readonly string[]> = {
   // is no bill for either to protect.
   "edit:user": ["edit:user:burst"],
   "feed:token": ["feed:token:burst"],
+  // Checked IN ADDITION TO the per-user set, only for visitors with no account.
+  "demo:ip": ["demo:ip:burst", "demo:ip:daily"],
+  // Cooldown first, so a repeat of one event says so rather than blaming the
+  // global cap -- the two denials mean very different things when you are
+  // reading the logs afterwards to find out what you were not told about.
+  "alert:email": ["alert:event:cooldown", "global:alerts:hourly"],
   "global:openai": ["global:openai:burst", "global:openai:daily"],
 };
 

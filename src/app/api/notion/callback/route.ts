@@ -1,5 +1,17 @@
+/**
+ * Notion connect, leg 2 of 2: verify the handshake and store the connection.
+ *
+ * Paired with `/api/notion/auth`. Beyond the state check, this leg has a job
+ * Google's does not: Notion grants access to pages, so the connection lands in
+ * `needs_parent` status until the student picks which page the hub is built
+ * under. `chooseParent` settles it when the grant named exactly one candidate;
+ * otherwise the dashboard asks, through `/api/notion/parent`.
+ *
+ * Design and sync semantics: docs/NOTION.md.
+ */
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { track } from "@/lib/analytics";
 import { messageOf, publicOrigin } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { exchangeNotionCode } from "@/lib/notion/oauth";
@@ -56,6 +68,7 @@ export async function GET(req: Request) {
     const candidates = await listParentCandidates(conn);
     if (candidates.length === 1) await chooseParent(userId, candidates[0].id);
 
+    track("notion_connected", { userId, autoParent: candidates.length === 1 });
     return backToDashboard(req, { notion: "connected" });
   } catch (err) {
     logApiError("notion.callback_failed", err, { userId });

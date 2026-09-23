@@ -857,13 +857,19 @@ export function warnWhenWeeksHaveNoAnchor(parsed: ParsedSyllabus): ParsedSyllabu
 async function parseFromText(text: string, opts: ParseOptions): Promise<ParsedSyllabus> {
 
   if (opts.offline) {
-    return fallbackParse(text, { reason: "pattern matching (the model was not asked)" });
+    return {
+      ...fallbackParse(text, { reason: "pattern matching (the model was not asked)" }),
+      extractor: "heuristic",
+    };
   }
 
   if (!isConfigured()) {
-    return fallbackParse(text, {
-      reason: "demo mode -- no OpenAI API key is configured",
-    });
+    return {
+      ...fallbackParse(text, {
+        reason: "demo mode -- no OpenAI API key is configured",
+      }),
+      extractor: "heuristic",
+    };
   }
 
   try {
@@ -891,17 +897,19 @@ async function parseFromText(text: string, opts: ParseOptions): Promise<ParsedSy
               result.course.policies.length > 0 ? result.course.policies : heuristic.course.policies,
           },
           warnings: [...result.warnings, ...heuristic.warnings],
+          // The model read the header, pattern matching supplied the schedule.
+          extractor: "hybrid",
         };
       }
-      return result;
+      return { ...result, extractor: "ai" };
     }
 
-    return result;
+    return { ...result, extractor: "ai" };
   } catch (err) {
     // Busy is not broken. The fallback exists for an outage or a missing key;
     // a minute's rate limit is a reason to say "try again", not to hand a
     // student pattern-matched items titled "Tue".
     if (err instanceof AiBusyError) throw err;
-    return fallbackParse(text, { reason: describeFailure(err) });
+    return { ...fallbackParse(text, { reason: describeFailure(err) }), extractor: "heuristic" };
   }
 }
