@@ -1,5 +1,6 @@
-import { ConsentNotice } from "@/components/consent-notice";
 "use client";
+
+import { ConsentNotice } from "@/components/consent-notice";
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode, SVGProps } from "react";
