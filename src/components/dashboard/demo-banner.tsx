@@ -1,4 +1,5 @@
 import type { AppConfig } from "@/components/api-client";
+import { ConsentNotice } from "@/components/consent-notice";
 import { InfoIcon } from "@/components/icons";
 import { LinkButton } from "@/components/ui/button";
 
@@ -43,6 +44,7 @@ export function DemoBanner({ config }: { config: AppConfig }) {
             <LinkButton href="/api/auth/google" size="sm">
               Sign in with Google
             </LinkButton>
+            <ConsentNotice action="signing in" className="mt-2" />
           </div>
           {showOperatorNote ? (
             <p className="mt-2.5 text-[0.75rem] leading-relaxed text-muted">

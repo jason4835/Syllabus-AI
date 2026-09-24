@@ -268,6 +268,15 @@ Each of these cost somebody an afternoon already.
   "ucla") live in `ALIASES` in `schools.ts`, keyed by the dataset's exact
   spelling — a test fails if an alias points at a spelling the dataset lacks,
   because that would create two rows for one school.
+- **The consent line is a legal instrument.** `ConsentNotice` sits directly
+  under every sign-in and pay button; that adjacency is what makes the Terms a
+  clickwrap the liability cap can rely on. Don't move it, and don't add a
+  sign-in button without it. Acceptance is recorded on the user row at every
+  sign-in with `TERMS_VERSION` from `src/lib/legal.ts` — bump that when the
+  Terms change.
+- **No analytics cookie, on purpose.** PostHog is cookieless and the A/B cookie
+  is withheld from European visitors, which is why there is no cookie banner.
+  Adding any client-side storage for tracking reopens that.
 - **Nothing in an analytics event may name a student.** Ids, counts, variants and
   enum labels only — no course titles, no syllabus text, no Google data, no
   email. This is a Google Limited Use obligation, not a preference.

@@ -70,6 +70,8 @@ interface UserRow {
   calendar_prefs: unknown;
   /** Absent from rows written before the column existed; read as `{}`. */
   profile?: unknown;
+  terms_accepted_at?: string | null;
+  terms_version?: string | null;
   created_at: string;
 }
 
@@ -289,6 +291,8 @@ function userToDomain(row: UserRow): User {
     // `{}`, rows written before it existed have nothing, and a preference
     // reading `undefined` would silently mean "do not sync that".
     profile: (row.profile && typeof row.profile === "object" ? (row.profile as UserProfile) : {}),
+    termsAcceptedAt: row.terms_accepted_at ?? null,
+    termsVersion: row.terms_version ?? null,
     calendarPrefs: mergeCalendarPrefs(row.calendar_prefs),
     createdAt: row.created_at,
   };
@@ -1137,6 +1141,14 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         .maybeSingle();
       if (error && error.code !== NO_ROWS) fail("setUserProfile", error);
       return data ? userToDomain(data as UserRow) : null;
+    },
+
+    async recordTermsAcceptance(userId, version) {
+      const { error } = await client
+        .from("users")
+        .update({ terms_accepted_at: new Date().toISOString(), terms_version: version })
+        .eq("id", userId);
+      if (error) fail("recordTermsAcceptance", error);
     },
 
     async savePendingUpload(userId, termId, fileName, parsed) {

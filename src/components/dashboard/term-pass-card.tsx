@@ -9,6 +9,7 @@ import {
 } from "@/components/api-client";
 import type { AppConfig, TermSummary } from "@/components/api-client";
 import { Button, LinkButton, Spinner } from "@/components/ui/button";
+import { ConsentNotice } from "@/components/consent-notice";
 import { GoogleMark } from "@/components/icons";
 import { formatDateRange } from "@/components/format";
 import { termTypeLabel } from "@/components/labels";
@@ -220,6 +221,7 @@ export function TermPassCard({
               </Button>
             ) : null}
           </div>
+          <ConsentNotice action={demo ? "signing in" : "paying"} className="mt-2.5" />
 
           {phase.kind === "sign_in" ? (
             <p role="status" className="mt-2.5 text-[0.75rem] leading-relaxed text-ink-soft">

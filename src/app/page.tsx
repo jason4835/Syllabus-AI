@@ -6,6 +6,7 @@ import { isDemoUser, readSession } from "@/lib/session";
 import { VISITOR_COOKIE_NAME } from "@/middleware";
 import { HeroPreview } from "@/components/landing/hero-preview";
 import { LandingAnalytics } from "@/components/landing/landing-analytics";
+import { ConsentNotice } from "@/components/consent-notice";
 import { SiteFooter } from "@/components/site-footer";
 import { LinkButton } from "@/components/ui/button";
 import {
@@ -203,6 +204,7 @@ export default async function LandingPage() {
                   ? "You\u2019re signed in \u2014 your semester is where you left it."
                   : "Starts on a sample semester you can upload over \u2014 no account, no calendar access until you ask for it."}
               </p>
+              {signedIn ? null : <ConsentNotice action="signing in" className="mt-2" />}
             </div>
 
             <div className="lg:pl-4">
@@ -324,6 +326,7 @@ export default async function LandingPage() {
                   </>
                 )}
               </div>
+              {signedIn ? null : <ConsentNotice action="signing in" className="mt-3" />}
             </div>
           </div>
         </section>

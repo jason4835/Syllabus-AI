@@ -1,5 +1,7 @@
 "use client";
 
+import { ConsentNotice } from "@/components/consent-notice";
+
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode, SVGProps } from "react";
 import type {
@@ -232,10 +234,13 @@ export function AccountPanel({
           title="You are not signed in"
           body="Sign in with Google and your account details, your data and the delete controls all live here."
           action={
-            <LinkButton href="/api/auth/google" size="sm">
-              <GoogleMark />
-              Sign in with Google
-            </LinkButton>
+            <>
+              <LinkButton href="/api/auth/google" size="sm">
+                <GoogleMark />
+                Sign in with Google
+              </LinkButton>
+              <ConsentNotice action="signing in" className="mt-2" />
+            </>
           }
         />
       ) : (

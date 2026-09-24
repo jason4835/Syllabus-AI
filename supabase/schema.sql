@@ -112,6 +112,14 @@ alter table public.users
 alter table public.users
   add column if not exists profile jsonb not null default '{}'::jsonb;
 
+-- Clickwrap evidence: when this account last agreed to the Terms, and to which
+-- version (src/lib/legal.ts). Written at every sign-in, because the sign-in
+-- button is the act of agreement -- the notice sits directly under it.
+alter table public.users
+  add column if not exists terms_accepted_at text;
+alter table public.users
+  add column if not exists terms_version text;
+
 create index if not exists users_email_idx on public.users (lower(email));
 
 -- ---------------------------------------------------------------------------

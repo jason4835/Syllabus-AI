@@ -8,6 +8,7 @@
 import Stripe from "stripe";
 
 import type { VariantOf } from "@/lib/experiments";
+import { TERMS_VERSION } from "@/lib/legal";
 import { log } from "@/lib/log";
 
 /** Which environment variables make billing usable, so /api/config can say so. */
@@ -135,6 +136,8 @@ export async function createTermPassCheckout(input: TermPassCheckoutInput): Prom
         user_id: input.userId,
         term_id: input.termId,
         price_variant: input.priceVariant,
+        // Which Terms the buyer agreed to, readable from the Dashboard alone.
+        terms_version: TERMS_VERSION,
       },
       ...(input.customerEmail ? { customer_email: input.customerEmail } : {}),
       success_url: input.successUrl,
