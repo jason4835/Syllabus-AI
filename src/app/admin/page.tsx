@@ -98,6 +98,56 @@ export default async function AdminPage() {
           />
         </Section>
 
+        <Section title="Usage">
+          <Stat
+            label="Activated"
+            value={metrics.usage.activatedUsers}
+            note="Signed-in accounts with at least one course. Sign-ups minus this is the number who signed in and did nothing."
+          />
+          <Stat label="Courses" value={metrics.usage.courses} note="On real accounts. Demo sandboxes' sample courses are not counted." />
+          <Stat label="Deadlines extracted" value={metrics.usage.assessments} />
+          <Stat
+            label="Calendar connected"
+            value={metrics.usage.calendarConnected}
+            note="Granted Google Calendar access. The scope the whole verification saga was about."
+          />
+          <Stat
+            label="Events on calendars"
+            value={metrics.usage.calendarEventsLinked}
+            note="Google events this app created and still tracks. Proof that syncs actually ran."
+          />
+          <Stat label="Feed subscribers" value={metrics.usage.feedSubscribers} note="Apple Calendar / Outlook subscription URLs in use." />
+          <Stat label="Notion connected" value={metrics.usage.notionConnected} />
+          <Stat
+            label="Stalled at the paywall"
+            value={metrics.usage.pendingUploadsWaiting}
+            note="Syllabi parsed, refused, and never unlocked. Each is a student who wanted a second course and did not pay."
+          />
+        </Section>
+
+        <Section title="Who signed up">
+          <Stat label="Answered onboarding" value={metrics.onboarding.answered} />
+          <Stat label="Skipped it" value={metrics.onboarding.skipped} />
+          <Stat
+            label="Not asked yet"
+            value={metrics.onboarding.notAsked}
+            note="Accounts that predate the card, or have not been back since."
+          />
+          <Stat
+            label="School not on the list"
+            value={metrics.onboarding.otherSchools}
+            note="Typed something that matched no canonical name. If this grows, the list needs those schools."
+          />
+          <Breakdown title="Top schools" rows={metrics.onboarding.topSchools} empty="No schools answered yet." />
+          <Breakdown title="By year" rows={metrics.onboarding.byYear} empty="No years answered yet." />
+          <Breakdown
+            title="How they found you"
+            rows={metrics.onboarding.bySource}
+            empty="No sources answered yet."
+            note="The number an ad campaign is judged by."
+          />
+        </Section>
+
         <section className="mt-10" aria-label="Google OAuth scopes">
           <h2 className="text-[0.75rem] font-semibold tracking-[0.08em] text-muted uppercase">
             Google OAuth scopes
@@ -190,6 +240,72 @@ function Stat({
       ) : null}
     </div>
   );
+}
+
+/**
+ * A ranked list with proportional bars. Labels are canonical enum/list values
+ * (a school name, "junior", "ad") -- never anything a student typed free-form.
+ */
+function Breakdown({
+  title,
+  rows,
+  empty,
+  note,
+}: {
+  title: string;
+  rows: { label: string; count: number }[];
+  empty: string;
+  note?: string;
+}) {
+  const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
+  return (
+    <div className="rounded-lg border border-line bg-surface p-4 sm:col-span-2">
+      <p className="text-[0.8125rem] text-muted">{title}</p>
+      {rows.length === 0 ? (
+        <p className="mt-2 text-[0.8125rem] text-muted">{empty}</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {rows.map((row) => (
+            <li key={row.label} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-[0.8125rem]">
+              <div className="min-w-0">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-ink">{labelFor(row.label)}</span>
+                </div>
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-track">
+                  <div
+                    className="h-full rounded-full bg-accent"
+                    style={{ width: `${Math.max(3, Math.round((100 * row.count) / max))}%` }}
+                  />
+                </div>
+              </div>
+              <span className="font-serif text-[1rem] leading-none text-ink tabular-nums">
+                {row.count.toLocaleString("en-US")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {note ? <p className="mt-2 text-[0.75rem] leading-snug text-muted">{note}</p> : null}
+    </div>
+  );
+}
+
+/** Enum values as the card showed them; school names pass through unchanged. */
+function labelFor(value: string): string {
+  const map: Record<string, string> = {
+    freshman: "Freshman",
+    sophomore: "Sophomore",
+    junior: "Junior",
+    senior: "Senior",
+    grad: "Grad student",
+    other: "Other",
+    ad: "An ad",
+    social: "Social media",
+    search: "Searching",
+    friend: "A friend",
+    professor: "A professor or class",
+  };
+  return map[value] ?? value;
 }
 
 /** Rendered on the server, so the operator's own zone is not available here. */

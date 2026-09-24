@@ -923,6 +923,17 @@ What the numbers mean:
 | Passes active today | Of those, the ones whose `premium_expires_at` has not passed |
 | Gross revenue | Passes sold x the current display price. **An estimate** — Stripe is the ledger, and this ignores refunds and any past price |
 
+Two further sections, added once the product had real usage to report:
+
+| Section | What it shows |
+|---|---|
+| **Usage** | Activated accounts (signed in *and* uploaded), courses, deadlines extracted, calendar connections, events actually written, feed subscribers, Notion connections, and **stalled at the paywall** — syllabi parsed, refused, and never unlocked. That last one is the paywall's conversion gap as a single number |
+| **Who signed up** | The onboarding card's answers as breakdowns: top ten schools (canonical names only), year, and how they found you. Also how many answered, skipped, or have not been asked, and how many typed a school the list did not have — if that grows, the list needs those schools |
+
+Everything is a count or a top-N over real accounts. Demo sandboxes are excluded
+from all of it, no row is ever shown, and free-typed text (a school that
+matched nothing) is counted but never displayed.
+
 The counts are taken live on every load and are never cached. On Supabase they
 are four `count`-only queries plus one small select over paid terms, so the cost
 does not grow with sign-ups.
