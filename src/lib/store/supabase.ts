@@ -1055,16 +1055,23 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         pageAll<{ term_id: string | null }>("pending_uploads", "id, term_id", notDemo, "metrics pending uploads"),
         pageAll<{ id: string }>("academic_terms", "id", (q) => q.eq("premium", true).gte("premium_expires_at", todayIso()), "metrics active terms"),
       ]);
-      // Assessments have no user_id; count those whose course belongs to a real
-      // account by summing per course would be N queries, so count them all and
-      // subtract the demo ones -- one query each.
-      const [assessmentsAll, demoCourseIds] = await Promise.all([
-        countRows("assessments"),
-        pageAll<{ id: string }>("courses", "id", (q) => q.like("user_id", DEMO_ID_PATTERN), "metrics demo courses"),
-      ]);
-      const demoAssessments = demoCourseIds.length
-        ? await countRows("assessments", (q) => q.in("course_id", demoCourseIds.map((c) => c.id)))
-        : 0;
+      /**
+       * Assessments have no user_id, so the demo exclusion goes through the
+       * course. An inner-join filter does that in one request: `courses!inner`
+       * restricts to assessments whose course matches, and the predicate on
+       * the embedded table is the same not-a-sandbox rule as everywhere else.
+       *
+       * This replaced "count all, subtract the demo ones" via `.in(course_id,
+       * [...ids])`, which worked locally and could only fail in production:
+       * every cookieless visitor seeds three courses, so under real traffic
+       * that id list runs to thousands of UUIDs in one URL, and the request
+       * is refused for length before Postgres sees it.
+       */
+      const { count: assessmentCount, error: assessmentError } = await client
+        .from("assessments")
+        .select("id, courses!inner(user_id)", { count: "exact", head: true })
+        .not("courses.user_id", "like", DEMO_ID_PATTERN);
+      if (assessmentError) fail("metrics assessments", assessmentError);
       const active = new Set(activeTerms.map((t) => t.id));
 
       return {
@@ -1075,7 +1082,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         ...foldPaidTerms(paid, todayIso()),
         usage: {
           courses,
-          assessments: assessmentsAll - demoAssessments,
+          assessments: assessmentCount ?? 0,
           activatedUsers: new Set(courseOwners.map((c) => c.user_id)).size,
           calendarConnected,
           calendarEventsLinked,

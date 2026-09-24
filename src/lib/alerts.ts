@@ -130,12 +130,63 @@ export function maybeAlert(
   }
 }
 
+/** What the provider said. Returned to the test button, logged everywhere else. */
+export interface DeliveryResult {
+  ok: boolean;
+  /** HTTP status, or 0 when the request never completed. */
+  status: number;
+  /** The provider's own words on failure -- the part worth reading. */
+  detail: string | null;
+}
+
 async function send(
   config: { apiKey: string; to: string; from: string },
   level: string,
   event: string,
   fields: Record<string, unknown>,
 ): Promise<void> {
+  const result = await deliver(config, level, event, fields);
+  if (!result.ok) {
+    note(`provider rejected the alert for "${event}" (${result.status}): ${result.detail ?? ""}`);
+  }
+}
+
+/**
+ * Whether alerting is switched on at all. A boolean for `/api/health`; the
+ * values are never reported.
+ */
+export function isAlertingConfigured(): boolean {
+  return configured() !== null;
+}
+
+/**
+ * One real email, right now, past the throttle -- for the operator to prove
+ * the wiring works without waiting for something to break.
+ *
+ * Returns the provider's answer rather than swallowing it, because the whole
+ * point is to see WHY nothing arrived: an unverified sending domain, a wrong
+ * key, a typo in the address. Only ever called from the admin-gated route.
+ */
+export async function sendTestAlert(): Promise<DeliveryResult> {
+  const config = configured();
+  if (!config) {
+    return {
+      ok: false,
+      status: 0,
+      detail: "Not configured: RESEND_API_KEY and ALERT_EMAIL_TO must both be set in this environment.",
+    };
+  }
+  return deliver(config, "info", "alerts.test", {
+    note: "Sent from the /admin page to confirm alert email is working. Nothing is wrong.",
+  });
+}
+
+async function deliver(
+  config: { apiKey: string; to: string; from: string },
+  level: string,
+  event: string,
+  fields: Record<string, unknown>,
+): Promise<DeliveryResult> {
   try {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -157,13 +208,21 @@ async function send(
       signal: AbortSignal.timeout(5000),
     });
 
-    if (!response.ok) {
-      note(`provider rejected the alert for "${event}" (${response.status})`);
+    if (response.ok) return { ok: true, status: response.status, detail: null };
+    // Resend answers a rejection with JSON naming the reason -- "domain is not
+    // verified", "invalid API key" -- and that sentence is the diagnosis.
+    let detail: string | null = null;
+    try {
+      const body = (await response.json()) as { message?: unknown; name?: unknown };
+      detail = [body.name, body.message].filter((v) => typeof v === "string").join(": ") || null;
+    } catch {
+      detail = null;
     }
+    return { ok: false, status: response.status, detail };
   } catch (err) {
-    // Swallowed on purpose. An alert that cannot be delivered is bad; an alert
-    // that takes down the request it was reporting on is worse.
-    note(`could not send the alert for "${event}"`, err);
+    // Never thrown. An alert that cannot be delivered is bad; an alert that
+    // takes down the request it was reporting on is worse.
+    return { ok: false, status: 0, detail: err instanceof Error ? err.message : "network failure" };
   }
 }
 

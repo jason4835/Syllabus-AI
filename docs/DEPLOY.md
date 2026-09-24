@@ -1171,6 +1171,15 @@ reported twice.
 
 #### Verifying it works
 
+The fast way: `/admin` → **Send a test alert**. It sends one real email past
+the throttle and prints the provider's exact answer. "API key is invalid",
+"domain is not verified", and "not configured" all look identical from an
+empty inbox and are three different fixes here. `GET /api/health` also reports
+`capabilities.alerts` — true only when both `RESEND_API_KEY` and
+`ALERT_EMAIL_TO` are set in that environment.
+
+The slower way, from before the button existed:
+
 Set a deliberately wrong `RESEND_API_KEY`, cause any 500, and look for this in
 the server log:
 

@@ -4,8 +4,11 @@ import { notFound } from "next/navigation";
 
 import { Logo } from "@/components/icons";
 import { GOOGLE_CONSOLE_SCOPES } from "@/lib/google/oauth";
+import { TestAlertButton } from "./test-alert-button";
 import { isAdminEmail, type Metrics } from "@/lib/metrics";
 import { formatCents, TERM_PASS } from "@/lib/pricing";
+import { messageOf } from "@/lib/api";
+import { logApiError } from "@/lib/log";
 import { readSession } from "@/lib/session";
 import { store } from "@/lib/store";
 
@@ -35,7 +38,44 @@ export default async function AdminPage() {
   const user = userId ? await store.getUser(userId) : null;
   if (!isAdminEmail(user?.email)) notFound();
 
-  const metrics = await store.metrics();
+  /**
+   * The failure is shown, not thrown. This page is read by the one person who
+   * can act on a database error, and the generic "something broke" boundary
+   * hides from them the exact text they need -- which table, which column.
+   * `messageOf` redacts anything secret-shaped on the way out, the same pass
+   * every route uses, so a connection string in a driver message cannot land
+   * on screen.
+   */
+  let metrics: Metrics | null = null;
+  let failure: string | null = null;
+  try {
+    metrics = await store.metrics();
+  } catch (err) {
+    failure = messageOf(err);
+    logApiError("admin.metrics_failed", err, { userId: user?.id });
+  }
+  if (!metrics) {
+    return (
+      <div className="flex min-h-dvh flex-col bg-paper">
+        <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6 sm:py-14">
+          <h1 className="font-serif text-[2rem] leading-tight font-semibold text-ink">
+            Metrics could not be counted
+          </h1>
+          <p className="mt-3 text-[0.9375rem] leading-relaxed text-ink-soft">
+            The store answered with an error. This is the message, unedited
+            except for anything that looked like a credential:
+          </p>
+          <pre className="mt-4 overflow-x-auto rounded-lg border border-danger-line bg-danger-soft p-4 font-mono text-[0.8125rem] leading-relaxed whitespace-pre-wrap text-ink">
+            {failure}
+          </pre>
+          <p className="mt-4 text-[0.8125rem] leading-relaxed text-muted">
+            A missing table or column means <code className="rounded-sm bg-raised px-1 py-0.5 text-[0.75rem]">supabase/schema.sql</code> has not been
+            re-run since a deploy that added one. Anything else is worth pasting to whoever is on call.
+          </p>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
@@ -147,6 +187,21 @@ export default async function AdminPage() {
             note="The number an ad campaign is judged by."
           />
         </Section>
+
+        <section className="mt-10" aria-label="Alert email">
+          <h2 className="text-[0.75rem] font-semibold tracking-[0.08em] text-muted uppercase">
+            Alert email
+          </h2>
+          <p className="mt-2 text-[0.8125rem] leading-relaxed text-muted">
+            Failures worth acting on are emailed to{" "}
+            <strong className="font-medium text-ink-soft">ALERT_EMAIL_TO</strong>{" "}
+            through Resend. If nothing has ever arrived, this sends one now and
+            shows the provider&rsquo;s exact answer &mdash; an unverified sending
+            domain and a missing variable look the same from an inbox and
+            different here.
+          </p>
+          <TestAlertButton />
+        </section>
 
         <section className="mt-10" aria-label="Google OAuth scopes">
           <h2 className="text-[0.75rem] font-semibold tracking-[0.08em] text-muted uppercase">
