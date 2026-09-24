@@ -30,6 +30,13 @@ export interface HealthReport {
     supabase: boolean;
     sessionSecret: boolean;
     notion: boolean;
+    /**
+     * Whether `/admin` is switched on at all. A boolean and nothing more -- the
+     * page 404s for everyone when the allow-list is unset, which is deliberate
+     * but indistinguishable from "wrong email" or "not deployed yet" without
+     * this. The addresses themselves are never reported.
+     */
+    admin: boolean;
   };
   /** Plain-language description of each thing that made the status `degraded`. */
   warnings: string[];
@@ -64,6 +71,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
   // production, so a short one must report unhealthy rather than green-while-dead.
   const sessionSecret =
     (env.SESSION_SECRET ?? "").trim().length >= MIN_SESSION_SECRET_LENGTH;
+  const admin = has(env, "ADMIN_EMAILS");
   const isProduction = env.NODE_ENV === "production";
 
   const warnings: string[] = [];
@@ -97,6 +105,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
     capabilities: {
       openai: has(env, "OPENAI_API_KEY"),
       google,
+      admin,
       supabase,
       sessionSecret,
       notion: has(env, "NOTION_CLIENT_ID") && has(env, "NOTION_CLIENT_SECRET"),
