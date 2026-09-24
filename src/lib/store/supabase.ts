@@ -644,8 +644,20 @@ const NO_ROWS = "PGRST116";
  */
 const UNIQUE_VIOLATION = "23505";
 
-function fail(operation: string, error: { message: string }): never {
-  throw new Error(`[store/supabase] ${operation}: ${error.message}`);
+/**
+ * `message` alone is not enough: for a schema error PostgREST puts the useful
+ * text in `details`/`hint` and supabase-js can leave `message` empty, which
+ * produced an error that read "metrics notion_connections:" and nothing else.
+ */
+function fail(
+  operation: string,
+  error: { message: string; code?: string; details?: string | null; hint?: string | null },
+): never {
+  const parts = [error.message, error.details, error.hint].filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  );
+  const code = error.code ? ` (${error.code})` : "";
+  throw new Error(`[store/supabase] ${operation}${code}: ${parts.join(" — ") || "no message from the driver"}`);
 }
 
 export function createSupabaseStore(url: string, serviceRoleKey: string): Store {
@@ -1003,7 +1015,11 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
     narrow?: Narrow,
     what = `metrics ${table}`,
   ): Promise<number> {
-    const base = client.from(table).select("id", { count: "exact", head: true });
+    // `*`, not `id`: with `head: true` no row is returned, so the column list
+    // only has to be VALID -- and `notion_connections` has no `id` (its key is
+    // `user_id`). Asking for a column that does not exist fails the whole
+    // metrics page on the one table that spells its key differently.
+    const base = client.from(table).select("*", { count: "exact", head: true });
     const { count, error } = await (narrow ? narrow(base) : base);
     if (error) fail(what, error);
     return count ?? 0;
