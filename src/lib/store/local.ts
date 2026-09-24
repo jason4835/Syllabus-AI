@@ -554,6 +554,15 @@ export function createLocalStore(): Store {
       });
     },
 
+    async recordTermsAcceptance(userId, version) {
+      await mutate((db) => {
+        const user = db.users.find((u) => u.id === userId);
+        if (!user) return;
+        user.termsAcceptedAt = new Date().toISOString();
+        user.termsVersion = version;
+      });
+    },
+
     async savePendingUpload(userId, termId, fileName, parsed) {
       return mutate((db) => {
         const record: PendingUpload = {

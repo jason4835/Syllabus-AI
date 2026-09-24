@@ -29,9 +29,29 @@ export const VISITOR_COOKIE_NAME = "sylb_vid";
 /** A year: long enough that a returning visitor stays in the arm they were in. */
 const VISITOR_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
+/**
+ * Where ePrivacy applies: the EEA, the UK and Switzerland. An A/B bucketing
+ * cookie is not "strictly necessary" there and would need a consent banner,
+ * so these visitors get no cookie and see the control arm. The hero test is
+ * judged on the US ad traffic it exists for; excluding Europe from it costs
+ * nothing that matters and removes the only cookie that needed asking about.
+ *
+ * The country comes from the edge (Vercel and Cloudflare both set a header).
+ * Unknown means "not known to be Europe", which is the honest reading of a
+ * missing header on localhost -- and the wrong guess here sets one harmless
+ * first-party cookie, not a tracker.
+ */
+const CONSENT_COUNTRIES = new Set([
+  "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT","LV",
+  "LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","IS","LI","NO","GB","CH",
+]);
+
 export function middleware(req: NextRequest) {
   const response = NextResponse.next();
   if (req.cookies.get(VISITOR_COOKIE_NAME)?.value) return response;
+  const country = (req.headers.get("x-vercel-ip-country") ?? req.headers.get("cf-ipcountry") ?? "")
+    .toUpperCase();
+  if (CONSENT_COUNTRIES.has(country)) return response;
 
   response.cookies.set(VISITOR_COOKIE_NAME, crypto.randomUUID(), {
     httpOnly: true,

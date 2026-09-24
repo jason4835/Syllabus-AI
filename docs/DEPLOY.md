@@ -981,6 +981,14 @@ because `posthog-js` is bundled from npm rather than loaded from a CDN.
 
 ### 11b. What is deliberately not collected
 
+**No analytics cookie, and no banner.** PostHog runs in `cookieless_mode:
+"always"` — the anonymous id is a server-side daily-salted hash, nothing is
+stored in the browser, and `identify()` still ties a signed-in student's events
+together. The A/B bucketing cookie (`sylb_vid`) is not set for EEA/UK/CH
+visitors (`middleware.ts` reads the edge's country header); they see the
+control arm. Net effect: the only cookie everyone gets is the session cookie,
+which is strictly necessary, so ePrivacy consent is not required.
+
 `src/lib/analytics-client.ts` disables **autocapture** and **session replay**.
 That is not a default left in place — both are switched off on purpose, and the
 privacy policy is written against that configuration:

@@ -318,6 +318,8 @@ export interface Store {
    * the card as done. Null when the user does not exist.
    */
   setUserProfile(userId: string, patch: Partial<UserProfile>): Promise<User | null>;
+  /** Records that this account agreed to the Terms at `version`, now. */
+  recordTermsAcceptance(userId: string, version: string): Promise<void>;
 
   /**
    * Keeps a parse the student could not keep yet -- see `PendingUpload`.
@@ -721,6 +723,7 @@ export const store: Store = {
   metrics: () => getStore().metrics(),
   getUser: (id) => getStore().getUser(id),
   setUserProfile: (userId, patch) => getStore().setUserProfile(userId, patch),
+  recordTermsAcceptance: (userId, version) => getStore().recordTermsAcceptance(userId, version),
   savePendingUpload: (userId, termId, fileName, parsed) =>
     getStore().savePendingUpload(userId, termId, fileName, parsed),
   getPendingUpload: (userId, id) => getStore().getPendingUpload(userId, id),

@@ -28,6 +28,7 @@ import { Button, Spinner } from "@/components/ui/button";
 import { DemoBanner } from "@/components/dashboard/demo-banner";
 import { PanelBoundary } from "@/components/ui/panel-boundary";
 import { OnboardingCard } from "@/components/dashboard/onboarding-card";
+import { ConsentNotice } from "@/components/consent-notice";
 import { AccountPanel } from "@/components/dashboard/account-panel";
 import { TermsPanel } from "@/components/dashboard/terms-panel";
 import { UploadPanel } from "@/components/dashboard/upload-panel";
@@ -1036,6 +1037,9 @@ function UserMenu({
                 >
                   Sign in with Google
                 </MenuItem>
+                <div className="px-3 pb-2">
+                  <ConsentNotice action="signing in" />
+                </div>
                 <MenuItem onClick={() => window.location.assign("/")}>
                   Exit demo
                 </MenuItem>

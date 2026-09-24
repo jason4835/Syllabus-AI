@@ -67,9 +67,10 @@ export default function PrivacyPage() {
       <p>
         There are <strong>no advertising cookies and no cross-site trackers</strong>{" "}
         here: no ad network, data broker or social network is allowed to follow
-        you from this site. The app does set two first-party cookies — the signed
-        session cookie that keeps you logged in, and an analytics cookie
-        described under <strong>Analytics and cookies</strong> below.
+        you from this site. The app sets one cookie for everyone — the signed
+        session cookie that keeps you logged in — and, outside Europe, one more
+        that holds a random id for A/B tests. Analytics sets none; see{" "}
+        <strong>Analytics and cookies</strong> below.
       </p>
 
       <h2>Google user data</h2>
@@ -190,10 +191,16 @@ export default function PrivacyPage() {
         Limited Use requirements above.
       </p>
       <p>
-        <strong>Cookies.</strong> Two first-party cookies, no third-party ones:
-        the session cookie (essential — the app cannot keep you logged in without
-        it) and PostHog&rsquo;s analytics cookie, which holds a random id and
-        nothing else. Neither is used for advertising. If your browser sends a{" "}
+        <strong>Cookies.</strong> Analytics sets <strong>no cookie</strong> and
+        stores nothing in your browser: PostHog runs in cookieless mode, where
+        an anonymous visitor is recognised across page loads for a day by a
+        server-side hash rather than anything saved on your device. The only
+        cookies are first-party: the session cookie (essential — the app cannot
+        keep you logged in without it) and, for visitors outside the EEA, UK and
+        Switzerland, a random id used to keep you in the same arm of an A/B test.
+        European visitors get no A/B cookie and see the standard version. Nothing
+        is used for advertising, so there is no cookie banner because there is
+        nothing to ask. If your browser sends a{" "}
         <a
           href="https://globalprivacycontrol.org/"
           target="_blank"

@@ -14,6 +14,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { track } from "@/lib/analytics";
+import { TERMS_VERSION } from "@/lib/legal";
 import { messageOf, publicOrigin } from "@/lib/api";
 import { logApiError } from "@/lib/log";
 import { exchangeCode } from "@/lib/google/oauth";
@@ -64,6 +65,10 @@ export async function GET(req: Request) {
       // rather than nulling out calendar access on a repeat sign-in.
       googleRefreshToken: refreshToken ?? existing?.googleRefreshToken ?? null,
     });
+    // The sign-in button is the act of agreement: the consent line sits
+    // directly beneath every one of them. Recorded on every sign-in so a
+    // Terms revision is re-agreed to at the next visit, with the version.
+    await store.recordTermsAcceptance(user.id, TERMS_VERSION);
     await createSession(user.id);
     // The conversion the landing page is judged on. `isReturning` rather than a
     // separate event, so one funnel step covers both and the split is a filter.

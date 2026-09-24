@@ -75,6 +75,17 @@ export function startAnalytics(): void {
     // Pageviews are sent by hand from the provider, because the App Router
     // changes the URL without a page load and the automatic hook misses it.
     capture_pageview: false,
+    /**
+     * No cookies, no localStorage. ePrivacy needs consent for an analytics
+     * cookie whatever the GDPR basis, and a consent banner is a worse product
+     * than not needing one. In cookieless mode PostHog derives the anonymous
+     * id server-side from a daily-salted hash instead of storing anything in
+     * the browser, so anonymous visitors are still one visitor across page
+     * loads within a day, and `identify()` still ties a signed-in student's
+     * events together. The privacy policy states this; keep the two in step.
+     */
+    cookieless_mode: "always",
+    persistence: "memory",
     // Keeps the strict Content-Security-Policy in next.config.ts strict: with
     // recording and surveys off there is nothing left to lazy-load, and asking
     // for it would mean opening the CSP for a feature deliberately disabled.

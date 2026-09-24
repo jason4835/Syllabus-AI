@@ -409,6 +409,9 @@ export interface User {
    * normalises it to `{}` on read.
    */
   profile?: UserProfile;
+  /** Clickwrap evidence: last agreement to the Terms, and which version. */
+  termsAcceptedAt?: string | null;
+  termsVersion?: string | null;
   createdAt: string;
 }
 
