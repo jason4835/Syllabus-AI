@@ -37,6 +37,8 @@ export interface HealthReport {
      * this. The addresses themselves are never reported.
      */
     admin: boolean;
+    /** Whether alert email is switched on (key and recipient both set). */
+    alerts: boolean;
   };
   /** Plain-language description of each thing that made the status `degraded`. */
   warnings: string[];
@@ -72,6 +74,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
   const sessionSecret =
     (env.SESSION_SECRET ?? "").trim().length >= MIN_SESSION_SECRET_LENGTH;
   const admin = has(env, "ADMIN_EMAILS");
+  const alerts = has(env, "RESEND_API_KEY") && has(env, "ALERT_EMAIL_TO");
   const isProduction = env.NODE_ENV === "production";
 
   const warnings: string[] = [];
@@ -106,6 +109,7 @@ export function buildHealthReport(env: Env, uptimeSeconds: number, now: Date): H
       openai: has(env, "OPENAI_API_KEY"),
       google,
       admin,
+      alerts,
       supabase,
       sessionSecret,
       notion: has(env, "NOTION_CLIENT_ID") && has(env, "NOTION_CLIENT_SECRET"),

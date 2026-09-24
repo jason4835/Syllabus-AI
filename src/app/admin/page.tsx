@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { Logo } from "@/components/icons";
 import { GOOGLE_CONSOLE_SCOPES } from "@/lib/google/oauth";
+import { TestAlertButton } from "./test-alert-button";
 import { isAdminEmail, type Metrics } from "@/lib/metrics";
 import { formatCents, TERM_PASS } from "@/lib/pricing";
 import { messageOf } from "@/lib/api";
@@ -186,6 +187,21 @@ export default async function AdminPage() {
             note="The number an ad campaign is judged by."
           />
         </Section>
+
+        <section className="mt-10" aria-label="Alert email">
+          <h2 className="text-[0.75rem] font-semibold tracking-[0.08em] text-muted uppercase">
+            Alert email
+          </h2>
+          <p className="mt-2 text-[0.8125rem] leading-relaxed text-muted">
+            Failures worth acting on are emailed to{" "}
+            <strong className="font-medium text-ink-soft">ALERT_EMAIL_TO</strong>{" "}
+            through Resend. If nothing has ever arrived, this sends one now and
+            shows the provider&rsquo;s exact answer &mdash; an unverified sending
+            domain and a missing variable look the same from an inbox and
+            different here.
+          </p>
+          <TestAlertButton />
+        </section>
 
         <section className="mt-10" aria-label="Google OAuth scopes">
           <h2 className="text-[0.75rem] font-semibold tracking-[0.08em] text-muted uppercase">
