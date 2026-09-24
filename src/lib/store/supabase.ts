@@ -35,7 +35,7 @@ import type {
 } from "@/lib/types";
 import { DEMO_USER_PREFIX, TERM_TYPES } from "@/lib/types";
 import { FREE_COURSES_PER_TERM, todayIso } from "@/lib/terms";
-import { foldPaidTerms, isoDaysAgo, type PaidTerm } from "@/lib/metrics";
+import { foldPaidTerms, foldProfiles, isoDaysAgo, type PaidTerm, type ProfileFacts } from "@/lib/metrics";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -949,26 +949,64 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
    * mean under-reporting revenue with no error anywhere. The set is bounded by
    * purchases, not by sign-ups, so in practice this is one round trip.
    */
-  async function paidTerms(): Promise<PaidTerm[]> {
+  /**
+   * Every row of a query, paged.
+   *
+   * PostgREST caps a response at `db-max-rows` (1000 by default) and answers a
+   * larger result by silently truncating it -- which for a metric means
+   * under-reporting with no error anywhere. Ordered by `id` so paging cannot
+   * skip or repeat a row.
+   */
+  /**
+   * A filter applied to a query builder. `any` on purpose: supabase-js types
+   * every builder method by the exact columns selected, so a callback that
+   * works for one `select` does not type-check for another, and expressing
+   * "any filter" generically hits "type instantiation is excessively deep".
+   * The runtime is a plain method chain; the loss is only compile-time.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Narrow = (q: any) => any;
+
+  async function pageAll<T>(
+    table: string,
+    columns: string,
+    narrow: Narrow,
+    what: string,
+  ): Promise<T[]> {
     const PAGE = 1000;
-    const out: PaidTerm[] = [];
+    const out: T[] = [];
     for (let from = 0; ; from += PAGE) {
-      const { data, error } = await client
-        .from("academic_terms")
-        .select("user_id, premium_expires_at")
-        .eq("premium", true)
-        // A stable order, so paging cannot skip or repeat a row.
+      const { data, error } = await narrow(client.from(table).select(columns))
         .order("id", { ascending: true })
         .range(from, from + PAGE - 1);
-      if (error) fail("metrics paid terms", error);
-
-      const rows = (data ?? []) as PaidTermRow[];
-      for (const row of rows) {
-        out.push({ userId: row.user_id, premiumExpiresAt: row.premium_expires_at });
-      }
-      // A short page is the last page.
+      if (error) fail(what, error);
+      const rows = (data ?? []) as T[];
+      out.push(...rows);
       if (rows.length < PAGE) return out;
     }
+  }
+
+  /** Every paid term. Bounded by purchases, not sign-ups, so in practice one page. */
+  async function paidTerms(): Promise<PaidTerm[]> {
+    const rows = await pageAll<PaidTermRow>(
+      "academic_terms",
+      "user_id, premium_expires_at",
+      (q) => q.eq("premium", true),
+      "metrics paid terms",
+    );
+    return rows.map((row) => ({ userId: row.user_id, premiumExpiresAt: row.premium_expires_at }));
+  }
+
+  /** A count-only query against one table, with an optional filter. */
+  async function countRows(
+    table: string,
+    narrow?: Narrow,
+    what = `metrics ${table}`,
+  ): Promise<number> {
+    const base = client.from(table).select("id", { count: "exact", head: true });
+    const { count, error } = await (narrow ? narrow(base) : base);
+    if (error) fail(what, error);
+    return count ?? 0;
   }
 
   return {
@@ -985,12 +1023,69 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         paidTerms(),
       ]);
 
+      /**
+       * Usage and onboarding. Counts wherever Postgres can count; the three
+       * that need a per-user column (distinct course owners, profiles, and
+       * which stashes are still waiting) page the smallest projection that
+       * answers the question.
+       *
+       * Demo sandboxes are excluded from every figure by joining on the same
+       * `not like demo\_%` predicate as the sign-up counts -- `courses` and
+       * `calendar_links` carry `user_id`, so it applies directly.
+       */
+      const notDemo: Narrow = (q) => q.not("user_id", "like", DEMO_ID_PATTERN);
+      const [
+        courses,
+        calendarEventsLinked,
+        notionConnected,
+        calendarConnected,
+        feedSubscribers,
+        courseOwners,
+        profiles,
+        stashes,
+        activeTerms,
+      ] = await Promise.all([
+        countRows("courses", notDemo),
+        countRows("calendar_links", notDemo),
+        countRows("notion_connections", notDemo),
+        countRows("users", (q) => q.not("id", "like", DEMO_ID_PATTERN).not("google_refresh_token", "is", null)),
+        countRows("users", (q) => q.not("id", "like", DEMO_ID_PATTERN).not("calendar_feed_token", "is", null)),
+        pageAll<{ user_id: string }>("courses", "user_id", notDemo, "metrics course owners"),
+        pageAll<{ profile: unknown }>("users", "id, profile", (q) => q.not("id", "like", DEMO_ID_PATTERN), "metrics profiles"),
+        pageAll<{ term_id: string | null }>("pending_uploads", "id, term_id", notDemo, "metrics pending uploads"),
+        pageAll<{ id: string }>("academic_terms", "id", (q) => q.eq("premium", true).gte("premium_expires_at", todayIso()), "metrics active terms"),
+      ]);
+      // Assessments have no user_id; count those whose course belongs to a real
+      // account by summing per course would be N queries, so count them all and
+      // subtract the demo ones -- one query each.
+      const [assessmentsAll, demoCourseIds] = await Promise.all([
+        countRows("assessments"),
+        pageAll<{ id: string }>("courses", "id", (q) => q.like("user_id", DEMO_ID_PATTERN), "metrics demo courses"),
+      ]);
+      const demoAssessments = demoCourseIds.length
+        ? await countRows("assessments", (q) => q.in("course_id", demoCourseIds.map((c) => c.id)))
+        : 0;
+      const active = new Set(activeTerms.map((t) => t.id));
+
       return {
         signups,
         signupsLast7Days: signups7,
         signupsLast30Days: signups30,
         demoSandboxes,
         ...foldPaidTerms(paid, todayIso()),
+        usage: {
+          courses,
+          assessments: assessmentsAll - demoAssessments,
+          activatedUsers: new Set(courseOwners.map((c) => c.user_id)).size,
+          calendarConnected,
+          calendarEventsLinked,
+          feedSubscribers,
+          notionConnected,
+          pendingUploadsWaiting: stashes.filter((p) => !(p.term_id && active.has(p.term_id))).length,
+        },
+        onboarding: foldProfiles(
+          profiles.map((r) => (r.profile && typeof r.profile === "object" ? (r.profile as ProfileFacts) : {})),
+        ),
         generatedAt: new Date().toISOString(),
       };
     },

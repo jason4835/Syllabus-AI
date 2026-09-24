@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { foldPaidTerms, isAdminEmail, isoDaysAgo } from "@/lib/metrics";
+import { foldPaidTerms, foldProfiles, isAdminEmail, isoDaysAgo } from "@/lib/metrics";
 
 describe("foldPaidTerms", () => {
   const TODAY = "2026-09-22";
@@ -79,5 +79,52 @@ describe("isAdminEmail", () => {
     process.env.ADMIN_EMAILS = "owner@example.com,,";
     expect(isAdminEmail(null)).toBe(false);
     expect(isAdminEmail("")).toBe(false);
+  });
+});
+
+describe("foldProfiles", () => {
+  it("separates answered, skipped and not-yet-asked", () => {
+    const out = foldProfiles([
+      { completedAt: "t", school: "New York University", year: "junior", source: "ad" },
+      { completedAt: "t" }, // completed with nothing filled: a skip
+      {}, // never shown the card
+    ]);
+    expect(out.answered).toBe(1);
+    expect(out.skipped).toBe(1);
+    expect(out.notAsked).toBe(1);
+  });
+
+  it("ranks schools by count, ties alphabetical, capped at ten", () => {
+    const profiles = [
+      ...Array(3).fill({ completedAt: "t", school: "B University" }),
+      ...Array(3).fill({ completedAt: "t", school: "A University" }),
+      { completedAt: "t", school: "C University" },
+      ...Array.from({ length: 12 }, (_, i) => ({ completedAt: "t", school: `School ${i}` })),
+    ];
+    const out = foldProfiles(profiles);
+    expect(out.topSchools.slice(0, 3).map((r) => r.label)).toEqual(["A University", "B University", "C University"]);
+    expect(out.topSchools).toHaveLength(10);
+  });
+
+  it("counts non-canonical schools separately and never lists their text", () => {
+    const out = foldProfiles([
+      { completedAt: "t", schoolOther: "Hogwarts" },
+      { completedAt: "t", schoolOther: "Hogwarts" },
+    ]);
+    expect(out.otherSchools).toBe(2);
+    expect(out.answered).toBe(2);
+    expect(JSON.stringify(out)).not.toContain("Hogwarts");
+  });
+
+  it("is all zeroes and empty lists with nobody", () => {
+    expect(foldProfiles([])).toEqual({
+      answered: 0,
+      skipped: 0,
+      notAsked: 0,
+      topSchools: [],
+      otherSchools: 0,
+      byYear: [],
+      bySource: [],
+    });
   });
 });

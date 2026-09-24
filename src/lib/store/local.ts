@@ -37,7 +37,7 @@ import type {
 } from "@/lib/types";
 import { isDemoUser } from "@/lib/types";
 import { FREE_COURSES_PER_TERM, todayIso } from "@/lib/terms";
-import { foldPaidTerms, isoDaysAgo } from "@/lib/metrics";
+import { foldPaidTerms, foldProfiles, isoDaysAgo } from "@/lib/metrics";
 import type {
   CalendarLink,
   CalendarLinkQuery,
@@ -518,6 +518,28 @@ export function createLocalStore(): Store {
             db.terms.filter((t) => t.premium),
             todayIso(),
           ),
+          usage: (() => {
+            const realIds = new Set(real.map((u) => u.id));
+            const courses = db.courses.filter((c) => realIds.has(c.userId));
+            const courseIds = new Set(courses.map((c) => c.id));
+            const activeTermIds = new Set(
+              db.terms.filter((t) => t.premium && (t.premiumExpiresAt ?? "") >= todayIso()).map((t) => t.id),
+            );
+            return {
+              courses: courses.length,
+              assessments: db.assessments.filter((a) => courseIds.has(a.courseId)).length,
+              activatedUsers: new Set(courses.map((c) => c.userId)).size,
+              calendarConnected: real.filter((u) => u.googleRefreshToken).length,
+              calendarEventsLinked: db.calendarLinks.filter((l) => l.userId && realIds.has(l.userId)).length,
+              feedSubscribers: real.filter((u) => u.calendarFeedToken).length,
+              notionConnected: db.notionConnections.filter((n) => realIds.has(n.userId)).length,
+              // Waiting = stashed against a term that is still not premium.
+              pendingUploadsWaiting: db.pendingUploads.filter(
+                (p) => realIds.has(p.userId) && !(p.termId && activeTermIds.has(p.termId)),
+              ).length,
+            };
+          })(),
+          onboarding: foldProfiles(real.map((u) => u.profile ?? {})),
           generatedAt: new Date().toISOString(),
         };
       });

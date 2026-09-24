@@ -37,8 +37,110 @@ export interface Metrics {
   passesSold: number;
   /** Passes still granting access today, grace period included. */
   activePasses: number;
+  /**
+   * What people have actually done with the product. Every figure is a count
+   * across all real accounts; nothing here can be traced to one student.
+   */
+  usage: UsageMetrics;
+  /**
+   * The onboarding card's answers, folded into breakdowns. This is the entire
+   * reason the card exists -- to judge an ad campaign by who it brought in --
+   * and it is shown as counts per label, never as a list of people.
+   */
+  onboarding: OnboardingMetrics;
   /** When these counts were taken. They are live, never cached. */
   generatedAt: string;
+}
+
+export interface UsageMetrics {
+  /** Courses on real accounts. Demo sandboxes' seeded courses are excluded. */
+  courses: number;
+  assessments: number;
+  /** Real accounts with at least one course: signed in AND did the thing. */
+  activatedUsers: number;
+  /** Real accounts that granted calendar access (hold a refresh token). */
+  calendarConnected: number;
+  /** Google events this app has created and still tracks. Proof of syncs. */
+  calendarEventsLinked: number;
+  /** Real accounts holding a subscription-feed URL (Apple/Outlook path). */
+  feedSubscribers: number;
+  notionConnected: number;
+  /**
+   * Syllabi parsed, refused with the paywall, and never unlocked. Each one is
+   * a student who wanted a second course and did not pay -- the most direct
+   * number the paywall's conversion has.
+   */
+  pendingUploadsWaiting: number;
+}
+
+export interface OnboardingMetrics {
+  /** Answered at least one question. */
+  answered: number;
+  skipped: number;
+  /** Signed-in accounts that have not seen the card yet (or predate it). */
+  notAsked: number;
+  /** Top schools by count, canonical names only. At most ten. */
+  topSchools: { label: string; count: number }[];
+  /** Typed a school that matched nothing canonical -- the list's gap, counted. */
+  otherSchools: number;
+  byYear: { label: string; count: number }[];
+  bySource: { label: string; count: number }[];
+}
+
+/** The subset of a user's profile the breakdowns read. */
+export interface ProfileFacts {
+  school?: string;
+  schoolOther?: string;
+  year?: string;
+  source?: string;
+  completedAt?: string;
+}
+
+/**
+ * Folds every real account's profile into the onboarding breakdowns.
+ *
+ * Pure, so the drivers only differ in how they fetch. "Answered" means at
+ * least one real answer; a card completed with all three left blank counts as
+ * skipped, because from the data's point of view that is what it is.
+ */
+export function foldProfiles(profiles: readonly ProfileFacts[]): OnboardingMetrics {
+  const schools = new Map<string, number>();
+  const years = new Map<string, number>();
+  const sources = new Map<string, number>();
+  let answered = 0;
+  let skipped = 0;
+  let notAsked = 0;
+  let otherSchools = 0;
+
+  for (const p of profiles) {
+    if (!p.completedAt) {
+      notAsked += 1;
+      continue;
+    }
+    const gave = Boolean(p.school || p.schoolOther || p.year || p.source);
+    if (gave) answered += 1;
+    else skipped += 1;
+    if (p.school) schools.set(p.school, (schools.get(p.school) ?? 0) + 1);
+    else if (p.schoolOther) otherSchools += 1;
+    if (p.year) years.set(p.year, (years.get(p.year) ?? 0) + 1);
+    if (p.source) sources.set(p.source, (sources.get(p.source) ?? 0) + 1);
+  }
+
+  const ranked = (m: Map<string, number>, limit = Infinity) =>
+    [...m.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+      .slice(0, limit);
+
+  return {
+    answered,
+    skipped,
+    notAsked,
+    topSchools: ranked(schools, 10),
+    otherSchools,
+    byYear: ranked(years),
+    bySource: ranked(sources),
+  };
 }
 
 /**
